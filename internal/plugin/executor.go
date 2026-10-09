@@ -38,13 +38,14 @@ type executorRequest struct {
 }
 
 // resolvedExecution carries everything both execution paths need after
-// model/key resolution succeeded. effort is the reasoning effort selected by
-// a requested model-name thinking suffix, or "" without one.
+// model/key resolution succeeded. suffix is the requested model's thinking
+// suffix: a zero value means the model ID carried none, or that a literal
+// parenthesized catalog ID won routing and keeps its own identity.
 type resolvedExecution struct {
 	cfg    config.Config
 	rec    catalog.ModelRecord
 	key    string
-	effort string
+	suffix thinking.Suffix
 	tools  shared.ResponseTools
 }
 
@@ -65,11 +66,11 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 	}
 	// CPA parses a model-name thinking suffix (model(high)) for its own
 	// executors but hands the raw ID to plugins, so resolve the base model and
-	// carry the suffix effort to the route override. A catalog ID that
-	// literally carries parentheses still resolves when the base does not, and
-	// then keeps its own identity with no suffix override.
+	// carry the suffix to the route override. A catalog ID that literally
+	// carries parentheses still resolves when the base does not, and then keeps
+	// its own identity with no suffix override.
 	suffix := thinking.ParseSuffix(req.Model)
-	lookupID, effort := req.Model, suffix.Effort
+	lookupID := req.Model
 	if suffix.HasSuffix && suffix.Model != "" {
 		lookupID = suffix.Model
 	}
@@ -79,8 +80,9 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 		rec, found = mgr.Lookup(lookupID)
 	}
 	if !found && lookupID != req.Model && mgr != nil {
-		rec, found = mgr.Lookup(req.Model)
-		effort = ""
+		if rec, found = mgr.Lookup(req.Model); found {
+			suffix = thinking.Suffix{}
+		}
 	}
 	if !found {
 		return nil, classEnvelope(&errclass.Error{
@@ -89,8 +91,8 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 			StatusCode: http.StatusNotFound,
 		})
 	}
-	debugTrace("executor suffix raw=%q effort=%q lookup_model=%s", suffix.Raw, effort, lookupID)
-	return &resolvedExecution{cfg: cfg, rec: rec, key: key, effort: effort, tools: *shared.NewResponseTools()}, nil
+	debugTrace("executor resolved model lookup=%s suffix_raw=%q suffix_effort=%q", lookupID, suffix.Raw, suffix.Effort)
+	return &resolvedExecution{cfg: cfg, rec: rec, key: key, suffix: suffix, tools: *shared.NewResponseTools()}, nil
 }
 
 // handleExecute implements executor.execute (non-stream). Stream-flagged
@@ -113,11 +115,8 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "non-stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
-	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.inputFormat(), req.effectivePayload(), res.rec.Thinking, &res.tools)
+	upstreamBody, eErr := buildUpstreamBody(res, req)
 	if eErr != nil {
-		return classEnvelope(eErr), nil
-	}
-	if upstreamBody, eErr = applyReasoningSuffix(res.rec.Protocol, upstreamBody, res.effort); eErr != nil {
 		return classEnvelope(eErr), nil
 	}
 
@@ -251,11 +250,8 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
-	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.inputFormat(), req.effectivePayload(), res.rec.Thinking, &res.tools)
+	upstreamBody, eErr := buildUpstreamBody(res, req)
 	if eErr != nil {
-		return classEnvelope(eErr), nil
-	}
-	if upstreamBody, eErr = applyReasoningSuffix(res.rec.Protocol, upstreamBody, res.effort); eErr != nil {
 		return classEnvelope(eErr), nil
 	}
 

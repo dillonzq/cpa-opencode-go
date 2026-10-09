@@ -57,7 +57,7 @@ These are existing behaviors; the current changes do not extend their support.
 | Historical reasoning | Messages → Chat Completions/Responses drops thinking/redacted_thinking. Responses → Chat Completions drops reasoning items. Chat Completions → Messages/Responses does not map historical reasoning fields. Responses → Messages preserves summary text as unsigned thinking |
 | Native Responses requests for non-GPT models | Remove historical reasoning and compaction. The native GPT path only rewrites model, preserving other content |
 | Reasoning controls | `reasoning_effort` ↔ `reasoning.effort`. Messages uses a fixed budget table; the reverse mapping uses budget thresholds, so exact round trips are not possible. `none` disables reasoning; `auto` defers to upstream defaults. Budgets are not filtered or clamped by model capabilities |
-| Model-name thinking suffixes | CPA parses a trailing `model(value)` suffix only on its own executor paths, so the plugin strips it for catalog routing and applies the control itself: `reasoning_effort` on Chat Completions, an enabled budget (or disabled thinking) with `output_config.effort` removed on Messages, and `reasoning.effort` on Responses. `none`/`0` disables, `auto`/`-1` defers to upstream defaults, levels are `minimal`–`max`, and a non-negative budget maps to a level with the fixed thresholds. The suffix wins over the body's own control; an unrecognized value strips the suffix only. Other provider-specific controls already in the body are left untouched |
+| Model-name thinking suffixes | CPA parses a trailing `model(value)` suffix only on its own executor paths, so the plugin strips it for catalog routing and applies the control itself, with suffix priority: a recognized suffix replaces whatever reasoning control the body carried (the superseded control is dropped before conversion so an unrepresentable value cannot fail a request the suffix already replaced). `none`/`0` disables, `auto`/`-1` removes the control so the upstream applies its own default, levels are `minimal`–`max`, and a numeric value maps to a level with the fixed thresholds. On Messages a level becomes an enabled budget from the fixed table, a numeric value keeps its exact budget, `none` also drops `thinking.display` (it only applies to an active block), `output_config.effort` is always superseded, and `auto` removes the whole control. Chat Completions writes `reasoning_effort`, Responses writes `reasoning.effort` and keeps sibling reasoning fields. An unrecognized value strips the suffix only and leaves the body's own control alone. Budgets are not clamped against `max_tokens` or model limits, matching the reasoning-control policy above; a literal catalog ID containing parentheses is reachable only when the stripped name does not resolve, as CPA matches the base model first |
 | system/developer/instructions | Convert to the target's system/instructions format. Messages also merges user/tool_result content and consecutive assistant content. Original message boundaries are not guaranteed to survive |
 | Token limits | Map `max_tokens/max_completion_tokens/max_output_tokens`. Messages requires a positive limit and defaults missing or nonpositive values to 4096. Responses → Chat Completions omits nonpositive max_output_tokens |
 | stop/stop_sequences | Preserve between Chat Completions and Messages; drop when converting to Responses |
@@ -74,6 +74,12 @@ Implementation entry points: `internal/adapter/*/request.go`, `convert.go`, and 
 
 
 ## Further compatibility work
+
+CPA labels a usage record's reasoning effort from the client payload it received, not
+from the suffix or from the body the plugin sent upstream, so a suffix-only request
+logs no effort and a suffix that overrides a body control logs the overridden value.
+Token accounting is unaffected. Changing this needs a host-side fix; the plugin has no
+callback for it.
 
 Reasoning, refusal text, cache-write usage, and Responses text/tool-argument completion snapshots are now supported. The following gaps remain; support is not yet promised:
 

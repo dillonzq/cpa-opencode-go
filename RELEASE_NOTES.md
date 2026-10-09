@@ -17,13 +17,15 @@
 ## Request handling
 
 - Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`):
-  strip the suffix for catalog routing and apply its reasoning control
-  (`reasoning_effort`, a Messages thinking budget, or `reasoning.effort`) with
-  priority over the body's own control. `none` disables, `auto` defers to
-  upstream defaults, levels and numeric budgets use the fixed conversion
-  tables, and an unrecognized value strips the suffix only, matching CPA.
-  Catalog IDs that literally contain parentheses still resolve when the
-  stripped name does not.
+  strip the suffix for catalog routing and apply its reasoning control with CPA's
+  suffix priority over the body's own control, dropping the superseded control
+  before conversion so an unrepresentable value cannot fail a request the suffix
+  already replaced. `none` disables, `auto` defers to upstream defaults, levels
+  use the fixed conversion tables, a numeric value keeps its exact Messages
+  budget, and an unrecognized value strips the suffix only, matching CPA. Catalog
+  IDs that literally contain parentheses still resolve when the stripped name
+  does not; CPA labels usage reasoning effort from the client payload, so a
+  suffix is not reflected in that label.
 
 # v0.1.0
 
