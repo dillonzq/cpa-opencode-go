@@ -160,8 +160,8 @@ func New(cfg config.Config, client HostClient) *Manager {
 	return m
 }
 
-// SeedFrom republishes prev's last-good snapshot into m by REBUILDING every
-// record from prev's raw upstream entries through the same
+// SeedFrom republishes only prev's raw catalog snapshot, keeping m's current
+// fallback metadata and cache expiry. It rebuilds every record through the same
 // resolution/validation path a refresh applies, but against m's OWN cfg:
 // routes re-resolve (a removed override drops its model), the protocolEnabled
 // gate re-applies, PublicIDs recompute under m's prefix, endpoints re-check
@@ -175,7 +175,6 @@ func New(cfg config.Config, client HostClient) *Manager {
 // its routes immediately instead of serving stale routable records until the
 // outage ends.
 func (m *Manager) SeedFrom(prev *Manager) {
-	m.SeedFallbackFrom(prev)
 	prev.mu.Lock()
 	raw := prev.raw
 	prev.mu.Unlock()

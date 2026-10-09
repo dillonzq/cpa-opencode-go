@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +75,7 @@ func TestMetadataPriorityCacheAndSeed(t *testing.T) {
 	newCfg := cfg
 	newCfg.Models = []config.ModelOverride{{Name: "glm-test", Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Reconfigured")}}}
 	seed := New(newCfg, client)
+	seed.SeedFallbackFrom(m)
 	seed.SeedFrom(m)
 	got = findModel(t, seed.Models(), "glm-test")
 	if got.DisplayName != "Reconfigured" || got.OutputLimit != 64 || got.Description != "Fallback description" || !reflect.DeepEqual(got.InputModes, []string{"text", "image"}) {
@@ -201,5 +203,58 @@ func TestFallbackCacheNewRefreshInterval(t *testing.T) {
 	m.SeedFallbackFrom(old)
 	if !m.fallbackNext.Equal(fetched.Add(time.Minute)) {
 		t.Fatal("reconfigured refresh interval ignored")
+	}
+}
+
+func TestSeedCatalogPreservesFallbackRefreshedDuringOutage(t *testing.T) {
+	cfg := metadataConfig()
+	catalogFailed := false
+	fallbackBody := metadataFallback
+	fallbackCalls := 0
+	client := metadataClient(func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		if req.URL == cfg.ModelsDev.URL {
+			fallbackCalls++
+			return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(fallbackBody)}, nil
+		}
+		if catalogFailed {
+			return pluginapi.HTTPResponse{}, errors.New("catalog unavailable")
+		}
+		return pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(metadataCatalog)}, nil
+	})
+	old := New(cfg, client)
+	mustRefresh(t, old)
+	old.mu.Lock()
+	old.fallbackNext = time.Now().Add(-time.Minute)
+	old.mu.Unlock()
+	catalogFailed = true
+	fallbackBody = strings.ReplaceAll(metadataFallback, `"output":64`, `"output":128`)
+	cfg.Models = []config.ModelOverride{{Name: "glm-test", Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Reconfigured")}}}
+	m := New(cfg, client)
+	// Match lifecycle ordering: inherit fallback, attempt refresh, then recover
+	// the previous upstream catalog if discovery failed with stale serving on.
+	m.SeedFallbackFrom(old)
+	if err := m.Refresh(t.Context(), testKey); err == nil {
+		t.Fatal("catalog failure hidden")
+	}
+	if got := findModel(t, m.Models(), "glm-test").OutputLimit; got != 128 {
+		t.Fatalf("fallback was not refreshed: %d", got)
+	}
+	next := m.fallbackNext
+	m.SeedFrom(old)
+	model := findModel(t, m.Models(), "glm-test")
+	if model.OutputLimit != 128 || model.DisplayName != "Reconfigured" || model.UserDefined {
+		t.Fatalf("catalog recovery replaced fresh fallback or ignored new configuration: %+v", model)
+	}
+	if _, ok := m.Lookup("glm-catalog"); !ok {
+		t.Fatal("stale catalog was not restored")
+	}
+	if !m.fallbackNext.Equal(next) || !m.fallbackNext.After(time.Now()) {
+		t.Fatal("fresh cache expiry replaced with old expiry")
+	}
+	if err := m.Refresh(t.Context(), testKey); err == nil {
+		t.Fatal("catalog failure hidden")
+	}
+	if fallbackCalls != 2 {
+		t.Fatalf("fresh fallback cache refetched: calls=%d", fallbackCalls)
 	}
 }
