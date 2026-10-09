@@ -36,7 +36,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
   - OpenAI Chat Completions（`/v1/chat/completions`）
   - Anthropic Messages（`/v1/messages`）
   - OpenAI Responses（`/v1/responses`）
-- **思考与推理支持**：在支持的客户端和上游格式之间映射推理强度。
+- **思考与推理支持**：同格式保留推理参数，跨格式仅做固定档位/预算转换；模型能力元数据不参与过滤或限幅，由上游校验。保留关闭和 Claude adaptive 档位；跨格式自动模式无对应字段时使用目标接口默认行为，无法转换的其他值明确报错。
 - **动态模型发现**：获取远程模型目录，支持本地回退和自定义路由覆盖。
 - **多密钥调度**：使用 CLIProxyAPI 原生调度器，在不同协议间共享密钥轮换、重试和错误冷却状态。
 - **原生额度查询**：通过 CLIProxyAPI 通用额度接口查询当前选中凭证的滚动、每周和每月额度，移除独立插件额度页面。

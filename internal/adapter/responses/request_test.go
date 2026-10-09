@@ -617,12 +617,12 @@ func TestResponsesEffortMapping(t *testing.T) {
 		}
 		return r["effort"]
 	}
-	// nil capability → default ladder low/medium/high.
+	// Missing capability metadata does not limit the fixed threshold mapping.
 	if got := effort(build(nil, `{"type":"enabled","budget_tokens":8192}`)); got != "medium" {
 		t.Errorf("nil ts ladder = %v, want medium", got)
 	}
-	if got := effort(build(nil, `{"type":"enabled","budget_tokens":70000}`)); got != "high" {
-		t.Errorf("nil ts ladder top = %v, want high", got)
+	if got := effort(build(nil, `{"type":"enabled","budget_tokens":70000}`)); got != "xhigh" {
+		t.Errorf("nil capability top = %v, want xhigh", got)
 	}
 	// ZeroAllowed with "none" declared resolves to "none", which now
 	// forwards verbatim like the CC-upstream leg (no silent upstream
@@ -631,15 +631,15 @@ func TestResponsesEffortMapping(t *testing.T) {
 	if got := effort(build(zeroTS, `{"type":"enabled","budget_tokens":0}`)); got != "none" {
 		t.Errorf("declared none budget = %v, want forwarded none", got)
 	}
-	// DynamicAllowed yields the "auto" sentinel; also omitted here.
+	// Zero budget remains none regardless of DynamicAllowed.
 	dynTS := &pluginapi.ThinkingSupport{DynamicAllowed: true, Levels: []string{"low", "medium", "high"}}
-	if got := effort(build(dynTS, `{"type":"enabled","budget_tokens":0}`)); got != nil {
-		t.Errorf("auto sentinel must omit reasoning entirely, got %v", got)
+	if got := effort(build(dynTS, `{"type":"enabled","budget_tokens":0}`)); got != "none" {
+		t.Errorf("zero budget must preserve none, got %v", got)
 	}
-	// Disabled thinking produces no reasoning block.
+	// Disabled thinking explicitly produces none.
 	m := build(nil, `{"type":"disabled","budget_tokens":2048}`)
-	if got := effort(m); got != nil {
-		t.Errorf("disabled thinking produced reasoning %v", got)
+	if got := effort(m); got != "none" {
+		t.Errorf("disabled thinking must produce none, got %v", got)
 	}
 }
 
@@ -898,9 +898,8 @@ func TestFromChatCompletionsEffortCapability(t *testing.T) {
 	}
 }
 
-// Only the dynamic "auto" sentinel omits reasoning; every other effort
-// (including "none") forwards normalized without local validation.
-func TestFromChatCompletionsEffortSentinelsOmitted(t *testing.T) {
+// Explicit off/levels forward without model validation; auto uses upstream defaults.
+func TestFromChatCompletionsEffortSentinelsPreserved(t *testing.T) {
 	ts := &pluginapi.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true}
 	m := decodeReq(t, mustBuild(t, "m", "openai",
 		[]byte(`{"messages":[],"reasoning_effort":"none"}`), ts))
@@ -911,7 +910,7 @@ func TestFromChatCompletionsEffortSentinelsOmitted(t *testing.T) {
 	m = decodeReq(t, mustBuild(t, "m", "openai",
 		[]byte(`{"messages":[],"reasoning_effort":"auto"}`), ts))
 	if _, has := m["reasoning"]; has {
-		t.Fatalf("auto must omit reasoning: %v", m["reasoning"])
+		t.Fatalf("auto must use upstream defaults: %v", m)
 	}
 
 	tsHigh := &pluginapi.ThinkingSupport{Levels: []string{"low", "high"}}
@@ -922,11 +921,7 @@ func TestFromChatCompletionsEffortSentinelsOmitted(t *testing.T) {
 	}
 }
 
-// A validated effort "none" forwards verbatim when the model declares it
-// (either via ZeroAllowed+Levels or Levels alone), matching the CC-upstream
-// leg which forwards the identical validated value as-is (FR-005
-// no-silent-loss). The undeclared case stays pinned by
-// TestFromChatCompletionsEffortSentinelsOmitted.
+// Explicit efforts forward without consulting model capability declarations.
 func TestFromChatCompletions_ReasoningEffortPassthroughWithoutValidation(t *testing.T) {
 	body := []byte(`{"messages":[],"reasoning_effort":"xhigh"}`)
 	out, eErr := BuildRequest("gpt-5", "openai", []byte(body), nil)

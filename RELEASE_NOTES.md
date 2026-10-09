@@ -1,5 +1,6 @@
 ## Unreleased — executor, lifecycle, and credential fixes
 
+- Treat thinking capability metadata as descriptive only. Preserve reasoning effort across OpenAI formats, use fixed budget/effort conversion without model filtering or clamping, preserve explicit off and Claude adaptive effort, and leave output limits/sampling controls to upstream validation. Cross-format auto uses target defaults where no wire equivalent exists; other unconvertible controls fail explicitly.
 - Keep CLIProxyAPI v8.0.0 as the minimum dependency. Forward per-request `host_callback_id`, open owned HTTP operations, and cancel actual transport on client/scope cancellation, request timeout, and catalog refresh stop. Keep late operation/stream cleanup tracked through completion.
 - Implement `plugin.quiesce`: stop admission, cancel active execution/refresh work, and drain handlers, stream pumps, and FFI callbacks. Shutdown no longer returns after 15 seconds over a live callback; an unresponsive host callback can delay unload indefinitely. Cancellation also closes downstream streams to release backpressure.
 - Execute the host's effective `Payload` using `SourceFormat`, with an absent-payload fallback for older callers. Honor `Format` for output; avoid replaying interceptor input or converting already-prepared input twice.
