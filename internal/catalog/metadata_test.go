@@ -164,8 +164,8 @@ func TestFallbackCacheReconfigureDuringOutage(t *testing.T) {
 	cfg.Models = []config.ModelOverride{{Name: "glm-test", Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Reconfigured")}}}
 	reconfigured := New(cfg, client)
 	reconfigured.SeedFallbackFrom(old)
-	if len(reconfigured.Models()) != 0 {
-		t.Fatal("fallback cache seeded upstream models despite fail-closed policy")
+	if len(reconfigured.Models()) != 1 || !reconfigured.Models()[0].UserDefined {
+		t.Fatal("fallback cache seeded upstream models instead of retaining only explicit declarations")
 	}
 	mustRefresh(t, reconfigured)
 	model := findModel(t, reconfigured.Models(), "glm-test")

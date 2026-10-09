@@ -30,6 +30,7 @@ import (
 
 func TestOpenCodeNativeMetadata(t *testing.T) {
 	var fallbackCalls atomic.Int32
+	var customExecutions atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -41,6 +42,15 @@ func TestOpenCodeNativeMetadata(t *testing.T) {
 				t.Error("metadata service received credential")
 			}
 			io.WriteString(w, `{"opencode-go":{"models":{"glm-metadata-test":{"name":"Fallback name","description":"Fallback description","limit":{"context":100000,"output":32000},"modalities":{"input":["text","image"],"output":["text"]},"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]}}}}`)
+		case "/responses":
+			var request struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != "custom-only-model" {
+				t.Errorf("custom request model: %q, %v", request.Model, err)
+			}
+			customExecutions.Add(1)
+			io.WriteString(w, `{"id":"resp_custom","object":"response","status":"completed","output":[]}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -131,6 +141,40 @@ func TestOpenCodeNativeMetadata(t *testing.T) {
 	}
 	if fallbackCalls.Load() != 1 {
 		t.Fatalf("reconfiguration refetched unexpired cache: %d", fallbackCalls.Load())
+	}
+	declared := reconfigured + "  - name: custom-only-model\n    display-name: Custom model\n    max-context-length: 222222\n    max-tokens: 64000\n    input-modalities: [text]\n    thinking:\n      levels: [high]\nroute-overrides:\n  custom-only-model:\n    protocol: responses\n    endpoint: /v1/responses\n"
+	plug, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginReconfigure, []byte(declared))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forAuth := range []bool{false, true} {
+		if forAuth {
+			response, err = plug.Capabilities.ModelProvider.ModelsForAuth(context.Background(), pluginapi.AuthModelRequest{})
+		} else {
+			response, err = plug.Capabilities.ModelProvider.StaticModels(context.Background(), pluginapi.StaticModelRequest{})
+		}
+		if err != nil || len(response.Models) != 2 {
+			t.Fatalf("custom catalog: %+v, %v", response, err)
+		}
+		found := false
+		for _, item := range response.Models {
+			if item.ID != "opencode-go/custom-only-model" {
+				continue
+			}
+			found = true
+			model := pluginModelInfoToRegistryModelInfo(item)
+			if !model.UserDefined || model.DisplayName != "Custom model" || model.ContextLength != 222222 || model.MaxCompletionTokens != 64000 || model.Thinking == nil || !reflect.DeepEqual(model.Thinking.Levels, []string{"high"}) {
+				t.Fatalf("custom metadata lost at host: %+v", model)
+			}
+		}
+		if !found {
+			t.Fatal("configured custom model missing from native response")
+		}
+	}
+	rpc := &rpcPluginAdapter{id: file.ID, host: host, client: client, instance: pluginCallbackInstance(client)}
+	_, err = rpc.Execute(context.Background(), pluginapi.ExecutorRequest{Model: "opencode-go/custom-only-model", AuthProvider: "opencode-go", AuthAttributes: map[string]string{"api_key": "offline-test-key"}, SourceFormat: "openai-response", Format: "openai-response", Payload: []byte(`{"input":"hello"}`)})
+	if err != nil || customExecutions.Load() != 1 {
+		t.Fatalf("custom execution: %v, upstream calls=%d", err, customExecutions.Load())
 	}
 }
 

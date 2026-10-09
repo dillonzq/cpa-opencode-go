@@ -74,6 +74,7 @@ type ModelRecord struct {
 	InputModes   []string
 	OutputModes  []string
 	Thinking     *pluginapi.ThinkingSupport
+	UserDefined  bool
 }
 
 // UnsupportedModel is a discovered model excluded from the routable set,
@@ -102,6 +103,7 @@ type rawModel struct {
 	InputModalities  []string            `json:"input_modalities"`
 	OutputModalities []string            `json:"output_modalities"`
 	ReasoningLevels  []rawReasoningLevel `json:"supported_reasoning_levels"`
+	userDefined      bool
 }
 
 // rawReasoningLevel matches a Codex supported_reasoning_levels entry.
@@ -153,7 +155,9 @@ type Manager struct {
 
 // New returns a Manager serving cfg through the host client.
 func New(cfg config.Config, client HostClient) *Manager {
-	return &Manager{cfg: cfg, client: client}
+	m := &Manager{cfg: cfg, client: client}
+	m.swap(nil)
+	return m
 }
 
 // SeedFrom republishes prev's last-good snapshot into m by REBUILDING every
@@ -197,8 +201,8 @@ func (m *Manager) SeedFallbackFrom(prev *Manager) {
 
 // Refresh fetches and swaps the catalog snapshot. On failure it returns a
 // classified, key-free error; the previous snapshot keeps serving while
-// catalog.stale-while-unavailable is enabled, otherwise the routable set
-// is cleared until the next success (FR-002).
+// catalog.stale-while-unavailable is enabled, otherwise discovered records
+// are cleared until the next success. Explicit declarations remain available.
 func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
 	m.refreshMu.Lock()
 	defer m.refreshMu.Unlock()
@@ -206,7 +210,7 @@ func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
 		// Only direct construction can produce a nil host client
 		// (production always wires the bridge); fail loudly through the
 		// classified path instead of panicking inside Do.
-		return m.fail("host client unavailable")
+		return m.fail(ctx, "host client unavailable")
 	}
 	req := pluginapi.HTTPRequest{
 		Method: http.MethodGet,
@@ -218,20 +222,20 @@ func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
 	}
 	resp, err := m.client.Do(ctx, req)
 	if err != nil {
-		return m.fail("network error")
+		return m.fail(ctx, "network error")
 	}
 	budget := max(m.cfg.MaxResponseBytes, catalogBudgetFloor)
 	if int64(len(resp.Body)) > budget {
-		return m.fail("response exceeds max-response-bytes")
+		return m.fail(ctx, "response exceeds max-response-bytes")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return m.fail(fmt.Sprintf("http %d", resp.StatusCode))
+		return m.fail(ctx, fmt.Sprintf("http %d", resp.StatusCode))
 	}
 	var env struct {
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(resp.Body, &env); err != nil {
-		return m.fail("invalid json")
+		return m.fail(ctx, "invalid json")
 	}
 	var entries []rawModel
 	var warns []string
@@ -241,9 +245,9 @@ func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
 		// A present-but-empty array stays silent (tested-intended state).
 		warns = append(warns, `upstream catalog response missing "data" field`)
 	} else if err := json.Unmarshal(env.Data, &entries); err != nil {
-		return m.fail("invalid json")
+		return m.fail(ctx, "invalid json")
 	}
-	if len(entries) > 0 && m.cfg.ModelsDev.Enabled {
+	if (len(entries) > 0 || len(m.cfg.Models) > 0) && m.cfg.ModelsDev.Enabled {
 		if warn := m.refreshFallback(ctx); warn != "" {
 			warns = append(warns, warn)
 		}
@@ -253,15 +257,22 @@ func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
 }
 
 // fail applies the stale policy and returns the classified error.
-func (m *Manager) fail(category string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.cfg.Catalog.StaleWhileUnavailable {
-		// Clear the index too — Lookup must stop resolving IDs whose
-		// records are gone (FR-002). Raw entries go with them: a cleared
-		// snapshot has nothing to seed.
-		m.raw, m.models, m.index, m.unsup, m.warns = nil, nil, nil, nil, nil
+func (m *Manager) fail(ctx context.Context, category string) error {
+	var warns []string
+	if len(m.cfg.Models) > 0 && m.cfg.ModelsDev.Enabled && m.client != nil {
+		if warn := m.refreshFallback(ctx); warn != "" {
+			warns = append(warns, warn)
+		}
 	}
+	m.mu.Lock()
+	entries := m.raw
+	if !m.cfg.Catalog.StaleWhileUnavailable {
+		// Fail-closed removes discovered records; explicit user declarations
+		// remain independently available and rebuild the index below.
+		entries = nil
+	}
+	m.mu.Unlock()
+	m.swap(entries, warns...)
 	return fmt.Errorf("catalog refresh failed: %s", category)
 }
 
@@ -277,13 +288,26 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 	for _, model := range m.cfg.Models {
 		overrides[model.Name] = model.Metadata
 	}
-	models := make([]ModelRecord, 0, len(entries))
-	index := make(map[string]ModelRecord, len(entries)*2)
+	// Keep m.raw limited to discovered entries. Otherwise a removed user model
+	// could survive reconfiguration by being carried as stale upstream data.
+	combined := make([]rawModel, 0, len(entries)+len(m.cfg.Models))
+	combined = append(combined, entries...)
+	present := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		present[entry.ID] = true
+	}
+	for _, model := range m.cfg.Models {
+		if !present[model.Name] {
+			combined = append(combined, rawModel{ID: model.Name, userDefined: true})
+		}
+	}
+	models := make([]ModelRecord, 0, len(combined))
+	index := make(map[string]ModelRecord, len(combined)*2)
 	var unsup []UnsupportedModel
 	var warns []string
 	warns = append(warns, extraWarns...)
-	seen := make(map[string]bool, len(entries))
-	for _, e := range entries {
+	seen := make(map[string]bool, len(combined))
+	for _, e := range combined {
 		if e.ID == "" {
 			unsup = append(unsup, UnsupportedModel{Reason: "missing id"})
 			continue
@@ -345,6 +369,7 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			InputModes:   metadata.InputModalities,
 			OutputModes:  metadata.OutputModalities,
 			Thinking:     metadata.Thinking.Support(),
+			UserDefined:  e.userDefined,
 		}
 		// With a prefix enabled, one record's PublicID can equal another
 		// record's UpstreamID (upstream "foo" and "opencode-go/foo" both

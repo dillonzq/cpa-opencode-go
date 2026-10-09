@@ -161,7 +161,7 @@ plugins:
 
 `catalog-url` accepts an OpenAI-style `{"data":[{"id":"..."}]}` list. Optional metadata fields are `display_name`, `description`, `context_window`, `max_tokens`, `input_modalities`, `output_modalities`, and `supported_reasoning_levels` (objects with `effort` and optional `description`). Reasoning efforts are published as host `Thinking.Levels`; `none` also enables `ZeroAllowed`. Missing reasoning metadata stays unknown; an empty array explicitly publishes no reasoning levels. Legacy `context_length`, `max_output_tokens`, `input_modes`, `output_modes`, and `thinking` catalog extensions are ignored. This remains a `data`/`id` catalog, not a full Codex `models`/`slug` response.
 
-Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. Only models listed by the upstream catalog are published; overrides use exact upstream IDs in `name` and do not add models or aliases. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
+Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. `models[].name` is the exact upstream ID: entries already in the catalog override metadata; entries missing from the catalog declare additional models. New models use the existing family routes or an explicit `route-overrides` entry. Protocol switches, endpoint checks, and ID collision checks apply to both sources. Explicit declarations remain available when the catalog is empty or unavailable, including under `stale-while-unavailable: false`; removing a declaration removes it unless the upstream catalog still lists it. Models.dev alone never adds models. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
 
 Add these settings under the plugin configuration:
 
@@ -181,6 +181,21 @@ models-dev:
   url: https://models.dev/api.json   # default
   refresh-interval: 24h              # default; minimum 1m
 ```
+
+For a new ID outside known model families, add its declaration and route:
+
+```yaml
+models:
+  - name: custom-model
+    display-name: Custom model
+    max-context-length: 200000
+route-overrides:
+  custom-model:
+    protocol: responses
+    endpoint: /v1/responses
+```
+
+Declared models are published with host `UserDefined: true` when absent from the upstream catalog, using the usual configured public ID prefix. Execution sends the original `name` to the configured upstream; the declaration does not change upstream availability or add aliases.
 
 The fallback matches only `opencode-go.models[upstreamID]`, with no cross-provider guesses. It uses host HTTP transport without the upstream API key, a 3-second deadline, and a 16 MiB response limit. Successful snapshots are cached in memory for the configured interval and carried across reconfiguration when the source URL stays the same. Fetch failures keep the previous fallback snapshot, emit a warning, and retry on later catalog refreshes; they do not fail model discovery. A source that advertises reasoning without effort levels does not produce invented effort levels; budget/toggle controls are preserved in host thinking metadata. All merged supported fields are returned by both `model.static` and `model.for_auth`, including description, limits, modalities, and thinking. Price data is not included.
 
