@@ -57,7 +57,7 @@ Responses 的流式转换接收 `response.reasoning_summary_text.delta/done` 与
 | 历史推理 | Messages → Chat Completions/Responses 丢弃 thinking/redacted_thinking；Responses → Chat Completions 丢弃 reasoning items；Chat Completions → Messages/Responses 不映射历史 reasoning 字段。Responses → Messages 保留 summary 文本为无签名 thinking |
 | 原生 Responses 发给非 GPT 模型 | 删除历史 reasoning 和 compaction；原生 GPT 路径仅重写 model，保留其他内容 |
 | reasoning 控制 | `reasoning_effort` ↔ `reasoning.effort`；转 Messages 使用固定 budget 表，反向 budget 按阈值映射 effort，不能精确往返。`none` 为关闭；`auto` 留给上游默认。不会按模型能力过滤或截断 budget |
-| 模型名思考后缀 | CPA 仅在自身执行器链路解析尾部的 `model(value)` 后缀，因此插件自己剥离后缀用于目录路由，并按“后缀优先”应用参数：已识别的后缀会取代请求体自带的推理控制（被取代的控制在转换前就被移除，因此无法表示的值不会让已被后缀取代的请求失败）。`none`/`0` 关闭，`auto`/`-1` 移除控制交由上游默认，档位为 `minimal`–`max`，数字值按固定阈值映射档位。Messages 上：档位转为固定表的启用 budget，数字值保留精确 budget，`none` 同时删除 `thinking.display`（只对启用中的思考块有效），`output_config.effort` 总是被取代，`auto` 移除整个控制。Chat Completions 写 `reasoning_effort`；Responses 写 `reasoning.effort` 并保留同级 reasoning 字段。无法识别的值只剥离后缀，不改动请求体自身参数。budget 不与 `max_tokens` 或模型上限做限幅，与上文推理控制策略一致；目录中真实带括号的 ID 仅在剥离名无法匹配时才可达，因为 CPA 会先按基础模型匹配 |
+| 模型名思考后缀 | CPA 仅在自身执行器链路解析尾部的 `model(value)` 后缀，因此插件自己剥离后缀用于目录路由，并按“后缀优先”应用参数：已识别的后缀会取代请求体自带的推理控制（被取代的控制在转换前就被移除，因此无法表示的值不会让已被后缀取代的请求失败）。`none`/`0` 关闭，`auto`/`-1` 移除控制交由上游默认，档位为 `minimal`–`max`，数字值按固定阈值映射档位。Messages 上：档位转为固定表的启用 budget，数字值保留精确 budget，`none` 同时删除 `thinking.display`（只对启用中的思考块有效），`output_config.effort` 总是被取代，`auto` 移除整个控制。Chat Completions 写 `reasoning_effort`；Responses 写 `reasoning.effort` 并保留同级 reasoning 字段。无法识别的值只剥离后缀，不改动请求体自身参数。budget 不与 `max_tokens` 或模型上限做限幅，与上文推理控制策略一致；目录中真实带括号的 ID 仅在剥离名无法匹配时才可达，而且只是插件自身 lookup 层的回退：CPA 会先按其 auth 注册表解析请求模型，这类 ID 可能在到达插件前就被拒绝 |
 | system/developer/instructions | 转成目标协议 system/instructions；Messages 还会合并 user/tool_result 与连续 assistant 内容；历史消息边界不保证原样保留 |
 | token 限制 | `max_tokens/max_completion_tokens/max_output_tokens` 映射；Messages 必须有正数限制，缺省或非正数默认 4096；Responses → Chat Completions 的非正数 max_output_tokens 被省略 |
 | stop/stop_sequences | Chat Completions ↔ Messages 保留；转 Responses 丢弃 |
@@ -75,7 +75,7 @@ Responses 的流式转换接收 `response.reasoning_summary_text.delta/done` 与
 
 ## 后续兼容升级方向
 
-CPA 的 usage 记录从客户端原始请求体提取推理档位标签，而不是从后缀或插件上游发出的请求体提取，因此只用后缀的请求记录不到档位，后缀覆盖请求体参数时记录的也是被覆盖的值；token 统计不受影响。修复需要宿主侧改动，插件没有对应回调。
+CPA 的 usage 记录从宿主传入插件前的有效 payload 提取推理档位标签，而不是从后缀或插件上游发出的请求体提取，因此只用后缀的请求记录不到档位，后缀覆盖请求体参数时记录的也是被覆盖的值；token 统计不受影响。修复需要宿主侧改动，插件没有对应回调。
 
 当前已补齐推理、拒绝正文、缓存写入 usage，以及 Responses 正文/工具参数的结束快照兜底。以下能力仍有缺口，尚未承诺支持：
 

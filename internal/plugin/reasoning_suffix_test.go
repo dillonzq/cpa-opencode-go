@@ -330,10 +330,11 @@ func TestExecuteThinkingSuffixWithPrefixDisabled(t *testing.T) {
 	assertField(t, body, "reasoning_effort", "high")
 }
 
-func TestExecuteThinkingSuffixLiteralIDLosesToBaseModel(t *testing.T) {
-	// Suffix priority: when both the base model and a literal parenthesized ID
-	// are routable, the base model wins and the suffix is applied.
-	const catalogBody = `{"data":[{"id":"glm-5.3"},{"id":"glm-weird(kid)"}]}`
+func TestExecuteThinkingSuffixLiteralIDCollidesWithBaseModel(t *testing.T) {
+	// A real collision: both the base model and a literal parenthesized ID are
+	// routable. CPA matches the base model first, so the stripped name wins and
+	// the recognized suffix is applied instead of reaching the literal ID.
+	const catalogBody = `{"data":[{"id":"glm-5.3"},{"id":"glm-5.3(low)"},{"id":"glm-5.3(kid)"}]}`
 	f := &fakeCaller{responder: wrapWithCatalog(catalogBody, upstreamRouter(t, map[string]string{
 		"/v1/chat/completions": ccResponseBody,
 	}))}
@@ -342,29 +343,33 @@ func TestExecuteThinkingSuffixLiteralIDLosesToBaseModel(t *testing.T) {
 	if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	env := mustExecute(t, m, "opencode-go/glm-weird(kid)", "openai", []byte(ccRequestBody))
+
+	// A recognized value resolves the base model and overrides the control.
+	env := mustExecute(t, m, "opencode-go/glm-5.3(low)", "openai", []byte(ccRequestBody))
 	if !env.OK {
 		t.Fatalf("envelope = %+v", env.Error)
 	}
 	body := upstreamRequestBody(t, f, pluginabi.MethodHostHTTPDo)
-	// The literal ID is routable on its own, but a recognized suffix value
-	// takes priority: "kid" is not a suffix value, so the literal ID wins.
-	assertField(t, body, "model", "glm-weird(kid)")
-	assertField(t, body, "reasoning_effort", nil)
+	assertField(t, body, "model", "glm-5.3")
+	assertField(t, body, "reasoning_effort", "low")
 
-	// A recognized value on the same parenthesized family resolves the base.
-	env = mustExecute(t, m, "opencode-go/glm-5.3(low)", "openai", []byte(ccRequestBody))
+	// An unrecognized value resolves the base model too and is stripped, while
+	// the body keeps its own control: the literal ID never wins.
+	env = mustExecute(t, m, "opencode-go/glm-5.3(kid)", "openai",
+		[]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"medium"}`))
 	if !env.OK {
 		t.Fatalf("envelope = %+v", env.Error)
 	}
 	body = upstreamRequestBody(t, f, pluginabi.MethodHostHTTPDo)
 	assertField(t, body, "model", "glm-5.3")
-	assertField(t, body, "reasoning_effort", "low")
+	assertField(t, body, "reasoning_effort", "medium")
 }
 
 func TestExecuteThinkingSuffixKeepsLiteralCatalogID(t *testing.T) {
-	// A catalog ID that literally contains parentheses stays reachable when the
-	// stripped name does not resolve; it keeps its identity and no override.
+	// The stripped name does not resolve here, so the literal parenthesized
+	// catalog ID stays reachable: it keeps its identity and no override. This
+	// is a plugin lookup-layer fallback only; CPA resolves the requested model
+	// against its auth registry before the plugin sees it.
 	const catalogBody = `{"data":[{"id":"glm-weird(kid)"}]}`
 	f := &fakeCaller{responder: wrapWithCatalog(catalogBody, upstreamRouter(t, map[string]string{
 		"/v1/chat/completions": ccResponseBody,
@@ -414,6 +419,20 @@ func TestExecuteThinkingSuffixUsesInterceptorPayload(t *testing.T) {
 }
 
 func TestExecuteStreamThinkingSuffix(t *testing.T) {
+	chatFrames := []string{
+		`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}` + "\n\n",
+		"data: [DONE]\n\n",
+	}
+	// Each route gets its own protocol's terminal events, so a completed stream
+	// is asserted: a suffix that broke the conversion would fail the clean close.
+	messagesFrames := []string{
+		"event: message_start\n" + `data: {"type":"message_start","message":{"id":"m1","role":"assistant","content":[]}}` + "\n\n",
+		"event: message_stop\n" + `data: {"type":"message_stop"}` + "\n\n",
+	}
+	responsesFrames := []string{
+		"event: response.created\n" + `data: {"type":"response.created","response":{"id":"resp_1"}}` + "\n\n",
+		"event: response.completed\n" + `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[]}}` + "\n\n",
+	}
 	for _, tc := range []struct {
 		name   string
 		model  string
@@ -421,31 +440,26 @@ func TestExecuteStreamThinkingSuffix(t *testing.T) {
 		body   string
 		path   string
 		want   any
+		frames []string
 	}{
 		{
 			name: "chat route", model: "opencode-go/glm-5.3(high)", format: "openai",
 			body: `{"model":"glm-5.3(high)","stream":true,"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low"}`,
-			path: "reasoning_effort", want: "high",
+			path: "reasoning_effort", want: "high", frames: chatFrames,
 		},
 		{
 			name: "messages route", model: "opencode-go/minimax-m3(high)", format: "claude",
 			body: `{"model":"minimax-m3(high)","stream":true,"max_tokens":65536,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":1000}}`,
-			path: "thinking.budget_tokens", want: float64(24576),
+			path: "thinking.budget_tokens", want: float64(24576), frames: messagesFrames,
 		},
 		{
 			name: "responses route", model: "opencode-go/gpt-5.6-luna(none)", format: "openai-response",
 			body: `{"model":"gpt-5.6-luna(none)","stream":true,"input":"hi","reasoning":{"effort":"low"}}`,
-			path: "reasoning.effort", want: "none",
+			path: "reasoning.effort", want: "none", frames: responsesFrames,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m, f := newStreamManager(t, streamScript{
-				upstreamID: "up-suffix",
-				frames: []string{
-					`data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}` + "\n\n",
-					"data: [DONE]\n\n",
-				},
-			})
+			m, f := newStreamManager(t, streamScript{upstreamID: "up-suffix", frames: tc.frames})
 			resp, err := m.HandleCall("executor.execute_stream",
 				execStreamReqBody(tc.model, tc.format, []byte(tc.body), "down-suffix"))
 			if err != nil {
@@ -460,6 +474,9 @@ func TestExecuteStreamThinkingSuffix(t *testing.T) {
 			if got := dig(t, body, tc.path); got != tc.want {
 				t.Fatalf("%s = %v, want %v; body=%v", tc.path, got, tc.want, body)
 			}
+			// The suffix must not derail the stream: both sides close once
+			// without an error after the protocol's terminal event.
+			assertCleanStreamClose(t, f)
 		})
 	}
 }
