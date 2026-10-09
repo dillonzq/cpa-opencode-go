@@ -44,6 +44,14 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 - **CLIProxyAPI**: `v8.0.0+`
 - **Go Toolchain**: Go 1.26.7+ (with CGO enabled for C-shared build mode)
 
+## Request behavior
+
+- Execute CLIProxyAPI's effective `Payload` in `SourceFormat`, including interceptor changes. Only omitted/null payloads fall back to `OriginalRequest`; an explicit empty payload is validated as empty input; `Format` selects the output protocol.
+- Each upstream HTTP call owns a host operation and its request callback scope. Client disconnection, scope closure, `request-timeout`, and stopped catalog refreshes cancel actual HTTP work. The timeout covers stream opening and consumption together.
+- `plugin.quiesce` rejects new work, cancels active tasks, and drains callbacks. Shutdown waits for every callback to exit before the shared library can unload; a host callback that never returns can therefore delay shutdown indefinitely.
+- EOF before a protocol terminal state reports a stream error instead of success, including partial tool arguments. A known `finish_reason`/`stop_reason` may still end without `[DONE]`/`message_stop`; final SSE data without a trailing separator is processed, and incomplete terminal payloads report an error. Messages requires `type: message_stop`; Responses requires the matching event type and a response with a nonempty `id`, `object: response`, matching terminal `status`, and an `output` array.
+- Session identity uses `canonical_session_id`, then explicit session headers, then the initial user content of the effective input. Existing text/image/tool-result hashes stay compatible. Files, image file references, and unknown native content use stable JSON hashing, without translation validation or content logging. An interceptor changing the initial user content also changes the fallback hash; explicit identity takes precedence.
+
 ## Build
 
 Build the shared library with the `debug` tag for local development.
@@ -145,7 +153,7 @@ plugins:
 | `protocols.messages` | `bool` | `true` | Protocol switch for Messages endpoints. |
 | `protocols.responses` | `bool` | `true` | Protocol switch for Responses endpoints. |
 | `route-overrides` | `map` | `{}` | Map of model ID to `{ protocol: "...", endpoint: "..." }` overriding built-in family routing. Valid protocols: `chat-completions`, `messages`, `responses`. |
-| `request-timeout` | `duration` | `5m` | Upstream HTTP request timeout. Must be positive. |
+| `request-timeout` | `duration` | `5m` | Deadline for upstream HTTP opening and the entire stream; expiry cancels the host operation. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` scheme in `base-url` / `catalog-url` for local testing. |
 
@@ -162,7 +170,7 @@ go test ./.github/scripts
 go test -tags debug ./... -cover
 
 # Run linter / vetting
-go vet ./... ./.github/scripts
+go vet -tags debug ./... ./.github/scripts
 ```
 
 ## Account names and quotas
@@ -174,10 +182,16 @@ Default numbers follow configuration order. Explicit names remain stable when ke
 The usage response contains no email or account identity. The plugin does not infer an email from a key.
 
 New credential files have readable names. Existing auth IDs remain unchanged, and
-legacy generated labels are replaced when parsed. Existing custom labels are preserved
-unless configuration specifies a name. Existing filenames are retained automatically;
+only legacy labels with the exact old prefix (`OpenCode Go credential ` or
+`opencode-go-key-`) followed by a 64-character hexadecimal digest are replaced when parsed.
+Other custom labels are preserved unless configuration specifies a name. Existing filenames are retained automatically;
 stop CLIProxyAPI before renaming an old file to a readable `.json` filename, and keep
 its JSON `id` and all other fields unchanged. Back up the file first.
+
+New filenames avoid case-insensitive collisions by appending a number (for example,
+`Personal-2.json` when `personal.json` exists). Windows reserved device names receive an
+`OpenCode-Go-` prefix (for example, `CON` produces `OpenCode-Go-CON.json`). These rules
+apply on every platform and affect filenames only, preserving the configured account label.
 
 Discover support with `GET /v0/management/quota/providers`, then call
 `POST /v0/management/quota/fetch` with `{"auth_index":"<selected index>"}`.

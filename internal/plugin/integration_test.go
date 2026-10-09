@@ -24,23 +24,27 @@ import (
 // streamed response and tracks its body so stream_read/stream_close drain
 // and release it like the host would.
 type forwardingBridge struct {
-	mu      sync.Mutex
-	streams map[string]*http.Response
-	next    int
+	mu         sync.Mutex
+	streams    map[string]*http.Response
+	next       int
+	operations map[string]context.Context
+	cancels    map[string]context.CancelFunc
+	streamOps  map[string]string
 }
 
 func newForwardingCaller() RawCaller {
-	b := &forwardingBridge{streams: map[string]*http.Response{}}
+	b := &forwardingBridge{streams: map[string]*http.Response{}, operations: map[string]context.Context{}, cancels: map[string]context.CancelFunc{}, streamOps: map[string]string{}}
 	return b.call
 }
 
-func (b *forwardingBridge) perform(wire struct {
-	Method  string      `json:"method"`
-	URL     string      `json:"url"`
-	Headers http.Header `json:"headers"`
-	Body    []byte      `json:"body"`
-}) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(context.Background(), wire.Method, wire.URL, bytes.NewReader(wire.Body))
+func (b *forwardingBridge) perform(wire hostHTTPReq) (*http.Response, error) {
+	b.mu.Lock()
+	ctx := b.operations[wire.OperationID]
+	b.mu.Unlock()
+	if ctx == nil {
+		return nil, fmt.Errorf("operation is not open")
+	}
+	req, err := http.NewRequestWithContext(ctx, wire.Method, wire.URL, bytes.NewReader(wire.Body))
 	if err != nil {
 		return nil, err
 	}
@@ -52,29 +56,43 @@ func (b *forwardingBridge) perform(wire struct {
 	return http.DefaultClient.Do(req)
 }
 
-func (b *forwardingBridge) decode(payload []byte) (struct {
-	Method  string      `json:"method"`
-	URL     string      `json:"url"`
-	Headers http.Header `json:"headers"`
-	Body    []byte      `json:"body"`
-}, error) {
-	var wire struct {
-		Method  string      `json:"method"`
-		URL     string      `json:"url"`
-		Headers http.Header `json:"headers"`
-		Body    []byte      `json:"body"`
-	}
+func (b *forwardingBridge) decode(payload []byte) (hostHTTPReq, error) {
+	var wire hostHTTPReq
 	err := json.Unmarshal(payload, &wire)
 	return wire, err
 }
 
+func (b *forwardingBridge) finishOperation(id string) {
+	b.mu.Lock()
+	cancel := b.cancels[id]
+	delete(b.cancels, id)
+	delete(b.operations, id)
+	b.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (b *forwardingBridge) call(method string, payload []byte) ([]byte, error) {
 	switch method {
+	case pluginabi.MethodHostHTTPOperationOpen:
+		b.mu.Lock()
+		b.next++
+		id := fmt.Sprint(b.next)
+		b.operations[id], b.cancels[id] = context.WithCancel(context.Background())
+		b.mu.Unlock()
+		return hostOK(httpOperationRequest{OperationID: id}), nil
+	case pluginabi.MethodHostHTTPCancel:
+		var req httpOperationRequest
+		_ = json.Unmarshal(payload, &req)
+		b.finishOperation(req.OperationID)
+		return hostOK(struct{}{}), nil
 	case pluginabi.MethodHostHTTPDo:
 		wire, err := b.decode(payload)
 		if err != nil {
 			return hostErr("test", "undecodable host.http.do payload"), nil
 		}
+		defer b.finishOperation(wire.OperationID)
 		resp, err := b.perform(wire)
 		if err != nil {
 			return hostErr("transport", err.Error()), nil
@@ -104,6 +122,7 @@ func (b *forwardingBridge) call(method string, payload []byte) ([]byte, error) {
 		b.next++
 		id := fmt.Sprintf("up-%d", b.next)
 		b.streams[id] = resp
+		b.streamOps[id] = wire.OperationID
 		b.mu.Unlock()
 		start.StreamID = id
 		return hostOK(start), nil
@@ -137,7 +156,10 @@ func (b *forwardingBridge) call(method string, payload []byte) ([]byte, error) {
 				_ = resp.Body.Close()
 				delete(b.streams, req.StreamID)
 			}
+			opID := b.streamOps[req.StreamID]
+			delete(b.streamOps, req.StreamID)
 			b.mu.Unlock()
+			b.finishOperation(opID)
 		}
 		return hostOK(map[string]any{}), nil
 
@@ -187,7 +209,7 @@ var messagesSSEFrames = []string{
 var responsesSSEFrames = []string{
 	"event: response.created\n" + `data: {"type":"response.created","response":{"id":"resp_1"}}` + "\n\n",
 	"event: response.output_text.delta\n" + `data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n",
-	"event: response.completed\n" + `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}` + "\n\n",
+	"event: response.completed\n" + `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[]}}` + "\n\n",
 }
 
 func writeSSE(w http.ResponseWriter, frames []string) {
@@ -397,7 +419,7 @@ func integrationYAML(baseURL string) string {
 func newIntegrationManager(t *testing.T) (*Manager, *fakeCaller, *mockOpenCode, string) {
 	t.Helper()
 	st := newMockOpenCode(t)
-	f := &fakeCaller{responder: newForwardingCaller()}
+	f := &fakeCaller{responder: newForwardingCaller(), passthroughOperations: true}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 	yamlText := integrationYAML(st.srv.URL)
@@ -1061,7 +1083,7 @@ func integrationTwoKeyYAML(baseURL string) string {
 func newTwoKeyManager(t *testing.T) (*Manager, *fakeCaller, *mockOpenCode) {
 	t.Helper()
 	st := newMockOpenCode(t)
-	f := &fakeCaller{responder: newForwardingCaller()}
+	f := &fakeCaller{responder: newForwardingCaller(), passthroughOperations: true}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 	resp, err := m.HandleCall("plugin.register", lifecycleRequestBody(integrationTwoKeyYAML(st.srv.URL)))
@@ -1147,7 +1169,7 @@ func TestNoKeyLeakageE2E(t *testing.T) {
 // key, and the shipped default endpoint is https.
 func TestHTTPSDefaultEnforced(t *testing.T) {
 	st := newMockOpenCode(t)
-	f := &fakeCaller{responder: newForwardingCaller()}
+	f := &fakeCaller{responder: newForwardingCaller(), passthroughOperations: true}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 

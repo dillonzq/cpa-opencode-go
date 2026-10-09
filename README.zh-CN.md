@@ -46,6 +46,14 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 - **CLIProxyAPI**：`v8.0.0+`
 - **Go 工具链**：Go 1.26.7+，构建 C 共享库时需启用 CGO。
 
+## 请求行为
+
+- 按 `SourceFormat` 执行 CLIProxyAPI 的有效 `Payload`，保留拦截器修改。只有缺省或 null Payload 的旧调用才回退到 `OriginalRequest`；显式空 Payload 按空输入校验；`Format` 决定输出协议。
+- 每次上游 HTTP 调用独立持有宿主 operation 与请求 callback scope。客户端断开、scope 结束、`request-timeout` 和目录刷新停止会取消实际 HTTP；流式超时覆盖建立连接与消费流的总时长。
+- `plugin.quiesce` 拒绝新工作、取消活动任务并等待回调退出。Shutdown 等待所有回调结束后才允许卸载动态库，因此永不返回的宿主回调会一直延迟关闭。
+- 流在协议终止状态前 EOF 会报告错误，不会把部分文本或工具参数伪造成成功。已观察到 `finish_reason`/`stop_reason` 后仍兼容缺失 `[DONE]`/`message_stop`；EOF 时会处理没有末尾分隔符的最后一条 SSE 数据；终止事件缺少完整数据时报告错误。Messages 要求 `type: message_stop`；Responses 要求事件类型匹配，嵌套响应具备非空 `id`、`object: response`、匹配的终止 `status` 和 `output` 数组。
+- 会话标识依次采用 `canonical_session_id`、显式会话 header、有效输入中的初始用户内容。已有文本、图片和工具结果的哈希保持兼容；文件、图像文件引用与未知原生内容采用稳定 JSON 哈希，不参与转换校验，也不记录内容。拦截器改变初始用户内容时，fallback 哈希随之改变；显式标识仍优先。
+
 ## 构建
 
 本地开发使用 `debug` 标签构建动态库，发布构建由 CI 完成。
@@ -149,7 +157,7 @@ plugins:
 | `protocols.messages` | `bool` | `true` | Messages 协议开关。 |
 | `protocols.responses` | `bool` | `true` | Responses 协议开关。 |
 | `route-overrides` | `map` | `{}` | 按模型 ID 覆盖 `{ protocol: "...", endpoint: "..." }`。协议可选 `chat-completions`、`messages` 或 `responses`。 |
-| `request-timeout` | `duration` | `5m` | 上游请求超时时间，必须大于零。 |
+| `request-timeout` | `duration` | `5m` | 上游连接建立及完整流的总超时；到期取消宿主 operation，必须大于零。 |
 | `max-response-bytes` | `int64` | `67108864`（64 MiB） | 非流式响应体的字节数上限。 |
 | `allow-http` | `bool` | `false` | 允许 `base-url` 和 `catalog-url` 使用 `http://`，用于本地测试。 |
 
@@ -166,7 +174,7 @@ go test ./.github/scripts
 go test -tags debug ./... -cover
 
 # 运行静态检查
-go vet ./... ./.github/scripts
+go vet -tags debug ./... ./.github/scripts
 ```
 
 本地开发的 debug 构建和验证要求见 [贡献指南](CONTRIBUTING.md)。
@@ -175,7 +183,9 @@ go vet ./... ./.github/scripts
 
 可为每个 `api-keys` 条目设置 `name`，例如 `Personal` 或 `Work`。未设置时，单密钥显示为 **OpenCode Go**，多密钥按配置顺序显示为 **OpenCode Go 1**、**OpenCode Go 2** 等。显式名称不受密钥顺序调整影响。上游额度响应不包含邮箱或账户身份，插件不会从密钥推断邮箱。
 
-新凭证文件使用可读名称。已有凭证 ID 和文件名保持不变；解析时替换旧版自动生成的标签，保留自定义标签，除非配置指定了 `name`。如需手动改名，先备份凭证文件并停止 CLIProxyAPI，再修改 `.json` 文件名，保持 JSON 中的 `id` 和其他字段不变。
+新凭证文件使用可读名称。已有凭证 ID 和文件名保持不变；解析时仅替换由旧前缀（`OpenCode Go credential ` 或 `opencode-go-key-`）加完整 64 位十六进制摘要组成的自动标签，其余自定义标签保留；配置明确指定的 `name` 仍优先。如需手动改名，先备份凭证文件并停止 CLIProxyAPI，再修改 `.json` 文件名，保持 JSON 中的 `id` 和其他字段不变。
+
+新文件名按大小写不敏感规则检查冲突，并追加编号，例如已有 `personal.json` 时生成 `Personal-2.json`。Windows 保留设备名会加上 `OpenCode-Go-` 前缀，例如 `CON` 生成 `OpenCode-Go-CON.json`。这些规则在所有平台生效，仅改变新文件名，不改变账户显示名称。
 
 通过 `GET /v0/management/quota/providers` 查询支持情况，再以 `{"auth_index":"<选中的索引>"}` 调用 `POST /v0/management/quota/fetch`。两者均需 CLIProxyAPI 管理密钥。标准响应包含 `subscription.plan`、`groups[].buckets[].window`、`remainingFraction` 和 `resetTime`。缺失的时间窗口会被省略，无效数据会返回错误，不会填充为零。
 

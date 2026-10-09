@@ -3,6 +3,7 @@ package responses
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/dillonzq/cpa-opencode-go/internal/adapter/shared"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
@@ -17,6 +18,8 @@ import (
 // internal locking. Partial SSE lines are buffered until a blank line
 // completes the `event:`/`data:` pair.
 type StreamConverter struct {
+	done   bool
+	ending bool
 	framer *shared.SSEFramer
 	source string
 
@@ -246,15 +249,26 @@ func (sc *StreamConverter) checkTarget() *errclass.Error {
 
 // Feed consumes one network chunk and returns synthesized client events,
 // whether the upstream stream reached a terminal state, and a classified
-// error for failed/malformed streams (FR-006). Native passthrough frames
-// are forwarded verbatim without JSON validation; conversion targets
-// parse eagerly into typed per-event structs.
+// error for failed/malformed streams (FR-006). Native non-terminal frames
+// are forwarded verbatim; terminal snapshots are validated before forwarding.
+// Conversion targets parse eagerly into typed per-event structs.
 func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr *errclass.Error) {
+	if sc.done {
+		return nil, true, nil
+	}
 	sc.framer.Push(chunk)
 	for {
 		eventType, payload, raw, ok := sc.framer.Next()
 		if !ok {
 			return events, done, nil
+		}
+		if (eventType == "response.completed" || eventType == "response.incomplete" || sc.ending && payload != "") && !shared.IsJSONObject(payload) {
+			return nil, false, errclass.Translation("Responses stream has an incomplete event payload")
+		}
+		if eventType == "response.completed" || eventType == "response.incomplete" {
+			if eErr := validateTerminalPayload(eventType, payload); eErr != nil {
+				return events, false, eErr
+			}
 		}
 		if sc.source == "openai-response" {
 			evs, d, dErr := sc.passthroughEvent(eventType, payload, raw)
@@ -262,7 +276,10 @@ func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr 
 			if dErr != nil {
 				return events, false, dErr
 			}
-			done = done || d
+			if d {
+				sc.done = true
+				return events, true, nil
+			}
 			continue
 		}
 		evs, d, dErr := sc.convertEvent(eventType, payload)
@@ -270,8 +287,69 @@ func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr 
 		if dErr != nil {
 			return events, false, dErr
 		}
-		done = done || d
+		if d {
+			sc.done = true
+			return events, true, nil
+		}
 	}
+}
+
+// A terminal event must carry a coherent response snapshot, not merely an
+// arbitrary JSON object. Validate the fields that establish response identity,
+// terminal status and final output before native passthrough or conversion.
+// Usage and unrelated metadata may be absent; extra fields stay compatible.
+func validateTerminalPayload(eventType, payload string) *errclass.Error {
+	var event struct {
+		Type     string `json:"type"`
+		Response *struct {
+			ID     string          `json:"id"`
+			Object string          `json:"object"`
+			Status string          `json:"status"`
+			Output json.RawMessage `json:"output"`
+		} `json:"response"`
+	}
+	fail := func() *errclass.Error {
+		return errclass.Translation("Responses terminal payload requires matching type and response id, object, status, and output array")
+	}
+	if json.Unmarshal([]byte(payload), &event) != nil || event.Type != eventType || event.Response == nil {
+		return fail()
+	}
+	response := event.Response
+	if strings.TrimSpace(response.ID) == "" || response.Object != "response" || response.Status != strings.TrimPrefix(eventType, "response.") {
+		return fail()
+	}
+	output := strings.TrimSpace(string(response.Output))
+	if !strings.HasPrefix(output, "[") {
+		return fail()
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(response.Output, &items) != nil {
+		return fail()
+	}
+	for _, item := range items {
+		if !shared.IsJSONObject(string(item)) {
+			return fail()
+		}
+	}
+	return nil
+}
+
+// Finish drains the last SSE frame and requires an explicit Responses
+// terminal event. EOF alone cannot complete text or function arguments.
+func (sc *StreamConverter) Finish() ([][]byte, *errclass.Error) {
+	if sc.done {
+		return nil, nil
+	}
+	sc.ending = true
+	sc.framer.End()
+	events, done, eErr := sc.Feed(nil)
+	if eErr != nil {
+		return nil, eErr
+	}
+	if !done {
+		return nil, errclass.Translation("Responses stream ended before a terminal state")
+	}
+	return events, nil
 }
 
 // convertEvent routes one complete SSE frame to a conversion target:
@@ -370,8 +448,8 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 
 // passthroughEvent echoes native Responses frames verbatim (the framer's
 // raw block, byte-identical to the upstream bytes); terminal events flip
-// done. Failure/error payloads are the only ones parsed — best-effort, so
-// an unparseable failure degrades to a retryable upstream error rather
+// done after the common terminal validation. Failure/error payloads are parsed
+// best-effort, so an unparseable failure degrades to a retryable error rather
 // than failing the passthrough contract. Items for tools originally
 // declared as custom restore to custom_tool_call shapes so native clients
 // can dispatch them.

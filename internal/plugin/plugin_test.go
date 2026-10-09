@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -38,15 +39,23 @@ type capturedCall struct {
 }
 
 type fakeCaller struct {
-	mu        sync.Mutex
-	calls     []capturedCall
-	responder func(method string, payload []byte) ([]byte, error)
-	authFiles map[string]string
+	mu                    sync.Mutex
+	calls                 []capturedCall
+	responder             func(method string, payload []byte) ([]byte, error)
+	authFiles             map[string]string
+	operationSeq          int
+	passthroughOperations bool
 }
 
 func (f *fakeCaller) call(method string, payload []byte) ([]byte, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, capturedCall{method: method, payload: payload})
+	if method == pluginabi.MethodHostHTTPOperationOpen && !f.passthroughOperations {
+		f.operationSeq++
+		id := fmt.Sprint(f.operationSeq)
+		f.mu.Unlock()
+		return hostOK(httpOperationRequest{OperationID: id}), nil
+	}
 	f.mu.Unlock()
 	var raw []byte
 	var err error
@@ -790,7 +799,8 @@ func TestRegisterRefreshesWithConfiguredBearer(t *testing.T) {
 // registration must still succeed with an empty routable set (FR-002).
 func TestRegisterWithBlockingCatalogReturnsQuickly(t *testing.T) {
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
 		var wire map[string]any
 		if method == pluginabi.MethodHostHTTPDo && json.Unmarshal(payload, &wire) == nil {
@@ -802,7 +812,7 @@ func TestRegisterWithBlockingCatalogReturnsQuickly(t *testing.T) {
 		return hostOK(map[string]any{}), nil
 	}}
 	m := NewManager(NewHostBridge(f.call))
-	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); _, _ = m.HandleCall("plugin.shutdown", nil) })
 
 	start := time.Now()
 	resp, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML))
@@ -863,66 +873,40 @@ func TestShutdownClearsStateAndStopsTicker(t *testing.T) {
 	}
 }
 
-// TestShutdownDrainsOrphanedHostCallbacks pins the Unix unload-safety fix:
-// handleShutdown waits (bounded) for host-callback goroutines orphaned by
-// timeouts, warns when any are still alive at the deadline, and a follow-up
-// shutdown once the orphan unwinds reports nothing in flight.
+// A stuck callback must hold shutdown until it exits; returning after an
+// arbitrary timeout lets the Unix loader free a still-live FFI frame.
 func TestShutdownDrainsOrphanedHostCallbacks(t *testing.T) {
-	oldDrain := shutdownDrainTimeout
-	shutdownDrainTimeout = 60 * time.Millisecond
-	defer func() { shutdownDrainTimeout = oldDrain }()
-
 	release := make(chan struct{})
 	f := &fakeCaller{responder: func(method string, _ []byte) ([]byte, error) {
-		switch method {
-		case pluginabi.MethodHostLog:
-			return hostOK(map[string]any{}), nil
-		case pluginabi.MethodHostHTTPDo:
-			<-release // wedged host callback, no abandon cleanup attached
-			return hostOK(map[string]any{}), nil
+		if method == pluginabi.MethodHostHTTPDo {
+			<-release
 		}
 		return hostOK(map[string]any{}), nil
 	}}
 	m := NewManager(NewHostBridge(f.call))
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	if _, err := m.bridge.Do(ctx, pluginapi.HTTPRequest{}); err == nil ||
-		!strings.Contains(err.Error(), "timed out") {
-		t.Fatalf("expected wedged Do to time out, got %v", err)
+	defer cancel()
+	if _, err := m.bridge.Do(ctx, pluginapi.HTTPRequest{}); err == nil {
+		t.Fatal("expected timeout")
 	}
-	cancel()
-
-	inFlightWarn := func() int {
-		n := 0
-		for _, c := range f.callsOf(pluginabi.MethodHostLog) {
-			if strings.Contains(string(c.payload), "still in flight") {
-				n++
-			}
-		}
-		return n
+	done := make(chan []byte, 1)
+	go func() { raw, _ := m.HandleCall(pluginabi.MethodPluginShutdown, nil); done <- raw }()
+	select {
+	case <-done:
+		t.Fatal("shutdown returned over a live callback")
+	case <-time.After(80 * time.Millisecond):
 	}
-
-	resp := mustHandle(t, m, "plugin.shutdown", nil)
-	if env := decodeEnv(t, resp); !env.OK || string(env.Result) != "{}" {
-		t.Fatalf("shutdown envelope = %s", resp)
-	}
-	if n := inFlightWarn(); n != 1 {
-		t.Fatalf("in-flight warns = %d, want exactly the stalled-shutdown warn", n)
-	}
-
 	close(release)
-	resp2 := mustHandle(t, m, "plugin.shutdown", nil)
-	if env := decodeEnv(t, resp2); !env.OK {
-		t.Fatalf("second shutdown envelope = %s", resp2)
+	select {
+	case raw := <-done:
+		if !decodeEnv(t, raw).OK {
+			t.Fatalf("shutdown: %s", raw)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not drain")
 	}
-	if n := inFlightWarn(); n != 1 {
-		t.Fatalf("warns after orphan released = %d, want no repeat", n)
-	}
-}
-
-func TestShutdownDrainTimeoutPolicy(t *testing.T) {
-	if shutdownDrainTimeout != 15*time.Second {
-		t.Fatalf("shutdown drain timeout = %s, want 15s", shutdownDrainTimeout)
+	if !decodeEnv(t, mustHandle(t, m, pluginabi.MethodPluginShutdown, nil)).OK {
+		t.Fatal("shutdown not idempotent")
 	}
 }
 
@@ -1075,18 +1059,16 @@ func TestReconfigureFailedRefreshServesViaTicks(t *testing.T) {
 // immediately and shutdown cannot sit holding lifeMu for up to
 // request-timeout behind a hung upstream.
 func TestShutdownAbortsInFlightTickRefresh(t *testing.T) {
-	// The orphaned tick callback stays parked until cleanup releases it;
-	// shrink the unload-safety drain so it cannot dominate this timing
-	// assertion (the ctx-abort property under test is orthogonal).
-	oldDrain := shutdownDrainTimeout
-	shutdownDrainTimeout = 50 * time.Millisecond
-	defer func() { shutdownDrainTimeout = oldDrain }()
 
 	var syncServed atomic.Bool
 	started := make(chan struct{})
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostHTTPCancel {
+			releaseOnce.Do(func() { close(release) })
+		}
 		if method != pluginabi.MethodHostHTTPDo {
 			return hostOK(map[string]any{}), nil
 		}

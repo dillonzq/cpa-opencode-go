@@ -1,3 +1,22 @@
+## Unreleased — executor, lifecycle, and credential fixes
+
+- Keep CLIProxyAPI v8.0.0 as the minimum dependency. Forward per-request `host_callback_id`, open owned HTTP operations, and cancel actual transport on client/scope cancellation, request timeout, and catalog refresh stop. Keep late operation/stream cleanup tracked through completion.
+- Implement `plugin.quiesce`: stop admission, cancel active execution/refresh work, and drain handlers, stream pumps, and FFI callbacks. Shutdown no longer returns after 15 seconds over a live callback; an unresponsive host callback can delay unload indefinitely. Cancellation also closes downstream streams to release backpressure.
+- Execute the host's effective `Payload` using `SourceFormat`, with an absent-payload fallback for older callers. Honor `Format` for output; avoid replaying interceptor input or converting already-prepared input twice.
+- Reject truncated EOF across Chat Completions, Messages, and Responses streams instead of synthesizing success. Preserve known finish/stop reasons without the final marker, process buffered final SSE data, and prevent duplicate terminal events.
+- Separate session extraction from translation validation. Preserve existing supported content hashes and identity precedence, hash files/unknown native content stably, and use effective input for fallback identity (interceptor changes to the initial turn can change that fallback hash). Do not log prompts, file content, or credentials.
+- Add streaming/non-streaming regressions, cancellation/ownership tests, and offline debug C-shared integration tests using the pinned SDK's actual Unix loader, guarded RPC client, callback scopes, and HTTP bridges. Cover independent client cancellation, scope end, timeout, quiesce with backpressure and active catalog refresh, truncated streams, and unload with active HTTP. Live CPA deployments and real upstreams remain untested.
+- Prevent case-insensitive credential filename collisions, including suffixes and other new accounts in the same registration. Preserve existing credential files instead of overwriting them on Windows/macOS.
+- Prefix Windows reserved device basenames (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`) with `OpenCode-Go-` when generating new filenames; account labels remain unchanged.
+- Migrate only legacy labels consisting of the exact old prefix plus a 64-character hexadecimal digest. Preserve custom labels such as `OpenCode Go credential Work` and `opencode-go-key-team`; an explicit configured `name` still takes precedence.
+- Correct the existing upgrade instructions to use the generic v8 quota endpoints and remove the obsolete plugin session-cache instruction. Add naming/label regressions and real-host offline ABI coverage for credential preservation and repeated registration.
+
+- Keep the native ABI test driver in `tests/native_host_test.go`, resolving the project root through Go module metadata. Store the host integration tests as standard `_test.go` files under `testdata` and load them with a Go overlay, replacing the fixture extension and full SDK source copy.
+
+- Review follow-up: reject missing/partial terminal SSE payloads, including native EOF tails after a known finish, and include native `input_image.file_id` in stable session hashes. Distinguish an explicit empty effective payload from an omitted/null payload so interceptor output cannot replay the original request. Add converter, non-stream/stream execution, and real-host ABI regressions.
+
+- Address PR #3 review: require the `message_stop` discriminator and coherent Responses terminal snapshots (`type`, response `id`, `object`, terminal `status`, and an `output` array). Reject empty/unrelated objects before native passthrough or conversion; cover framed and EOF terminals across all output formats with converter and real-host ABI tests.
+
 ## CLIProxyAPI v8
 
 ### Features
@@ -63,6 +82,6 @@ New files use readable names.
 - For manual installation, remove any old `store` block from the renamed configuration so the old repository and version pin are not carried over. For a store-managed installation, install a new entry for `cpa-opencode-go` pointing to `dillonzq/cpa-opencode-go`.
 - Remove all old `opencode-go-cliproxyapi` shared libraries, including versioned filenames such as `opencode-go-cliproxyapi-v0.1.10.dylib`, before installing the new `cpa-opencode-go` binary. Enabling both registers the same provider twice.
 - Keep existing `opencode-go/<model>` IDs and credential records.
-- Restart CLIProxyAPI and hard-refresh Management Center. Quota management requests now use `/v0/management/plugins/cpa-opencode-go/quota-usage`, and the renamed session cache starts empty.
+- Restart CLIProxyAPI and hard-refresh Management Center. Discover quota support with `GET /v0/management/quota/providers`, then fetch the selected credential with `POST /v0/management/quota/fetch`. Both require the management key; the dashboard must support the generic v8 quota API.
 
 **Original upstream changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.1.9...v0.1.10

@@ -8,14 +8,10 @@ package plugin
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -36,7 +32,8 @@ import (
 // ids returned by DoStream are UPSTREAM and never interchangeable (§4).
 type executorRequest struct {
 	pluginapi.ExecutorRequest
-	StreamID string `json:"stream_id,omitempty"`
+	StreamID       string `json:"stream_id,omitempty"`
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 // resolvedExecution carries everything both execution paths need after
@@ -98,7 +95,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "non-stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
-	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, &res.tools)
+	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.inputFormat(), req.effectivePayload(), res.rec.Thinking, &res.tools)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
@@ -106,7 +103,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
 	debugTrace("executor resolved public_model=%s upstream_model=%s route=%s url=%s key_count=%d", req.Model, res.rec.UpstreamID, res.rec.Protocol, url, len(res.cfg.APIKeys))
 	debugTrace("executor sending non-stream url=%s body_len=%d", url, len(upstreamBody))
-	ctx, cancel := context.WithTimeout(context.Background(), res.cfg.RequestTimeout)
+	ctx, cancel := context.WithTimeout(withHostCallbackScope(m.workContext(), req.HostCallbackID), res.cfg.RequestTimeout)
 	defer cancel()
 	resp, err := m.bridge.Do(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
@@ -126,7 +123,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	if int64(len(resp.Body)) > res.cfg.MaxResponseBytes {
 		return classEnvelope(errclass.Translation("response exceeds max-response-bytes")), nil
 	}
-	converted, eErr := convertNonStream(res.rec.Protocol, req.SourceFormat, resp.StatusCode, resp.Body, &res.tools)
+	converted, eErr := convertNonStream(res.rec.Protocol, req.outputFormat(), resp.StatusCode, resp.Body, &res.tools)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
@@ -157,136 +154,6 @@ func upstreamAuthHeaders(route catalog.Route, key, sessionID string) http.Header
 	return h
 }
 
-const emptyOpenCodeSessionID = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
-// resolveOpenCodeSessionID applies the FR-012/AC-H precedence: CPA's canonical
-// identity, an explicit inbound session header, then the existing content hash.
-func resolveOpenCodeSessionID(req executorRequest) (string, *errclass.Error) {
-	if sid, ok := req.Metadata["canonical_session_id"].(string); ok && sid != "" {
-		return sid, nil
-	}
-	for _, name := range []string{
-		"X-Session-Affinity",
-		"X-Opencode-Session",
-		"X-Session-Id",
-		"X-Claude-Code-Session-Id",
-		"Session-Id",
-	} {
-		if sid := req.Headers.Get(name); sid != "" {
-			return sid, nil
-		}
-	}
-	return deriveOpenCodeSessionID(req.SourceFormat, req.OriginalRequest)
-}
-
-// deriveOpenCodeSessionID hashes the model-visible content of the initial user
-// turn before translation (FR-012/AC-H). Metadata is excluded;
-// valid requests without a user turn use the fixed empty-input digest.
-func deriveOpenCodeSessionID(sourceFormat string, originalRequest []byte) (string, *errclass.Error) {
-	var content strings.Builder
-	appendParts := func(raw json.RawMessage, target string) *errclass.Error {
-		parts, eErr := shared.DecodeStringOrParts(raw, target)
-		if eErr != nil {
-			return eErr
-		}
-		for _, part := range parts {
-			if part.ImageURL != "" {
-				content.WriteString(part.ImageURL)
-			} else {
-				content.WriteString(part.Text)
-			}
-		}
-		return nil
-	}
-
-	switch sourceFormat {
-	case "openai":
-		var req shared.ChatCompletionsRequest
-		if err := json.Unmarshal(originalRequest, &req); err != nil {
-			return "", errclass.Translation("malformed openai request JSON: " + err.Error())
-		}
-		started := false
-		for _, msg := range req.Messages {
-			if !started {
-				if msg.Role == "system" || msg.Role == "developer" {
-					continue
-				}
-				if msg.Role != "user" {
-					break
-				}
-				started = true
-			} else if msg.Role != "user" {
-				break
-			}
-			if eErr := appendParts(msg.Content, "/v1/chat/completions"); eErr != nil {
-				return "", eErr
-			}
-		}
-	case "claude":
-		req, eErr := shared.DecodeClaudeMessages(originalRequest)
-		if eErr != nil {
-			return "", eErr
-		}
-		started := false
-		for _, msg := range req.Messages {
-			if !started {
-				if msg.Role != "user" {
-					continue
-				}
-				started = true
-			} else if msg.Role != "user" {
-				break
-			}
-			if msg.Content != "" {
-				content.WriteString(msg.Content)
-			}
-			for _, block := range msg.Blocks {
-				switch block.Kind {
-				case "text":
-					content.WriteString(block.Text)
-				case "image":
-					content.WriteString(block.URL)
-				case "tool_result":
-					text, eErr := shared.ToolResultText(block.Result, "tool messages carry text only")
-					if eErr != nil {
-						return "", eErr
-					}
-					content.WriteString(text)
-				}
-			}
-		}
-	case "openai-response":
-		var req shared.ResponsesRequest
-		if err := json.Unmarshal(originalRequest, &req); err != nil {
-			return "", errclass.Translation("malformed openai-response request JSON: " + err.Error())
-		}
-		items, eErr := req.DecodeInputItems()
-		if eErr != nil {
-			return "", eErr
-		}
-		started := false
-		for _, item := range items {
-			isUserMessage := item.Role == "user" && (item.Type == "message" || item.Type == "")
-			if !started {
-				if !isUserMessage {
-					continue
-				}
-				started = true
-			} else if !isUserMessage {
-				break
-			}
-			if eErr := appendParts(item.Content, "/v1/responses"); eErr != nil {
-				return "", eErr
-			}
-		}
-	default:
-		return "", shared.UnsupportedFormat(sourceFormat, "OpenCode Go session derivation")
-	}
-
-	digest := sha256.Sum256([]byte(content.String()))
-	return hex.EncodeToString(digest[:]), nil
-}
-
 // convertNonStream routes one upstream response to its adapter's uniform
 // translator: every adapter owns status classification (>=400 → §7
 // classified errors), native passthrough, and cross-format conversion for
@@ -315,6 +182,7 @@ func classEnvelope(e *errclass.Error) []byte {
 // converters: feed one upstream SSE chunk, get translated client events.
 type streamConverter interface {
 	Feed(chunk []byte) (events [][]byte, done bool, eErr *errclass.Error)
+	Finish() ([][]byte, *errclass.Error)
 }
 
 // Compile-time proof the close-without-terminal Flush seam (F5) picks up
@@ -362,15 +230,20 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 	debugTrace("executor session mode=%s source_format=%s x_opencode_session=%s fallback=%t", "stream", req.SourceFormat, sessionID, sessionID == emptyOpenCodeSessionID)
-	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.SourceFormat, req.OriginalRequest, res.rec.Thinking, &res.tools)
+	upstreamBody, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.inputFormat(), req.effectivePayload(), res.rec.Thinking, &res.tools)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
 
 	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
 	debugTrace("executor sending stream url=%s body_len=%d", url, len(upstreamBody))
-	ctx, cancel := context.WithTimeout(context.Background(), res.cfg.RequestTimeout)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(withHostCallbackScope(m.workContext(), req.HostCallbackID), res.cfg.RequestTimeout)
+	owned := false
+	defer func() {
+		if !owned {
+			cancel()
+		}
+	}()
 	st, _, id, err := m.bridge.DoStream(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
 		URL:     url,
@@ -384,30 +257,43 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	if st >= 400 {
 		var body []byte
 		if id != "" {
-			watchdog := time.AfterFunc(res.cfg.RequestTimeout, func() {
-				_ = m.bridge.StreamClose(id)
-			})
+			var once sync.Once
+			closeUpstream := func() { once.Do(func() { _ = m.bridge.StreamClose(id) }) }
+			watchDone, watchExited := make(chan struct{}), make(chan struct{})
+			go func() {
+				defer close(watchExited)
+				select {
+				case <-ctx.Done():
+					closeUpstream()
+				case <-watchDone:
+				}
+			}()
 			body, _, _, _ = m.bridge.StreamRead(id)
-			watchdog.Stop()
-			_ = m.bridge.StreamClose(id)
+			closeUpstream()
+			close(watchDone)
+			<-watchExited
 		}
 		return classEnvelope(shared.UpstreamStatusError(st, body)), nil
 	}
 
 	downID := req.StreamID
+	owned = true
+	m.work.Add(1) // the admitted handler still holds a work count
 	if m.bridge != nil {
 		m.bridge.inFlight.Add(1)
 	}
 	go func() {
+		defer m.work.Done()
+		defer cancel()
 		if m.bridge != nil {
 			defer m.bridge.inFlight.Done()
 		}
-		m.pumpStream(downID, id, res, req.SourceFormat)
+		m.pumpStreamContext(ctx, downID, id, res, req.outputFormat())
 	}()
 	return okEnvelope(struct{}{}), nil
 }
 
-func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, sourceFormat string) {
+func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID string, res *resolvedExecution, sourceFormat string) {
 	var closeOnce sync.Once
 	closeStreams := func(downErrMsg string) {
 		closeOnce.Do(func() {
@@ -417,17 +303,17 @@ func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, 
 	}
 	defer closeStreams("")
 
-	var aborted atomic.Bool
-	watchdog := time.AfterFunc(res.cfg.RequestTimeout, func() {
-		defer func() {
-			if r := recover(); r != nil && m.bridge != nil {
-				_ = m.bridge.Log("error", "stream watchdog panicked", nil)
-			}
-		}()
-		aborted.Store(true)
-		_ = m.bridge.StreamClose(upstreamID)
-	})
-	defer watchdog.Stop()
+	watchDone := make(chan struct{})
+	watchExited := make(chan struct{})
+	go func() {
+		defer close(watchExited)
+		select {
+		case <-ctx.Done():
+			closeStreams("stream canceled or exceeded request-timeout")
+		case <-watchDone:
+		}
+	}()
+	defer func() { close(watchDone); <-watchExited }()
 
 	conv := newStreamConverter(res.rec.Protocol, sourceFormat, &res.tools)
 	var (
@@ -439,8 +325,8 @@ func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, 
 		payload, readErrMsg, closed, err := m.bridge.StreamRead(upstreamID)
 		debugTrace("executor stream read chunk_len=%d closed=%t readErrMsg=%q err=%v", len(payload), closed, readErrMsg, err)
 		upstreamClosed = closed
-		if aborted.Load() {
-			closeStreams(errclass.Redact("stream exceeded request-timeout"))
+		if ctx.Err() != nil {
+			closeStreams("stream canceled or exceeded request-timeout")
 			return
 		}
 		if err != nil {
@@ -472,12 +358,13 @@ func (m *Manager) pumpStream(downID, upstreamID string, res *resolvedExecution, 
 	}
 	debugTrace("executor stream loop end convDone=%t upstreamClosed=%t", convDone, upstreamClosed)
 	if !convDone && upstreamClosed {
-		if flusher, ok := conv.(interface{ Flush() [][]byte }); ok {
-			flushed := flusher.Flush()
-			if emitErr := m.emitAll(downID, flushed); emitErr != nil {
-				closeStreams(errclass.Redact(emitErr.Error()))
-				return
-			}
+		events, finishErr := conv.Finish()
+		if finishErr != nil {
+			closeStreams(errclass.Redact(finishErr.Message))
+			return
+		}
+		if emitErr := m.emitAll(downID, events); emitErr != nil {
+			closeStreams(errclass.Redact(emitErr.Error()))
 		}
 	}
 }

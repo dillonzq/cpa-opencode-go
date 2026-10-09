@@ -24,6 +24,7 @@ type StreamConverter struct {
 	sourceFormat string
 	lineBuf      []byte // partial SSE line carried across Feed calls
 	done         bool
+	ending       bool
 
 	started      bool // message_start / first chunk seen
 	id           string
@@ -49,12 +50,12 @@ type StreamConverter struct {
 // argument fragments so the terminal response.completed output carries the
 // complete call (FR-006).
 type streamTool struct {
-	blockIndex int
-	id         string
-	name       string
-	args       strings.Builder
-	stopped    bool // content_block_stop emitted
-	customEmitted int // custom_tool_call_input bytes already emitted as deltas
+	blockIndex    int
+	id            string
+	name          string
+	args          strings.Builder
+	stopped       bool // content_block_stop emitted
+	customEmitted int  // custom_tool_call_input bytes already emitted as deltas
 }
 
 // NewStreamConverter returns a converter translating Chat Completions
@@ -77,6 +78,9 @@ func NewStreamConverter(sourceFormat string, tools ...*shared.ResponseTools) *St
 // malformed chunks (FR-006). Errors carry at most an 80-character
 // redacted snippet — never the full upstream body.
 func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr *errclass.Error) {
+	if sc.done {
+		return nil, true, nil
+	}
 	sc.lineBuf = append(sc.lineBuf, chunk...)
 	for {
 		i := bytes.IndexByte(sc.lineBuf, '\n')
@@ -98,6 +102,11 @@ func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr 
 }
 
 func (sc *StreamConverter) handleLine(line string) ([][]byte, *errclass.Error) {
+	if sc.ending {
+		if data, ok := sseData(line); ok && data != "" && !shared.IsSSEDone(data) && !shared.IsJSONObject(data) {
+			return nil, errclass.Translation("Chat Completions stream ended with an incomplete event payload")
+		}
+	}
 	switch sc.sourceFormat {
 	case "openai":
 		return sc.passthroughLine(line), nil
@@ -118,7 +127,7 @@ func (sc *StreamConverter) handleLine(line string) ([][]byte, *errclass.Error) {
 // message_delta; Responses synthesis emits response.completed. One-shot:
 // later calls return nothing, as does any call with no pending terminal.
 func (sc *StreamConverter) Flush() [][]byte {
-	if sc.flushed {
+	if sc.flushed || sc.done || !sc.finished {
 		return nil
 	}
 	sc.flushed = true
@@ -140,6 +149,26 @@ func (sc *StreamConverter) Flush() [][]byte {
 	default:
 		return nil
 	}
+}
+
+// Finish processes a final unterminated line and rejects EOF before a
+// finish_reason or [DONE]. Existing finish-without-[DONE] remains supported.
+func (sc *StreamConverter) Finish() ([][]byte, *errclass.Error) {
+	if sc.done || sc.flushed {
+		return nil, nil
+	}
+	sc.ending = true
+	events, done, eErr := sc.Feed([]byte("\n"))
+	if eErr != nil {
+		return nil, eErr
+	}
+	if done {
+		return events, nil
+	}
+	if !sc.finished {
+		return nil, errclass.Translation("Chat Completions stream ended before a terminal state")
+	}
+	return append(events, sc.Flush()...), nil
 }
 
 // sseData extracts a data-line payload; ok is false for non-data lines
@@ -174,6 +203,14 @@ func (sc *StreamConverter) passthroughLine(line string) [][]byte {
 	}
 	if data == "" {
 		return nil
+	}
+	var chunk ccChunk
+	if json.Unmarshal([]byte(data), &chunk) == nil {
+		for _, choice := range chunk.Choices {
+			if choice.FinishReason != "" {
+				sc.finished = true
+			}
+		}
 	}
 	return [][]byte{[]byte(data)}
 }

@@ -38,6 +38,10 @@ type authRecorder struct {
 }
 
 func (r *authRecorder) call(method string, payload []byte) ([]byte, error) {
+	if method == pluginabi.MethodHostHTTPOperationOpen {
+		return hostOK(httpOperationRequest{OperationID: "catalog-operation"}), nil
+	}
+
 	if method == pluginabi.MethodHostLog {
 		r.mu.Lock()
 		r.logs = append(r.logs, append([]byte(nil), payload...))

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/dillonzq/cpa-opencode-go/internal/adapter/responses"
+	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
@@ -100,8 +102,8 @@ func TestDeriveOpenCodeSessionIDCrossFormatParityAndErrors(t *testing.T) {
 			t.Errorf("%s = %q, %v; want %q", format, got, eErr, want)
 		}
 	}
-	if _, eErr := deriveOpenCodeSessionID("openai", []byte(`{"messages":[{"role":"user","content":[{"type":"audio"}]}]}`)); eErr == nil {
-		t.Fatal("unsupported content must fail derivation")
+	if _, eErr := deriveOpenCodeSessionID("openai", []byte(`{"messages":[{"role":"user","content":[{"type":"audio"}]}]}`)); eErr != nil {
+		t.Fatalf("native unknown content must not fail derivation: %v", eErr)
 	}
 	if _, eErr := deriveOpenCodeSessionID("openai", []byte(`{"messages":`)); eErr == nil {
 		t.Fatal("malformed content must fail derivation")
@@ -170,5 +172,59 @@ func TestDeriveOpenCodeSessionIDInvariants(t *testing.T) {
 	different, dErr := deriveOpenCodeSessionID("openai", []byte(`{"messages":[{"role":"user","content":"different"}]}`))
 	if dErr != nil || different == gotBase {
 		t.Fatalf("distinct initial content did not change session: %q/%q, error %v", gotBase, different, dErr)
+	}
+}
+
+func TestSessionUnknownNativeContentStableAndDistinct(t *testing.T) {
+	for _, format := range []string{"openai", "claude", "openai-response"} {
+		field := "messages"
+		if format == "openai-response" {
+			field = "input"
+		}
+		bodies := []string{
+			`{"` + field + `":[{"role":"user","content":[{"type":"input_file","file_id":"file_a","n":9007199254740993}]}]}`,
+			`{"` + field + `":[{"content":[{"n":9007199254740993,"file_id":"file_a","type":"input_file","cache_control":{"type":"ephemeral"}}],"role":"user"}]}`,
+			`{"` + field + `":[{"role":"user","content":[{"type":"input_file","file_id":"file_b","n":9007199254740993}]}]}`,
+			`{"` + field + `":[{"role":"user","content":[{"type":"input_file","file_id":"file_a","n":9007199254740992}]}]}`,
+		}
+		ids := make([]string, len(bodies))
+		for i, body := range bodies {
+			var eErr *errclass.Error
+			ids[i], eErr = deriveOpenCodeSessionID(format, []byte(body))
+			if eErr != nil {
+				t.Fatal(eErr)
+			}
+		}
+		if ids[0] != ids[1] || ids[0] == ids[2] || ids[0] == ids[3] || ids[0] == emptyOpenCodeSessionID {
+			t.Fatalf("%s unstable or collapsed native content hashes", format)
+		}
+	}
+}
+
+func TestSessionIgnoresUnrelatedNativeValidation(t *testing.T) {
+	body := []byte(`{"system":[{"type":"future_system","value":"x"}],"tool_choice":{"type":"future_choice"},"messages":[{"role":"user","content":"same"},{"role":"assistant","content":[{"type":"image","source":{"type":"future"}}]}]}`)
+	got, eErr := deriveOpenCodeSessionID("claude", body)
+	if eErr != nil || got != sessionDigest("same") {
+		t.Fatal("session derivation validated unrelated protocol fields")
+	}
+}
+
+func TestNativeImageFileIDParticipatesInSessionHash(t *testing.T) {
+	bodyA := []byte(`{"input":[{"role":"user","content":[{"type":"input_image","file_id":"image_file_a"}]}]}`)
+	bodyB := []byte(`{"input":[{"role":"user","content":[{"type":"input_image","file_id":"image_file_b"}]}]}`)
+	for _, body := range [][]byte{bodyA, bodyB} {
+		if _, eErr := responses.BuildRequest("gpt-5.6-luna", "openai-response", body, nil); eErr != nil {
+			t.Fatal("native adapter rejected image file reference")
+		}
+	}
+	a, aErr := deriveOpenCodeSessionID("openai-response", bodyA)
+	b, bErr := deriveOpenCodeSessionID("openai-response", bodyB)
+	if aErr != nil || bErr != nil || a == b || a == emptyOpenCodeSessionID || b == emptyOpenCodeSessionID {
+		t.Fatal("native image file references collapsed to the same/empty session hash")
+	}
+	reordered := []byte(`{ "input": [{"content":[{"file_id":"image_file_a", "type":"input_image"}], "role":"user"}] }`)
+	same, sameErr := deriveOpenCodeSessionID("openai-response", reordered)
+	if sameErr != nil || same != a {
+		t.Fatal("image file session hash is unstable")
 	}
 }

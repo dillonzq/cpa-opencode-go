@@ -642,9 +642,8 @@ func TestExecuteStreamHappyPathClaudeSource(t *testing.T) {
 	}
 }
 
-func TestExecuteStreamCleanCloseWithoutTerminalFrame(t *testing.T) {
-	// Upstream ends (bridge done) without sending [DONE]: the executor must
-	// flush the converter, close both streams cleanly, and report success.
+func TestExecuteStreamEOFWithoutTerminalFails(t *testing.T) {
+	// EOF without finish_reason or [DONE] is truncated, even after text.
 	m, f := newStreamManager(t, streamScript{
 		upstreamID: "up-5",
 		frames: []string{
@@ -665,7 +664,7 @@ func TestExecuteStreamCleanCloseWithoutTerminalFrame(t *testing.T) {
 		t.Fatalf("upstream closes = %d", got)
 	}
 	downCloses := f.callsOf(pluginabi.MethodHostStreamClose)
-	if len(downCloses) != 1 || strings.Contains(string(downCloses[0].payload), `"error"`) {
+	if len(downCloses) != 1 || !strings.Contains(string(downCloses[0].payload), `"error"`) {
 		t.Fatalf("downstream closes = %v", downCloses)
 	}
 }
@@ -970,9 +969,8 @@ func TestExecuteStreamEmitFailsMidstream(t *testing.T) {
 	}
 }
 
-func TestExecuteStreamPartialLineDroppedOnCleanClose(t *testing.T) {
-	// No trailing newline and no [DONE]: the buffered partial line never
-	// formed an SSE event, so the stream still ends cleanly.
+func TestExecuteStreamPartialLineAtEOFFails(t *testing.T) {
+	// Residual malformed data at EOF must not be silently discarded.
 	m, f := newStreamManager(t, streamScript{
 		upstreamID: "up-9",
 		frames:     []string{"data: {truncated"},
@@ -988,8 +986,8 @@ func TestExecuteStreamPartialLineDroppedOnCleanClose(t *testing.T) {
 	}
 	m.bridge.WaitForInFlight(5 * time.Second)
 	downCloses := f.callsOf(pluginabi.MethodHostStreamClose)
-	if len(downCloses) != 1 || strings.Contains(string(downCloses[0].payload), `"error"`) {
-		t.Fatalf("downstream must close cleanly: %v", downCloses)
+	if len(downCloses) != 1 || !strings.Contains(string(downCloses[0].payload), `"error"`) {
+		t.Fatalf("truncated stream must fail: %v", downCloses)
 	}
 	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamClose)); got != 1 {
 		t.Fatalf("upstream closes = %d", got)
@@ -1641,7 +1639,7 @@ func TestExecuteStreamBlockedEmitCannotWedgeTheProducer(t *testing.T) {
 	var reads atomic.Int32
 	f := &fakeCaller{}
 	m := NewManager(NewHostBridge(f.call))
-	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+	t.Cleanup(func() { drain(); _, _ = m.HandleCall("plugin.shutdown", nil) })
 	f.responder = wrapWithCatalog(multiRouteCatalog, func(method string, _ []byte) ([]byte, error) {
 		switch method {
 		case pluginabi.MethodHostHTTPDoStream:

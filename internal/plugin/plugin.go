@@ -48,7 +48,13 @@ type Manager struct {
 
 	// lifeMu serializes whole register/reconfigure/shutdown sequences so
 	// their stop-wait-install steps cannot interleave into orphaned tickers.
-	lifeMu sync.Mutex
+	lifeMu     sync.Mutex
+	drainMu    sync.Mutex
+	workMu     sync.Mutex
+	work       sync.WaitGroup
+	quiescing  bool
+	workCtx    context.Context
+	cancelWork context.CancelFunc
 
 	mu  sync.RWMutex
 	cfg config.Config
@@ -77,11 +83,24 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 			err = nil
 		}
 	}()
+	if method != pluginabi.MethodPluginShutdown && method != pluginabi.MethodPluginQuiesce {
+		m.workMu.Lock()
+		if m.quiescing {
+			m.workMu.Unlock()
+			return ErrEnvelope("plugin_quiescing", "plugin is stopping"), nil
+		}
+		m.initWorkContextLocked()
+		m.work.Add(1)
+		m.workMu.Unlock()
+		defer m.work.Done()
+	}
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
 		return m.handleLifecycle(request)
 	case pluginabi.MethodModelStatic, pluginabi.MethodModelForAuth:
 		return m.handleModels()
+	case pluginabi.MethodPluginQuiesce:
+		return m.handleQuiesce(false)
 	case pluginabi.MethodPluginShutdown:
 		return m.handleShutdown()
 	case pluginabi.MethodExecutorExecute:
@@ -135,11 +154,14 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 	case pluginabi.MethodQuotaDescribe:
 		return okEnvelope(pluginapi.QuotaDescribeResponse{SupportedProviders: []string{ProviderID}, DisplayName: "OpenCode Go"}), nil
 	case pluginabi.MethodQuotaFetch:
-		var req pluginapi.QuotaFetchRequest
+		var req struct {
+			pluginapi.QuotaFetchRequest
+			HostCallbackID string `json:"host_callback_id,omitempty"`
+		}
 		if json.Unmarshal(request, &req) != nil {
 			return ErrEnvelope("invalid_request", "malformed quota request"), nil
 		}
-		result, err := m.FetchQuota(context.Background(), req)
+		result, err := m.FetchQuota(withHostCallbackScope(m.workContext(), req.HostCallbackID), req.QuotaFetchRequest)
 		if err != nil {
 			return ErrEnvelope("quota_failure", err.Error()), nil
 		}
@@ -281,7 +303,7 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	m.lifeMu.Lock()
 	defer m.lifeMu.Unlock()
 	debugTrace("lifecycle config_loaded key_count=%d prefix_enabled=%t prefix=%s", len(cfg.APIKeys), cfg.ModelPrefix.Enabled, cfg.ModelPrefix.Value)
-	ctx, cancel := context.WithTimeout(context.Background(), registerRefreshTimeout)
+	ctx, cancel := context.WithTimeout(m.workContext(), registerRefreshTimeout)
 	defer cancel()
 	if err := m.materializeAuthRecords(ctx, cfg); err != nil {
 		return ErrEnvelope("auth_materialization_failed", err.Error()), nil
@@ -293,7 +315,7 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 		client = m.bridge
 	}
 	mgr := catalog.New(cfg, client)
-	refreshErr := refreshOnce(context.Background(), mgr, m.bridge, registerRefreshTimeout, cfg)
+	refreshErr := refreshOnce(m.workContext(), mgr, m.bridge, registerRefreshTimeout, cfg)
 	debugTrace("lifecycle refresh_complete model_count=%d refresh_error=%t", len(mgr.Models()), refreshErr != nil)
 
 	// Retire any running loop and wait for its exit outside m.mu: a mid-refresh
@@ -432,31 +454,50 @@ func (m *Manager) handleModels() ([]byte, error) {
 	return okEnvelope(pluginapi.ModelResponse{Provider: ProviderID, Models: models}), nil
 }
 
-// shutdownDrainTimeout bounds how long handleShutdown waits for orphaned
-// host-callback goroutines (timed-out callbacks and their abandon/drain
-// cleanup) to finish before returning. Package var so tests can shrink it.
-var shutdownDrainTimeout = 15 * time.Second
+// Work admission and cancellation share one lock: after quiescing is set,
+// no new producer can race a zero-count Wait. Async stream pumps transfer
+// ownership before the admitted executor handler releases its count.
+func (m *Manager) initWorkContextLocked() {
+	if m.workCtx == nil {
+		m.workCtx, m.cancelWork = context.WithCancel(context.Background())
+	}
+}
+func (m *Manager) workContext() context.Context {
+	m.workMu.Lock()
+	defer m.workMu.Unlock()
+	m.initWorkContextLocked()
+	return m.workCtx
+}
 
-// handleShutdown stops the refresh loop, drains orphaned host callbacks,
-// and clears state. The drain matters on Unix: the SDK loader frees host_api
-// and dlclose's the plugin immediately after this export returns
-// (loader_unix.go), so a goroutine still calling into the host would crash
-// the process — see COMPATIBILITY.md limitations.
-func (m *Manager) handleShutdown() ([]byte, error) {
+func (m *Manager) handleShutdown() ([]byte, error) { return m.handleQuiesce(true) }
+
+func (m *Manager) handleQuiesce(shutdown bool) ([]byte, error) {
+	m.drainMu.Lock()
+	defer m.drainMu.Unlock()
+	m.workMu.Lock()
+	m.initWorkContextLocked()
+	m.quiescing = true
+	m.cancelWork()
+	m.workMu.Unlock()
+	// Do not hold lifeMu while waiting: an admitted reconfigure may need it
+	// to exit. Its HTTP operations already see the canceled work context.
+	m.work.Wait()
 	m.lifeMu.Lock()
 	defer m.lifeMu.Unlock()
-	oldDone := m.closeStop()
-	if oldDone != nil {
-		<-oldDone
+	if done := m.closeStop(); done != nil {
+		<-done
 	}
-	if m.bridge != nil && !m.bridge.WaitForInFlight(shutdownDrainTimeout) {
-		// Non-Windows unload during this residual window can crash the
-		// host; the warn makes the stall visible without blocking forever.
-		_ = m.bridge.Log("warn", "shutdown proceeding with host callbacks still in flight", nil)
+	if m.bridge != nil {
+		// The host closes HTTP resources before shutdown. Never return over a
+		// live FFI frame, even when a broken non-HTTP callback refuses to exit:
+		// Unix frees host_api and dlclose's immediately after this export.
+		m.bridge.inFlight.Wait()
 	}
-	m.mu.Lock()
-	m.cfg, m.mgr = config.Config{}, nil
-	m.mu.Unlock()
+	if shutdown {
+		m.mu.Lock()
+		m.cfg, m.mgr = config.Config{}, nil
+		m.mu.Unlock()
+	}
 	return okEnvelope(struct{}{}), nil
 }
 
@@ -470,7 +511,7 @@ func (m *Manager) startRefreshLoop(cfg config.Config, mgr *catalog.Manager, inte
 	// the old config's request-timeout expires. The watcher goroutine is
 	// required because the loop body blocks inside refreshOnce while a tick
 	// runs and cannot select on stop itself.
-	stopCtx, cancel := context.WithCancel(context.Background())
+	stopCtx, cancel := context.WithCancel(m.workContext())
 	go func() {
 		<-stop
 		cancel()
@@ -518,7 +559,7 @@ func (m *Manager) closeStop() chan struct{} {
 // refreshOnce runs one bounded catalog refresh. Catalog refresh is not a client
 // request, so the fallback uses the first configured key only and has no client
 // selection, rotation, cooldown, or retry state. parent bounds-and-cancels
-// the attempt: the lifecycle path passes context.Background() plus
+// the attempt: the lifecycle path passes the manager work context plus
 // registerRefreshTimeout; ticker ticks pass the loop's stop-derived context
 // plus the full request-timeout, so close(stop) aborts an in-flight tick
 // (F4). On failure it logs a warn via host.log — error text is a redacted
@@ -581,11 +622,34 @@ func availableAuthName(label string, existing map[string]struct{}) string {
 	if len(runes) > 80 {
 		base = string(runes[:80])
 	}
+	// Device basenames remain reserved when followed by .json on Windows.
+	// Escape on all platforms so credential names stay portable.
+	if isWindowsDeviceName(base) {
+		base = "OpenCode-Go-" + base
+	}
 	name := base + ".json"
 	for n := 2; ; n++ {
-		if _, exists := existing[name]; !exists {
+		collision := false
+		for existingName := range existing {
+			if strings.EqualFold(name, existingName) {
+				collision = true
+				break
+			}
+		}
+		if !collision {
 			return name
 		}
 		name = fmt.Sprintf("%s-%d.json", base, n)
 	}
+}
+
+// base has already been sanitized: no dots, spaces, or superscript digits.
+// https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+func isWindowsDeviceName(base string) bool {
+	upper := strings.ToUpper(base)
+	switch upper {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	return len(upper) == 4 && (upper[:3] == "COM" || upper[:3] == "LPT") && upper[3] >= '1' && upper[3] <= '9'
 }

@@ -33,7 +33,9 @@ func TestBridgeCallTimeout(t *testing.T) {
 		!strings.Contains(err.Error(), "host call host.http.do timed out") {
 		t.Fatalf("Do err = %v", err)
 	}
-	if _, _, _, err := b.DoStream(ctx, pluginapi.HTTPRequest{}); err == nil ||
+	streamCtx, streamCancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer streamCancel()
+	if _, _, _, err := b.DoStream(streamCtx, pluginapi.HTTPRequest{}); err == nil ||
 		!strings.Contains(err.Error(), "host call host.http.do_stream timed out") {
 		t.Fatalf("DoStream err = %v", err)
 	}

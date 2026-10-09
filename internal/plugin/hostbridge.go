@@ -32,22 +32,26 @@ type HostBridge struct {
 	// because Unix loaders free host_api and dlclose the plugin as soon as
 	// the shutdown export returns; any goroutine still calling into the
 	// host after that would crash the process.
-	inFlight sync.WaitGroup
+	inFlight         sync.WaitGroup
+	streamMu         sync.Mutex
+	streamOperations map[string]*httpOperation
 }
 
 // NewHostBridge wraps the injected raw host caller so the bridge satisfies
 // catalog.HostClient. main.go wires it to the C host API after init;
 // tests inject fakes.
 func NewHostBridge(call RawCaller) *HostBridge {
-	return &HostBridge{call: call}
+	return &HostBridge{call: call, streamOperations: make(map[string]*httpOperation)}
 }
 
 // hostHTTPReq is the wire shape accepted by host.http.do / do_stream.
 type hostHTTPReq struct {
-	Method  string      `json:"method"`
-	URL     string      `json:"url"`
-	Headers http.Header `json:"headers"`
-	Body    []byte      `json:"body"`
+	Method         string      `json:"method"`
+	URL            string      `json:"url"`
+	Headers        http.Header `json:"headers"`
+	Body           []byte      `json:"body"`
+	HostCallbackID string      `json:"host_callback_id,omitempty"`
+	OperationID    string      `json:"operation_id,omitempty"`
 }
 
 type hostAuthListResponse struct {
@@ -131,10 +135,9 @@ func decodeEnvelope(raw []byte) (pluginabi.Envelope, error) {
 }
 
 // callWithTimeout runs one host callback under the attempt deadline. On ctx
-// expiry it returns a timeout-classified error immediately; the orphaned
-// callback goroutine's eventual result is discarded — the underlying host
-// HTTP client governs actual teardown, and the goroutine exits when it
-// returns (buffered channel, so it never leaks). The goroutine also
+// expiry it returns a timeout-classified error. HTTP callers independently
+// cancel their owned host operation; residual callbacks and cleanup remain
+// tracked until they actually exit. The goroutine also
 // recovers panics: a host-boundary crash must degrade to a redacted error,
 // never escape into the host process.
 func (b *HostBridge) callWithTimeout(ctx context.Context, method string, payload []byte) ([]byte, error) {
@@ -228,20 +231,20 @@ func (b *HostBridge) callWithTimeoutResult(ctx context.Context, method string, p
 				// never outruns the late-ID stream_close.
 				settle()
 			}()
-			return nil, false, fmt.Errorf("host call %s timed out", method)
+			return nil, false, fmt.Errorf("host call %s timed out: %w", method, ctx.Err())
 		}
 		// No abandon func: only the callback goroutine's exit remains.
 		settle()
-		return nil, false, fmt.Errorf("host call %s timed out", method)
+		return nil, false, fmt.Errorf("host call %s timed out: %w", method, ctx.Err())
 	}
 }
 
 // WaitForInFlight blocks until every in-flight host-callback invocation has
 // fully completed — including callbacks orphaned past their deadline and
 // their abandon/drain cleanup — or timeout elapses, returning false on
-// timeout (sync.WaitGroup has no timed wait). handleShutdown calls this so
-// the export does not return while our goroutines may still call into host
-// memory that a Unix loader frees immediately afterwards.
+// timeout (sync.WaitGroup has no timed wait). Tests use the bounded wait;
+// shutdown uses an unbounded drain after stopping all producers, because a
+// Unix loader frees host memory immediately after the shutdown export returns.
 func (b *HostBridge) WaitForInFlight(timeout time.Duration) bool {
 	drained := make(chan struct{})
 	go func() {
@@ -287,10 +290,17 @@ func (b *HostBridge) invoke(ctx context.Context, method string, payload any, wha
 // "host.http.do"; transport-level failures surface as errors whose text is
 // safe for logs (no keys, no response bodies).
 func (b *HostBridge) Do(ctx context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+	op, err := b.openHTTP(ctx)
+	if err != nil {
+		return pluginapi.HTTPResponse{}, err
+	}
+	defer op.finish()
 	env, err := b.invoke(ctx, pluginabi.MethodHostHTTPDo, hostHTTPReq{
 		Method: req.Method, URL: req.URL, Headers: req.Headers, Body: req.Body,
+		HostCallbackID: op.callbackID, OperationID: op.id,
 	}, "host http do")
 	if err != nil {
+		op.cancel()
 		return pluginapi.HTTPResponse{}, err
 	}
 	var resp pluginapi.HTTPResponse
@@ -310,8 +320,19 @@ func (b *HostBridge) Do(ctx context.Context, req pluginapi.HTTPRequest) (plugina
 // grace window is closed by the background abandon goroutine instead, so
 // no registered upstream stream ever leaks regardless of host latency.
 func (b *HostBridge) DoStream(ctx context.Context, req pluginapi.HTTPRequest) (statusCode int, headers http.Header, upstreamStreamID string, err error) {
+	op, err := b.openHTTP(ctx)
+	if err != nil {
+		return 0, nil, "", err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			op.cancel()
+		}
+	}()
 	payloadBytes, _ := json.Marshal(hostHTTPReq{
 		Method: req.Method, URL: req.URL, Headers: req.Headers, Body: req.Body,
+		HostCallbackID: op.callbackID, OperationID: op.id,
 	})
 	raw, late, err := b.callWithTimeoutResult(ctx, pluginabi.MethodHostHTTPDoStream, payloadBytes, streamTimeoutGrace, b.closeLateStream)
 	if late {
@@ -337,6 +358,12 @@ func (b *HostBridge) DoStream(ctx context.Context, req pluginapi.HTTPRequest) (s
 	var out hostStreamStartResp
 	if len(env.Result) > 0 && json.Unmarshal(env.Result, &out) != nil {
 		return 0, nil, "", fmt.Errorf("host http do_stream failed: undecodable response body")
+	}
+	if out.StreamID != "" {
+		b.streamMu.Lock()
+		b.streamOperations[out.StreamID] = op
+		b.streamMu.Unlock()
+		keep = true
 	}
 	return out.StatusCode, out.Headers, out.StreamID, nil
 }
@@ -382,8 +409,18 @@ func (b *HostBridge) StreamRead(upstreamStreamID string) (payload []byte, errMsg
 // content is ignored. Like StreamRead: no deadline, but joins inFlight
 // accounting so shutdown drains a close parked inside the host.
 func (b *HostBridge) StreamClose(upstreamStreamID string) error {
+	b.streamMu.Lock()
+	op := b.streamOperations[upstreamStreamID]
+	delete(b.streamOperations, upstreamStreamID)
+	b.streamMu.Unlock()
+	if op != nil {
+		defer op.finish()
+	}
 	_, err := b.invoke(context.Background(), pluginabi.MethodHostHTTPStreamClose,
 		hostStreamIDReq{StreamID: upstreamStreamID}, "host http stream_close")
+	if err != nil && op != nil {
+		op.cancel()
+	}
 	return err
 }
 
