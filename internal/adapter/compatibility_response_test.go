@@ -580,3 +580,88 @@ func TestMessagesToolDeltaAfterCompletionReportsError(t *testing.T) {
 		t.Fatalf("delta sent after tool stop: events=%s,done=%v,err=%v", late, done, e)
 	}
 }
+
+func TestToolArgumentsWaitForCompleteIdentity(t *testing.T) {
+	for _, target := range []string{"openai", "claude"} {
+		for _, order := range []string{"delta", "delta-done", "partial-item", "split-identity"} {
+			t.Run(target+"/"+order, func(t *testing.T) {
+				sc := responses.NewStreamConverter(target)
+				events, _, e := sc.Feed([]byte(reasoningSSE("response.created", `{"response":{"id":"r","model":"m"}}`)))
+				if e != nil {
+					t.Fatal(e)
+				}
+				early := reasoningSSE("response.function_call_arguments.delta", `{"item_id":"fc","delta":"{\"q\":"}`)
+				if order == "partial-item" || order == "split-identity" {
+					early += reasoningSSE("response.output_item.added", `{"item":{"id":"fc","type":"function_call","call_id":"call","arguments":""}}`)
+				}
+				if order != "delta" {
+					early += reasoningSSE("response.function_call_arguments.done", `{"item_id":"fc","arguments":"{\"q\":1}"}`)
+				}
+				buffered, done, e := sc.Feed([]byte(early))
+				if e != nil || done || len(buffered) != 0 {
+					t.Fatalf("announced before identity was complete: events=%s,done=%v,err=%v", buffered, done, e)
+				}
+				item := `{"id":"fc","type":"function_call","call_id":"call","name":"f","arguments":""}`
+				if order == "split-identity" {
+					item = `{"id":"fc","type":"function_call","name":"f","arguments":""}`
+				}
+				tail := reasoningSSE("response.output_item.added", `{"item":`+item+`}`) +
+					reasoningSSE("response.function_call_arguments.done", `{"item_id":"fc","arguments":"{\"q\":1}"}`) +
+					reasoningSSE("response.output_item.done", `{"item":{"id":"fc","type":"function_call","call_id":"call","name":"f","arguments":"{\"q\":1}"}}`) +
+					reasoningSSE("response.completed", `{"type":"response.completed","response":{"id":"r","object":"response","status":"completed","output":[{"id":"fc","type":"function_call","call_id":"call","name":"f","arguments":"{\"q\":1}"}]}}`)
+				for _, b := range []byte(tail) {
+					more, _, e := sc.Feed([]byte{b})
+					if e != nil {
+						t.Fatal(e)
+					}
+					events = append(events, more...)
+				}
+				if target == "claude" {
+					tools := assertMessagesToolLifecycle(t, events)
+					if len(tools) != 1 || tools["call"] == nil || tools["call"].name != "f" || tools["call"].args != `{"q":1}` {
+						t.Fatalf("tool identity/arguments incorrect: %v", tools)
+					}
+				} else {
+					openings := 0
+					args := ""
+					for _, event := range events {
+						m := decodeReasoningFrame(t, event)
+						d := m["choices"].([]any)[0].(map[string]any)["delta"].(map[string]any)
+						if calls, ok := d["tool_calls"].([]any); ok {
+							for _, v := range calls {
+								call := v.(map[string]any)
+								fn := call["function"].(map[string]any)
+								args += fn["arguments"].(string)
+								if id, ok := call["id"]; ok {
+									openings++
+									if id != "call" || fn["name"] != "f" {
+										t.Fatalf("incomplete identity: %v", call)
+									}
+								}
+							}
+						}
+					}
+					if openings != 1 || args != `{"q":1}` {
+						t.Fatalf("openings=%d,args=%q", openings, args)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestArgumentDeltaAndDoneWithoutIdentityCannotSucceed(t *testing.T) {
+	for _, target := range []string{"openai", "claude"} {
+		sc := responses.NewStreamConverter(target)
+		early := reasoningSSE("response.function_call_arguments.delta", `{"item_id":"fc","delta":"{"}`) +
+			reasoningSSE("response.function_call_arguments.done", `{"item_id":"fc","arguments":"{}"}`)
+		events, done, e := sc.Feed([]byte(early))
+		if e != nil || done || len(events) != 0 {
+			t.Fatalf("unknown tool identity emitted: events=%s,done=%v,err=%v", events, done, e)
+		}
+		_, done, e = sc.Feed([]byte(reasoningSSE("response.completed", `{"type":"response.completed","response":{"id":"r","object":"response","status":"completed","output":[]}}`)))
+		if e == nil || done {
+			t.Fatalf("unresolved tool identity succeeded: done=%v,err=%v", done, e)
+		}
+	}
+}

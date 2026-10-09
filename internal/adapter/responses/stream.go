@@ -52,10 +52,9 @@ type StreamConverter struct {
 	// Shared function_call announce-or-replay decision table for both
 	// conversion targets; an instance converts to exactly one target,
 	// so nextIndex doubles as the tool block index allocator.
-	tracker         *toolCallTracker
-	pendingToolDone map[string]functionCallItem
-	messagesTools   map[int]*messagesTool
-	messagesQueue   []messagesEmission
+	tracker       *toolCallTracker
+	messagesTools map[int]*messagesTool
+	messagesQueue []messagesEmission
 }
 
 // NewStreamConverter builds a converter for sourceFormat ("openai",
@@ -109,52 +108,67 @@ func (sc *StreamConverter) allocIndex() int {
 // each delta fragment would fork a second tracker state and clients
 // would see a ghost tool entry beside the announced call.
 type toolCallTracker struct {
-	calls map[string]*toolCallState
-	alloc func() int
+	calls  map[string]*toolCallState
+	states []*toolCallState
+	alloc  func() int
 }
 
 type toolCallState struct {
-	index int
-	args  strings.Builder
+	index     int
+	args      strings.Builder
+	callID    string
+	name      string
+	complete  bool
+	announced bool
+	sent      int
 }
+
+func (st *toolCallState) hasIdentity() bool { return st.callID != "" && st.name != "" }
 
 func newToolCallTracker(alloc func() int) *toolCallTracker {
 	return &toolCallTracker{calls: map[string]*toolCallState{}, alloc: alloc}
 }
 
-// Observe fills a complete argument snapshot's missing suffix, using both
-// identifiers to avoid replaying arguments already emitted as deltas.
-func (t *toolCallTracker) Observe(callID, itemID, args string) (first bool, index int, tail string) {
-	first, st := t.state(callID, itemID)
+// Observe records identity and a complete argument snapshot separately.
+// An argument-only state is not a downstream announcement.
+func (t *toolCallTracker) Observe(callID, itemID, name, args string, complete bool) *toolCallState {
+	st := t.state(callID, itemID)
+	if callID != "" {
+		st.callID = callID
+	}
+	if name != "" {
+		st.name = name
+	}
 	previous := st.args.String()
 	if strings.HasPrefix(args, previous) {
-		tail = args[len(previous):]
-		st.args.WriteString(tail)
+		st.args.WriteString(args[len(previous):])
 	}
-	return first, st.index, tail
+	st.complete = st.complete || complete
+	return st
 }
 
-func (t *toolCallTracker) StreamArgs(itemID, delta string) (first bool, index int) {
-	first, st := t.state(itemID, "")
+func (t *toolCallTracker) StreamArgs(itemID, delta string) *toolCallState {
+	st := t.state(itemID, "")
 	st.args.WriteString(delta)
-	return first, st.index
+	return st
 }
 
 // state resolves key, then alias, binding whichever identifiers are
 // present to the shared state so both namespaces stay one call.
-func (t *toolCallTracker) state(key, alias string) (bool, *toolCallState) {
+func (t *toolCallTracker) state(key, alias string) *toolCallState {
 	if st, ok := t.calls[key]; ok {
 		t.bind(alias, st)
-		return false, st
+		return st
 	}
 	if st, ok := t.calls[alias]; ok {
 		t.bind(key, st)
-		return false, st
+		return st
 	}
 	st := &toolCallState{index: t.alloc()}
+	t.states = append(t.states, st)
 	t.bind(key, st)
 	t.bind(alias, st)
-	return true, st
+	return st
 }
 
 func (t *toolCallTracker) bind(key string, st *toolCallState) {
@@ -454,20 +468,6 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 			return nil, false, eErr
 		}
 		item := functionCallItem{Type: "function_call", ID: ev.ItemID, CallID: ev.CallID, Name: ev.Name, Arguments: ev.Arguments}
-		if sc.tracker.calls[ev.ItemID] == nil && sc.tracker.calls[ev.CallID] == nil && (ev.CallID == "" || ev.Name == "") {
-			key := ev.ItemID
-			if key == "" {
-				key = ev.CallID
-			}
-			if key == "" {
-				return nil, false, errclass.Translation("Responses tool arguments completion has no item identity")
-			}
-			if sc.pendingToolDone == nil {
-				sc.pendingToolDone = map[string]functionCallItem{}
-			}
-			sc.pendingToolDone[key] = item
-			return nil, false, nil
-		}
 		return sc.outputItem(&item, true)
 	case "response.function_call_arguments.delta":
 		var ev argsDeltaEvent
@@ -685,73 +685,45 @@ func (sc *StreamConverter) outputItem(item *functionCallItem, complete bool) ([]
 	if item.Type != "function_call" {
 		return nil, false, nil
 	}
-	for _, key := range []string{item.ID, item.CallID} {
-		if pending, ok := sc.pendingToolDone[key]; ok {
-			// No downstream tool has been announced for this cached done.
-			// Preserve its arguments even if the later identity item is empty.
-			if item.Arguments == "" {
-				item.Arguments = pending.Arguments
-			}
-			if item.CallID == "" {
-				item.CallID = pending.CallID
-			}
-			if item.Name == "" {
-				item.Name = pending.Name
-			}
-			if item.CallID == "" || item.Name == "" {
-				return nil, false, nil
-			}
-			delete(sc.pendingToolDone, key)
-			complete = true
-		}
+	if item.ID == "" && item.CallID == "" {
+		return nil, false, errclass.Translation("Responses tool item has no item identity")
 	}
-	sc.toolCallsSeen = true
-	first, idx, deliver := sc.tracker.Observe(item.CallID, item.ID, item.Arguments)
-	if sc.source == "openai" {
-		switch {
-		case first:
-			// The announcement embeds complete arguments when the item
-			// event already carries them.
-			entryArgs := ""
-			if deliver != "" {
-				entryArgs = deliver
-			}
-			return [][]byte{sc.chatChunks().Delta(map[string]any{"tool_calls": []any{
-				shared.CCToolCallOpeningEntry(idx, item.CallID, item.Name, entryArgs),
-			}})}, false, nil
-		case deliver != "":
-			// A complete snapshot fills only the unsent argument suffix.
-			return [][]byte{sc.chatChunks().Delta(map[string]any{"tool_calls": []any{map[string]any{
-				"index": idx, "function": map[string]any{"arguments": deliver},
-			}}})}, false, nil
-		}
-		return nil, false, nil
-	}
-	events, eErr := sc.queueMessagesTool(idx, item.CallID, item.Name, deliver, complete)
-	return events, false, eErr
+	st := sc.tracker.Observe(item.CallID, item.ID, item.Name, item.Arguments, complete)
+	return sc.emitToolState(st)
 }
 
-// argsFragment streams one function_call_arguments.delta: Chat
-// Completions feeds its accumulated tool_calls entry (defensively opening
-// it when arguments precede the announcement), Messages mirrors that with
-// input_json_delta blocks.
+// Argument deltas may precede tool identity. Both target protocols buffer
+// those bytes until the real call_id and name are available.
 func (sc *StreamConverter) argsFragment(itemID, delta string) ([][]byte, bool, *errclass.Error) {
-	first, idx := sc.tracker.StreamArgs(itemID, delta)
-	if sc.source == "openai" {
-		sc.toolCallsSeen = true
-		if first {
-			// Arguments before the announcement: open the entry so no
-			// partial JSON is lost.
-			return [][]byte{sc.chatChunks().Delta(map[string]any{"tool_calls": []any{
-				shared.CCToolCallOpeningEntry(idx, itemID, "", delta),
-			}})}, false, nil
-		}
-		return [][]byte{sc.chatChunks().Delta(map[string]any{"tool_calls": []any{map[string]any{
-			"index": idx, "function": map[string]any{"arguments": delta},
-		}}})}, false, nil
+	if itemID == "" {
+		return nil, false, errclass.Translation("Responses tool arguments delta has no item identity")
 	}
+	return sc.emitToolState(sc.tracker.StreamArgs(itemID, delta))
+}
+
+func (sc *StreamConverter) emitToolState(st *toolCallState) ([][]byte, bool, *errclass.Error) {
 	sc.toolCallsSeen = true
-	events, eErr := sc.queueMessagesTool(idx, itemID, "", delta, false)
+	args := st.args.String()
+	if sc.source == "openai" {
+		if !st.hasIdentity() {
+			return nil, false, nil
+		}
+		if !st.announced {
+			st.announced = true
+			st.sent = len(args)
+			return [][]byte{sc.chatChunks().Delta(map[string]any{"tool_calls": []any{shared.CCToolCallOpeningEntry(st.index, st.callID, st.name, args)}})}, false, nil
+		}
+		tail := args[st.sent:]
+		if tail == "" {
+			return nil, false, nil
+		}
+		st.sent = len(args)
+		return [][]byte{sc.chatChunks().Delta(map[string]any{"tool_calls": []any{map[string]any{"index": st.index, "function": map[string]any{"arguments": tail}}}})}, false, nil
+	}
+	events, eErr := sc.queueMessagesTool(st.index, st.callID, st.name, args[st.sent:], st.complete)
+	if eErr == nil {
+		st.sent = len(args)
+	}
 	return events, false, eErr
 }
 
@@ -761,8 +733,10 @@ func (sc *StreamConverter) argsFragment(itemID, delta string) ([][]byte, bool, *
 // message_stop. Shared precedence: tool calls outrank the status-derived
 // reason, so response.incomplete cannot downgrade them.
 func (sc *StreamConverter) terminal(incomplete bool, in, out int, details shared.UsageDetails) ([][]byte, bool, *errclass.Error) {
-	if len(sc.pendingToolDone) > 0 {
-		return nil, false, errclass.Translation("Responses stream ended before completed tool arguments received a tool identity")
+	for _, tool := range sc.tracker.states {
+		if !tool.hasIdentity() {
+			return nil, false, errclass.Translation("Responses stream ended before tool identity was complete")
+		}
 	}
 	st := "completed"
 	if incomplete {

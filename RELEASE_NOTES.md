@@ -7,8 +7,8 @@
 - Retain refusal text and cache-write token details across supported response
   conversions, preserving explicit zero counts and existing token accounting.
 - Reconcile Responses text, reasoning, and tool-argument completion snapshots
-  without replaying previously emitted prefixes. Buffer early argument completion
-  until tool identity is available, and serialize Messages tool blocks so later
+  without replaying previously emitted prefixes. Buffer early argument fragments and completion
+  until both the real call ID and tool name are available, and serialize Messages tool blocks so later
   content cannot close a tool before its arguments finish.
 - Document supported mappings, omissions, and remaining compatibility gaps in
   English and Chinese. Provider-specific signatures and encrypted reasoning

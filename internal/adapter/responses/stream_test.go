@@ -693,6 +693,7 @@ func TestClaudeToolDoneReplaysArgs(t *testing.T) {
 func TestClaudeArgsDeltaBeforeItemAnnouncement(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fcX","delta":"{}"}`) +
+		frame("response.output_item.added", `{"item":{"id":"fcX","type":"function_call","call_id":"callX","name":"lookup","arguments":""}}`) +
 		frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
@@ -700,11 +701,11 @@ func TestClaudeArgsDeltaBeforeItemAnnouncement(t *testing.T) {
 	}
 	start := payloadOf(t, events[1])
 	cb := start["content_block"].(map[string]any)
-	if cb["type"] != "tool_use" || cb["id"] != "fcX" || cb["name"] != "" {
-		t.Errorf("defensive tool_use start = %v", cb)
+	if cb["type"] != "tool_use" || cb["id"] != "callX" || cb["name"] != "lookup" {
+		t.Errorf("complete tool_use identity = %v", cb)
 	}
 	if d := payloadOf(t, events[2])["delta"].(map[string]any); d["partial_json"] != "{}" {
-		t.Errorf("defensive arg delta = %v", d)
+		t.Errorf("buffered arg delta = %v", d)
 	}
 }
 
@@ -1118,10 +1119,9 @@ func TestOpenAIToolAnnounceCarriesArguments(t *testing.T) {
 	}
 }
 
-// Dual-key pin: arguments streamed BEFORE the item announcement open one
-// entry keyed by item_id; the later added must resolve that state through
-// the alias (call_id) instead of forking a ghost entry, and the
-// continuation delta extends the same index.
+// Arguments before the item announcement are buffered by item_id. The
+// later added emits one entry with the real call_id/name and the buffered
+// prefix; continuation deltas extend that same entry.
 func TestOpenAIArgsDeltaBeforeAnnouncementIsOneCall(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fc_1","delta":"{\"a\":"}`) +
@@ -1164,8 +1164,8 @@ func TestOpenAIArgsDeltaBeforeAnnouncementIsOneCall(t *testing.T) {
 			calls = append(calls, entry)
 		}
 	}
-	// Exactly: delta-open, continuation — the announcement emits nothing.
-	if len(calls) != 2 || calls[0].index != 0 || calls[0].id != "fc_1" || calls[0].args != `{"a":` ||
+	// Exactly: full-identity announcement with buffered prefix, continuation.
+	if len(calls) != 2 || calls[0].index != 0 || calls[0].id != "call_1" || calls[0].args != `{"a":` ||
 		calls[1].index != 0 || calls[1].args != `1}` {
 		t.Fatalf("tool entries wrong (ghost or split): %+v", calls)
 	}
