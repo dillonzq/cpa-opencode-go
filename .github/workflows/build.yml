@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   PLUGIN_ID: cpa-opencode-go
@@ -29,14 +29,34 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Test
+      - name: Validate release tag and notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Expected a stable release tag such as v0.1.0" >&2
+            exit 1
+          fi
+          test "$(head -n 1 RELEASE_NOTES.md)" = "# ${GITHUB_REF_NAME}"
+
+      - name: Cache host integration dependencies
+        run: go mod download all
+
+      - name: Test with native host ABI coverage
+        run: go test -tags debug ./...
+
+      - name: Race detector
+        run: go test -tags debug -race ./...
+
+      - name: Test production build configuration
         run: go test ./...
 
       - name: Test release packaging
         run: go test ./.github/scripts
 
       - name: Vet
-        run: go vet ./... ./.github/scripts
+        run: go vet -tags debug ./... ./.github/scripts
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -267,7 +287,9 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Release
+    name: Prepare release draft
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
       - build
@@ -284,19 +306,28 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Publish GitHub release
+      - name: Prepare GitHub release draft
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          test "$(find dist -maxdepth 1 -name '*.zip' | wc -l)" -eq 7
+          test "$(find dist -maxdepth 1 -name '*.sha256' | wc -l)" -eq 7
           sort dist/*.sha256 > dist/checksums.txt
+          (cd dist && sha256sum --check checksums.txt)
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            if [[ "$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" != "true" ]]; then
+              echo "Refusing to replace assets of a published release" >&2
+              exit 1
+            fi
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file RELEASE_NOTES.md
             gh release upload "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt --clobber --repo "${GITHUB_REPOSITORY}"
           else
             gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt \
               --repo "${GITHUB_REPOSITORY}" \
               --verify-tag \
+              --draft \
               --title "${GITHUB_REF_NAME}" \
               --notes-file RELEASE_NOTES.md
           fi

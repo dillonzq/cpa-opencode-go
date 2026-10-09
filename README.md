@@ -42,7 +42,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 ## Requirements
 
 - **CLIProxyAPI**: `v8.0.0+`
-- **Go Toolchain**: Go 1.26.7+ (with CGO enabled for C-shared build mode)
+- **Go Toolchain (source builds only)**: Go 1.26.7+ (with CGO enabled for C-shared build mode)
 
 ## Request behavior
 
@@ -51,6 +51,31 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 - `plugin.quiesce` rejects new work, cancels active tasks, and drains callbacks. Shutdown waits for every callback to exit before the shared library can unload; a host callback that never returns can therefore delay shutdown indefinitely.
 - EOF before a protocol terminal state reports a stream error instead of success, including partial tool arguments. A known `finish_reason`/`stop_reason` may still end without `[DONE]`/`message_stop`; final SSE data without a trailing separator is processed, and incomplete terminal payloads report an error. Messages requires `type: message_stop`; Responses requires the matching event type and a response with a nonempty `id`, `object: response`, matching terminal `status`, and an `output` array.
 - Session identity uses `canonical_session_id`, then explicit session headers, then the initial user content of the effective input. Existing text/image/tool-result hashes stay compatible. Files, image file references, and unknown native content use stable JSON hashing, without translation validation or content logging. An interceptor changing the initial user content also changes the fallback hash; explicit identity takes precedence.
+
+## Install
+
+Download the ZIP for your version and `checksums.txt` from [GitHub Releases](https://github.com/dillonzq/cpa-opencode-go/releases). The first independent release is `v0.1.0`; draft releases are visible only to maintainers.
+
+Choose the **CPA host's operating system and architecture**, using the environment inside the container for container deployments:
+
+| OS | Architecture | ZIP suffix | Library |
+|---|---|---|---|
+| Linux | amd64 / arm64 | `linux_amd64.zip` / `linux_arm64.zip` | `cpa-opencode-go.so` |
+| macOS | amd64 / arm64 | `darwin_amd64.zip` / `darwin_arm64.zip` | `cpa-opencode-go.dylib` |
+| Windows | amd64 / arm64 | `windows_amd64.zip` / `windows_arm64.zip` | `cpa-opencode-go.dll` |
+| FreeBSD | amd64 | `freebsd_amd64.zip` | `cpa-opencode-go.so` |
+
+For example: `cpa-opencode-go_0.1.0_linux_amd64.zip`. Each ZIP contains the shared library and `LICENSE`. Prebuilt libraries do not require the Go toolchain.
+
+1. Verify the download: use `sha256sum cpa-opencode-go_0.1.0_linux_amd64.zip` on Linux, `shasum -a 256 <archive>` on macOS, or `Get-FileHash <archive> -Algorithm SHA256` in Windows PowerShell. Compare the hash with the matching entry in `checksums.txt`.
+2. Stop CPA. Before upgrading, back up `config.yaml`, the credential directory specified by `auth-dir`, and the existing plugin libraries.
+3. Extract the ZIP and place the library in `<cliproxyapi_root>/plugins/<os>/<arch>/`, such as `plugins/linux/amd64/`. Retain the included license.
+4. Follow [Configuration](#configuration) to enable both `plugins.enabled` and `plugins.configs.cpa-opencode-go.enabled` and set an API key. Existing users should first follow [Migration](#migrating-from-opencode-go-cliproxyapi).
+5. Restart CPA and check its logs for successful loading and duplicate provider errors. Use `GET /v1/models` with a CPA client key to verify discovery, then make a real request. Quota endpoints require the management key; see [Account names and quotas](#account-names-and-quotas).
+
+### Rollback
+
+Stop CPA, remove the new library, and restore the backed-up library, configuration, and credential directory together. Restore the old configuration key and original `store` metadata when returning to the original plugin. Ensure only one plugin is installed, then restart and verify model discovery and a request. Validate upgrades in an isolated environment before switching production traffic.
 
 ## Build
 
