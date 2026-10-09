@@ -39,7 +39,7 @@ Responses 的流式转换接收 `response.reasoning_summary_text.delta/done` 与
 | Chat Completions `message.refusal`、Responses message 内的 `refusal` part | 普通/流式响应保留。Chat Completions ↔ Responses 保留独立 refusal 字段/part；转 Messages 映射为可显示的 text。正常完成的拒绝映射为 content_filter/refusal，工具和截断信号仍优先 |
 | 引用、`annotations`、logprobs、audio、供应商扩展字段 | 跨协议不复制，相关增量事件默认忽略 |
 | 图片和其他输出类型 | Chat Completions → Messages 可转换支持的图片块；Chat Completions → Responses 的非文本输出报错。Messages 未支持的输出块报错。Responses message 中非 `output_text` part 会被忽略；未知 output item 仅在解码后可识别的 `content/name/call_id/arguments` 非空时报错，只有 `result/action` 等未建模字段的 item 可能静默丢失 |
-| Responses 的工具专属事件 | 跨协议转换 `function_call` 和参数 delta/done；output_item 和终止快照补齐未收到的参数尾部，同一工具的 call_id/item_id 共用状态避免重复调用。缺少身份的 arguments.done 先缓存，等待完整工具 item；终止时身份仍缺失则报错。转 Messages 时未完成工具阻塞后续正文、推理和工具，参数可继续流式输出，完成或终止补齐后才关闭块；不会重开同一工具块。搜索、图像生成等专属事件仍默认忽略 |
+| Responses 的工具专属事件 | 跨协议转换 `function_call` 和参数 delta/done；output_item 和终止快照补齐未收到的参数尾部，同一工具的 call_id/item_id 共用状态避免重复调用。工具的真实 call_id 和 name 与参数状态分别跟踪；身份不完整时 delta/done 都先缓存，等待完整工具 item 后只公告一次；终止时身份仍缺失则报错。转 Messages 时未完成工具阻塞后续正文、推理和工具，参数可继续流式输出，完成或终止补齐后才关闭块；不会重开同一工具块。搜索、图像生成等专属事件仍默认忽略 |
 | Responses 正文/拒绝快照 | output_text/refusal 的 done、output_item 和终止快照补齐遗漏的尾部；按 item_id、content_index 和 part 类型去重。Messages 无独立 refusal 字段，文本按到达顺序输出；合成 Responses 的正文/refusal part 索引与终止结果保持一致 |
 | 结束原因 | `stop` ↔ `end_turn`、`length` ↔ `max_tokens`、`tool_calls` ↔ `tool_use`、`content_filter` ↔ `refusal`。未知原因回退到普通结束；`stop_sequence` 的具体值不复制 |
 | 工具调用与截断并存 | 转 Chat Completions / Messages 时实际工具调用优先于截断原因；转 Responses 时仍以 `length/max_tokens` 映射 `incomplete`，工具信号放在 output items 中 |

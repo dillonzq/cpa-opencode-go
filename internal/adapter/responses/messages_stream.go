@@ -36,9 +36,14 @@ func (sc *StreamConverter) queueMessagesTool(key int, id, name, delta string, co
 		sc.messagesTools[key] = tool
 		sc.messagesQueue = append(sc.messagesQueue, messagesEmission{kind: "tool", tool: tool})
 	}
-	if !tool.opened && name != "" {
-		// A queued tool can acquire its real identity before its block opens.
-		tool.id, tool.name = id, name
+	if !tool.opened {
+		// Identity can arrive across several items after parameter deltas/done.
+		if id != "" {
+			tool.id = id
+		}
+		if name != "" {
+			tool.name = name
+		}
 	}
 	if tool.closed && delta != "" {
 		return nil, errclass.Translation("Responses tool arguments changed after tool completion")
@@ -59,6 +64,9 @@ func (sc *StreamConverter) drainMessages() [][]byte {
 		entry := sc.messagesQueue[0]
 		if entry.kind == "tool" {
 			tool := entry.tool
+			if tool.id == "" || tool.name == "" {
+				break
+			}
 			if !tool.opened {
 				events = append(events, sc.closeOpenBlocks()...)
 				tool.index = sc.allocIndex()
