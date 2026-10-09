@@ -222,8 +222,7 @@ func TestBuildRequest_OpenAISanitizeThinking(t *testing.T) {
 }
 
 // TestBuildRequestThinkingEffort proves budget→effort conversion is
-// capability-aware (FR-005): tiers beyond the static low/medium/high
-// buckets survive when the model declares them.
+// Fixed budget thresholds preserve reasoning without model filtering.
 func TestBuildRequestThinkingEffort(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -233,16 +232,16 @@ func TestBuildRequestThinkingEffort(t *testing.T) {
 	}{
 		{"nil ts small budget anchors low", nil, 1024, "low"},
 		{"nil ts mid budget anchors medium", nil, 8192, "medium"},
-		{"nil ts unknown huge budget anchors high", nil, 131072, "high"},
+		{"nil capability preserves huge budget tier", nil, 131072, "xhigh"},
 		{"declared xhigh tier preserved", &pluginapi.ThinkingSupport{
 			Levels: []string{"low", "medium", "high", "xhigh"}, Max: 64000,
 		}, 60000, "xhigh"},
 		{"zero allowed picks none", &pluginapi.ThinkingSupport{
 			ZeroAllowed: true, Levels: []string{"none", "low", "high"},
 		}, 0, "none"},
-		{"zero allowed without none falls to lowest", &pluginapi.ThinkingSupport{
+		{"zero budget stays off without declared none", &pluginapi.ThinkingSupport{
 			ZeroAllowed: true, Levels: []string{"low", "high"},
-		}, 0, "low"},
+		}, 0, "none"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -257,8 +256,8 @@ func TestBuildRequestThinkingEffort(t *testing.T) {
 		})
 	}
 	m := mustBuild(t, "claude", `{"max_tokens":64,"thinking":{"type":"disabled"}}`, nil)
-	if _, ok := m["reasoning_effort"]; ok {
-		t.Fatalf("disabled thinking must not set reasoning_effort: %v", m)
+	if m["reasoning_effort"] != "none" {
+		t.Fatalf("disabled thinking must set none: %v", m)
 	}
 }
 

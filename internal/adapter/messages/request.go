@@ -49,18 +49,18 @@ type messagesRequest struct {
 // BuildRequest translates an inbound request body from sourceFormat
 // ("openai" Chat Completions, "openai-response" Responses, "claude"
 // passthrough) into an Anthropic Messages body for upstreamModel
-// (FR-005). ts carries the target model's thinking capability so
-// reasoning controls resolve against what the model actually supports.
+// (FR-005). Thinking capabilities are accepted for API compatibility but do
+// not filter or clamp reasoning controls.
 // Unknown formats are ClassUnsupported; malformed input is
 // ClassTranslation. Errors are descriptive and redacted — no silent loss.
-func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
+func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, _ *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "claude":
 		return passthroughClaude(upstreamModel, sourceBody)
 	case "openai":
-		return fromChatCompletions(upstreamModel, sourceBody, ts)
+		return fromChatCompletions(upstreamModel, sourceBody)
 	case "openai-response":
-		return fromResponses(upstreamModel, sourceBody, ts, shared.ResponseToolContext(tools))
+		return fromResponses(upstreamModel, sourceBody, shared.ResponseToolContext(tools))
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
@@ -305,38 +305,37 @@ func (b *msgBuilder) flush() {
 }
 
 // finalize assembles the shared envelope fields, resolves the client
-// reasoning effort to a thinking budget via the model's declared
-// capability (FR-005: unsupported levels are rejected explicitly, never
-// dropped), and encodes the request.
-func finalize(req *messagesRequest, system []string, effort string, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+// reasoning effort to a fixed thinking budget without model validation.
+// Levels with no numeric equivalent fail explicitly, and upstream validates
+// the resulting controls.
+func finalize(req *messagesRequest, system []string, effort string) ([]byte, *errclass.Error) {
 	req.System = systemField(system)
 	if req.Messages == nil {
 		req.Messages = []anthropicMessage{}
 	}
 	if effort != "" {
-		budget, _ := thinking.BudgetFromEffort(effort, ts)
+		budget, ok := thinking.BudgetFromEffort(effort)
+		if !ok {
+			return nil, &errclass.Error{Class: errclass.ClassUnsupported,
+				Message: fmt.Sprintf("reasoning effort %q has no Messages budget equivalent", effort)}
+		}
 		applyThinking(req, budget)
 	}
 	b, _ := json.Marshal(req) // only marshallable composed types; cannot fail
 	return b, nil
 }
 
-// applyThinking maps a resolved budget onto the Messages thinking field.
-// budget == 0 means reasoning off (ZeroAllowed): no thinking block, and
-// sampling controls stay intact. budget < 0 is the dynamic "auto"
-// sentinel; Anthropic has no dynamic budget field — an adaptive mode
-// would need a catalog-declared capability signal, which does not exist
-// today — so it is omitted rather than fabricated (FR-005 explicit
-// omission policy). budget > 0 enables thinking and drops sampling
-// controls, which Anthropic rejects alongside thinking.
+// applyThinking translates explicit off and fixed budgets. Auto leaves thinking
+// unspecified so the upstream chooses its default; enabled requires a budget.
+// Client output limits and sampling controls stay intact for upstream validation.
 func applyThinking(req *messagesRequest, budget int64) {
-	if budget <= 0 {
+	switch {
+	case budget == 0:
+		req.Thinking = &shared.ClaudeThinking{Type: "disabled"}
+	case budget < 0:
 		return
-	}
-	req.Thinking = &shared.ClaudeThinking{Type: "enabled", BudgetTokens: budget}
-	req.Temperature, req.TopP = nil, nil
-	if req.MaxTokens <= budget {
-		req.MaxTokens = budget + 1024 // budget_tokens must be < max_tokens
+	default:
+		req.Thinking = &shared.ClaudeThinking{Type: "enabled", BudgetTokens: &budget}
 	}
 }
 
@@ -345,12 +344,12 @@ func applyThinking(req *messagesRequest, budget int64) {
 // become the top-level system field, assistant tool_calls become tool_use
 // blocks, tool results become user tool_result blocks, stop becomes
 // stop_sequences, tools become input_schema definitions, reasoning_effort
-// becomes a best-effort thinking budget.
+// becomes a fixed thinking budget.
 //
 // Explicit omission policy (FR-005): fields with no Messages equivalent
 // (logprobs, frequency_penalty, n, ...) are omitted by struct selection;
 // everything representable is mapped or rejected descriptively.
-func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+func fromChatCompletions(upstreamModel string, body []byte) ([]byte, *errclass.Error) {
 	var src shared.ChatCompletionsRequest
 	if err := json.Unmarshal(body, &src); err != nil {
 		return nil, errclass.Translation("malformed openai request JSON: " + err.Error())
@@ -457,7 +456,7 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 	if eErr := applyToolChoiceMessages(req, kind, tcName, src.ParallelToolCalls); eErr != nil {
 		return nil, eErr
 	}
-	return finalize(req, system, src.ReasoningEffort, ts)
+	return finalize(req, system, src.ReasoningEffort)
 }
 
 // fromResponses translates an OpenAI Responses request into a Messages
@@ -465,7 +464,7 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 // map like Chat Completions messages, function_call/function_call_output
 // items map to tool_use/tool_result blocks, reasoning summaries are kept
 // as best-effort thinking blocks (signatures unavailable upstream).
-func fromResponses(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport, tools *shared.ResponseTools) ([]byte, *errclass.Error) {
+func fromResponses(upstreamModel string, body []byte, tools *shared.ResponseTools) ([]byte, *errclass.Error) {
 	var src shared.ResponsesRequest
 	if err := json.Unmarshal(body, &src); err != nil {
 		return nil, errclass.Translation("malformed openai-response request JSON: " + err.Error())
@@ -596,7 +595,7 @@ func fromResponses(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupp
 	if eErr := applyToolChoiceMessages(req, kind, tcName, src.ParallelToolCalls); eErr != nil {
 		return nil, eErr
 	}
-	return finalize(req, system, effort, ts)
+	return finalize(req, system, effort)
 }
 
 // applyToolChoiceMessages maps a normalized tool choice onto the outbound

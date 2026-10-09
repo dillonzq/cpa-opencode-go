@@ -12,7 +12,6 @@ package responses
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -20,7 +19,6 @@ import (
 	"github.com/dillonzq/cpa-opencode-go/internal/adapter/shared"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
-	"github.com/dillonzq/cpa-opencode-go/internal/thinking"
 )
 
 // EndpointPath is the upstream endpoint path for the Responses route (FR-004).
@@ -30,12 +28,11 @@ var EndpointPath = catalog.RouteResponses.EndpointPath()
 // ("openai" Chat Completions, "claude" Anthropic Messages,
 // "openai-response" native Responses passthrough) into a Responses body
 // for upstreamModel (FR-005, AC §D). upstreamModel replaces whatever
-// client-facing model ID the request carried (FR-003). ts is the target
-// model's declared reasoning capability and drives budget→effort mapping
-// via the shared thinking package; nil falls back to the default ladder.
+// client-facing model ID the request carried (FR-003). Thinking capabilities
+// are accepted for API compatibility but do not filter or clamp reasoning.
 // Unknown formats are ClassUnsupported; malformed input is
 // ClassTranslation; messages are descriptive and redacted.
-func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
+func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, _ *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "openai-response":
 		if !strings.HasPrefix(strings.ToLower(upstreamModel), "gpt") {
@@ -43,9 +40,9 @@ func BuildRequest(upstreamModel string, sourceFormat string, sourceBody []byte, 
 		}
 		return shared.RewriteModelID(upstreamModel, sourceBody, "openai-response")
 	case "openai":
-		return fromChatCompletions(upstreamModel, sourceBody, ts)
+		return fromChatCompletions(upstreamModel, sourceBody)
 	case "claude":
-		return fromClaudeMessages(upstreamModel, sourceBody, ts)
+		return fromClaudeMessages(upstreamModel, sourceBody)
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
@@ -285,8 +282,8 @@ func contentParts(raw json.RawMessage, role string) ([]map[string]any, *errclass
 // replaying output_text), tool_calls history becomes function_call items,
 // tool results become function_call_output items, max_tokens/
 // max_completion_tokens become max_output_tokens, and reasoning_effort is
-// capability-checked against ts and rejected descriptively when the model
-// cannot represent it (matching the reverse Responses→CC leg).
+// forwarded as reasoning.effort without model capability validation. Auto
+// uses upstream defaults because Responses has no auto effort value.
 // tool_choice is decoded by the shared classifier and rendered into the
 // Responses wire values ("auto"/"none"/"required", flat
 // {type:function,name} for a forced tool); parallel_tool_calls passes
@@ -297,7 +294,7 @@ func contentParts(raw json.RawMessage, role string) ([]map[string]any, *errclass
 // equivalent (logprobs, frequency_penalty, presence_penalty, n, seed,
 // response_format, logit_bias) via struct selection. Tool calls and
 // reasoning controls are never dropped silently.
-func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+func fromChatCompletions(upstreamModel string, body []byte) ([]byte, *errclass.Error) {
 	var src shared.ChatCompletionsRequest
 	if err := json.Unmarshal(body, &src); err != nil {
 		return nil, errclass.Translation("malformed openai request JSON: " + err.Error())
@@ -321,7 +318,7 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 	}
 	if src.ReasoningEffort != "" {
 		norm := strings.ToLower(strings.TrimSpace(src.ReasoningEffort))
-		if norm != "auto" { // "auto" sentinel omits reasoning block (FR-005)
+		if norm != "auto" {
 			req.Reasoning = map[string]any{"effort": norm}
 		}
 	}
@@ -411,37 +408,12 @@ func fromChatCompletions(upstreamModel string, body []byte, ts *pluginapi.Thinki
 
 // ---- Claude Messages source --------------------------------------------
 
-// reasoningEffortFor is the single off-state policy for the Responses
-// target (FR-005), applied to an already-resolved effort value from both
-// source legs. The dynamic "auto" sentinel has no wire representation here,
-// so the reasoning field is omitted entirely (no dynamic sentinel on the
-// Responses wire). "none" forwards verbatim when the model declares it via
-// SupportedLevels — the same admission thinking.ValidateEffort applies and
-// matching the CC-upstream leg which forwards the validated value as-is;
-// when "none" is not declared there is nothing to express, so the field is
-// omitted rather than clamped to the weakest representable level. Every
-// other validated level forwards as-is.
-func reasoningEffortFor(effort string, ts *pluginapi.ThinkingSupport) (string, bool) {
-	switch {
-	case effort == "auto":
-		return "", false
-	case effort == "none":
-		if slices.Contains(thinking.SupportedLevels(ts), "none") {
-			return effort, true
-		}
-		return "", false
-	default:
-		return effort, true
-	}
-}
-
 // fromClaudeMessages translates an Anthropic Messages request into a
 // Responses request (FR-005, AC §D): system becomes instructions, text/
 // image blocks become input parts, tool_use/tool_result become
-// function_call/function_call_output items, an enabled thinking budget
-// maps to reasoning.effort through reasoningEffortFor (the "auto" sentinel
-// and an undeclared "none" omit the field entirely; a declared "none"
-// forwards), max_tokens becomes max_output_tokens (defaulted by the
+// function_call/function_call_output items, explicit thinking controls
+// map to reasoning.effort without capability filtering, and max_tokens
+// becomes max_output_tokens (defaulted by the
 // shared kernel, FR-005). Decoding is owned entirely by the shared
 // Claude-request kernel; only target-shape rendering stays local.
 //
@@ -453,7 +425,7 @@ func reasoningEffortFor(effort string, ts *pluginapi.ThinkingSupport) (string, b
 // silently lost (FR-005). The tool_result is_error flag has no Responses
 // field and is preserved as an "[error] " marker in the output text rather
 // than lost silently.
-func fromClaudeMessages(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+func fromClaudeMessages(upstreamModel string, body []byte) ([]byte, *errclass.Error) {
 	src, eErr := shared.DecodeClaudeMessages(body)
 	if eErr != nil {
 		return nil, eErr
@@ -466,10 +438,12 @@ func fromClaudeMessages(upstreamModel string, body []byte, ts *pluginapi.Thinkin
 		TopP:            src.TopP,
 	}
 	req.ToolChoice = respToolChoice(src.ToolChoiceKind, src.ToolChoiceName)
-	if shared.ThinkingEnabled(src.Thinking) {
-		if effort, ok := reasoningEffortFor(thinking.EffortFromBudget(src.Thinking.BudgetTokens, ts), ts); ok {
-			req.Reasoning = map[string]any{"effort": effort}
-		}
+	effort, eErr := shared.ClaudeReasoningEffort(src)
+	if eErr != nil {
+		return nil, eErr
+	}
+	if effort != "" && effort != "auto" {
+		req.Reasoning = map[string]any{"effort": effort}
 	}
 	req.Instructions = src.System
 

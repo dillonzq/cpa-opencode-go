@@ -14,7 +14,6 @@ import (
 	"github.com/dillonzq/cpa-opencode-go/internal/adapter/shared"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
-	"github.com/dillonzq/cpa-opencode-go/internal/thinking"
 )
 
 // EndpointPath is the upstream OpenCode Go Chat Completions endpoint.
@@ -30,19 +29,18 @@ func AuthHeaders(key string) http.Header {
 // BuildRequest translates an inbound request body from sourceFormat
 // ("openai" Chat Completions, "openai-response" Responses, "claude"
 // Messages) into a Chat Completions body for upstreamModel (FR-005).
-// ts carries the target model's thinking capability so reasoning
-// budgets map to a supported effort level instead of being silently
-// degraded (FR-005). Unknown formats are ClassUnsupported; malformed
+// Thinking capabilities are accepted for API compatibility but do not filter
+// or clamp reasoning controls. Unknown formats are ClassUnsupported; malformed
 // input is ClassTranslation. Errors are descriptive and redacted — no
 // silent loss of tools or reasoning controls.
-func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
+func BuildRequest(upstreamModel, sourceFormat string, sourceBody []byte, _ *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	switch sourceFormat {
 	case "openai":
 		return buildOpenAIRequest(upstreamModel, sourceBody)
 	case "claude":
-		return claudeToChat(upstreamModel, sourceBody, ts)
+		return claudeToChat(upstreamModel, sourceBody)
 	case "openai-response":
-		return responsesToChat(upstreamModel, sourceBody, ts, shared.ResponseToolContext(tools))
+		return responsesToChat(upstreamModel, sourceBody, shared.ResponseToolContext(tools))
 	default:
 		return nil, shared.UnsupportedFormat(sourceFormat, EndpointPath)
 	}
@@ -164,10 +162,9 @@ type claudeBlock = map[string]any
 // assistant tool_calls, tool_result blocks become role:"tool" messages,
 // max_tokens/stop_sequences/tools map to their CC equivalents
 // (max_tokens defaulted by the shared kernel, FR-005), and the thinking
-// budget maps to a capability-aware reasoning_effort via
-// thinking.EffortFromBudget. Decoding is owned entirely by the shared
-// Claude-request kernel; only target-shape rendering stays local.
-func claudeToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport) ([]byte, *errclass.Error) {
+// control maps to reasoning_effort through fixed protocol conversion. The
+// shared Claude-request kernel owns decoding; target-shape rendering stays local.
+func claudeToChat(upstreamModel string, body []byte) ([]byte, *errclass.Error) {
 	src, eErr := shared.DecodeClaudeMessages(body)
 	if eErr != nil {
 		return nil, eErr
@@ -182,8 +179,12 @@ func claudeToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSuppo
 	if len(src.StopSequences) > 0 {
 		out.Stop = src.StopSequences
 	}
-	if shared.ThinkingEnabled(src.Thinking) {
-		out.ReasoningEffort = thinking.EffortFromBudget(src.Thinking.BudgetTokens, ts)
+	effort, eErr := shared.ClaudeReasoningEffort(src)
+	if eErr != nil {
+		return nil, eErr
+	}
+	if effort != "auto" {
+		out.ReasoningEffort = effort
 	}
 	applyToolChoiceCC(out, src.ToolChoiceKind, src.ToolChoiceName)
 	if src.System != "" {
@@ -342,7 +343,7 @@ func claudeAssistantMessage(m *shared.ClaudeMessageRecord) (*ccMessage, *errclas
 // same field), and max_output_tokens maps to max_tokens. Historical
 // reasoning items are omitted (no CC equivalent; FR-005 explicit omission
 // policy).
-func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSupport, tools *shared.ResponseTools) ([]byte, *errclass.Error) {
+func responsesToChat(upstreamModel string, body []byte, tools *shared.ResponseTools) ([]byte, *errclass.Error) {
 	var src shared.ResponsesRequest
 	if err := json.Unmarshal(body, &src); err != nil {
 		return nil, errclass.Translation("malformed openai-response request JSON: " + err.Error())
@@ -358,7 +359,10 @@ func responsesToChat(upstreamModel string, body []byte, ts *pluginapi.ThinkingSu
 		out.MaxTokens = src.MaxOutputTokens
 	}
 	if src.Reasoning != nil && src.Reasoning.Effort != "" {
-		out.ReasoningEffort = strings.ToLower(strings.TrimSpace(src.Reasoning.Effort))
+		effort := strings.ToLower(strings.TrimSpace(src.Reasoning.Effort))
+		if effort != "auto" {
+			out.ReasoningEffort = effort
+		}
 	}
 	addSystem := func(text string) {
 		if text != "" {

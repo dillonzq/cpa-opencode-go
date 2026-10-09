@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
+	"github.com/dillonzq/cpa-opencode-go/internal/thinking"
 )
 
 // SSEFramer buffers SSE bytes across chunks and yields complete frames.
@@ -1290,18 +1291,39 @@ type ClaudeTool struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
-// ClaudeThinking is the Anthropic extended-thinking request control
-// (decode-only).
+// ClaudeThinking preserves whether a manual budget was explicitly supplied.
 type ClaudeThinking struct {
 	Type         string `json:"type"`
-	BudgetTokens int64  `json:"budget_tokens"`
+	BudgetTokens *int64 `json:"budget_tokens,omitempty"`
 }
 
-// ThinkingEnabled reports whether an Anthropic thinking control requests
-// extended thinking: present with type "enabled" (FR-005). One kernel
-// serves every adapter gating on the control so the check cannot diverge.
-func ThinkingEnabled(t *ClaudeThinking) bool {
-	return t != nil && t.Type == "enabled"
+// ClaudeReasoningEffort translates explicit Claude controls without consulting
+// model capabilities. Missing enabled/adaptive budgets mean automatic thinking.
+func ClaudeReasoningEffort(r *ClaudeRequestRecord) (string, *errclass.Error) {
+	if r.Thinking == nil {
+		return "", nil
+	}
+	switch r.Thinking.Type {
+	case "disabled":
+		return "none", nil
+	case "adaptive", "auto":
+		if effort := strings.ToLower(strings.TrimSpace(r.ThinkingEffort)); effort != "" {
+			return effort, nil
+		}
+		return "auto", nil
+	case "enabled":
+		if r.Thinking.BudgetTokens == nil {
+			return "auto", nil
+		}
+		if effort, ok := thinking.EffortFromBudget(*r.Thinking.BudgetTokens); ok {
+			return effort, nil
+		}
+		return "", &errclass.Error{Class: errclass.ClassUnsupported,
+			Message: "thinking.budget_tokens below -1 cannot be converted to a reasoning effort"}
+	default:
+		return "", &errclass.Error{Class: errclass.ClassUnsupported,
+			Message: fmt.Sprintf("thinking.type %q cannot be converted to a reasoning effort", r.Thinking.Type)}
+	}
 }
 
 // ClaudeBlock is one normalized Anthropic Messages content block produced
@@ -1344,6 +1366,7 @@ type ClaudeRequestRecord struct {
 	ToolChoiceKind string
 	ToolChoiceName string
 	Thinking       *ClaudeThinking
+	ThinkingEffort string
 	Stream         bool
 	Temperature    *float64
 	TopP           *float64
@@ -1390,9 +1413,12 @@ func DecodeClaudeMessages(body json.RawMessage) (*ClaudeRequestRecord, *errclass
 		Tools         []ClaudeTool        `json:"tools"`
 		ToolChoice    json.RawMessage     `json:"tool_choice"`
 		Thinking      *ClaudeThinking     `json:"thinking"`
-		Stream        bool                `json:"stream"`
-		Temperature   *float64            `json:"temperature"`
-		TopP          *float64            `json:"top_p"`
+		OutputConfig  *struct {
+			Effort string `json:"effort"`
+		} `json:"output_config"`
+		Stream      bool     `json:"stream"`
+		Temperature *float64 `json:"temperature"`
+		TopP        *float64 `json:"top_p"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, errclass.Translation("malformed claude request JSON: " + err.Error())
@@ -1416,6 +1442,9 @@ func DecodeClaudeMessages(body json.RawMessage) (*ClaudeRequestRecord, *errclass
 		Stream:         env.Stream,
 		Temperature:    env.Temperature,
 		TopP:           env.TopP,
+	}
+	if env.OutputConfig != nil {
+		rec.ThinkingEffort = env.OutputConfig.Effort
 	}
 	for _, wm := range env.Messages {
 		m := ClaudeMessageRecord{Role: wm.Role}

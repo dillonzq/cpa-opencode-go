@@ -908,24 +908,6 @@ func TestResponseStatusInverseKernels(t *testing.T) {
 	}
 }
 
-// ThinkingEnabled gates on presence AND the "enabled" type: nil and any
-// non-enabled control are false (FR-005).
-func TestThinkingEnabled(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   *ClaudeThinking
-		want bool
-	}{
-		{"nil control", nil, false},
-		{"present but not enabled", &ClaudeThinking{Type: "disabled"}, false},
-		{"enabled", &ClaudeThinking{Type: "enabled", BudgetTokens: 1024}, true},
-	} {
-		if got := ThinkingEnabled(tc.in); got != tc.want {
-			t.Errorf("%s: ThinkingEnabled(%+v) = %v, want %v", tc.name, tc.in, got, tc.want)
-		}
-	}
-}
-
 // NewClaudeEventEmitter binds the stream identity the frames carry.
 func TestNewClaudeEventEmitter(t *testing.T) {
 	if got := NewClaudeEventEmitter("msg_9", "gpt"); got != (ClaudeEventEmitter{id: "msg_9", model: "gpt"}) {
@@ -1505,7 +1487,7 @@ func TestDecodeClaudeMessages(t *testing.T) {
 	if rec.ToolChoiceKind != ToolChoiceNamed || rec.ToolChoiceName != "lookup" {
 		t.Fatalf("tool_choice = %s/%s", rec.ToolChoiceKind, rec.ToolChoiceName)
 	}
-	if rec.Thinking == nil || rec.Thinking.BudgetTokens != 1024 ||
+	if rec.Thinking == nil || rec.Thinking.BudgetTokens == nil || *rec.Thinking.BudgetTokens != 1024 ||
 		rec.Temperature == nil || *rec.Temperature != 0.5 || rec.TopP == nil || *rec.TopP != 0.9 {
 		t.Fatalf("optional envelope fields lost: %+v", rec)
 	}
