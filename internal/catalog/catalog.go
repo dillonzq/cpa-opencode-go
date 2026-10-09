@@ -17,10 +17,12 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
 	"github.com/dillonzq/cpa-opencode-go/internal/config"
+	"github.com/dillonzq/cpa-opencode-go/internal/modelmeta"
 )
 
 // catalogBudgetFloor keeps an undersized max-response-bytes knob from
@@ -64,6 +66,7 @@ type ModelRecord struct {
 	PublicID     string
 	UpstreamID   string
 	DisplayName  string
+	Description  string
 	Protocol     Route
 	EndpointPath string
 	ContextLimit int64
@@ -89,29 +92,21 @@ type HostClient interface {
 // rawModel tolerantly decodes one catalog entry; unknown fields —
 // including protocol/endpoint fields the catalog does not provide and
 // reasoning/tool_calling flags the plugin does not act on — are ignored via
-// json tags. Modality metadata accepts both spellings.
+// json tags. Capability extensions use Codex client catalog field names.
 type rawModel struct {
-	ID               string       `json:"id"`
-	DisplayName      string       `json:"display_name"`
-	ContextLength    int64        `json:"context_length"`
-	MaxOutputTokens  int64        `json:"max_output_tokens"`
-	InputModes       []string     `json:"input_modes"`
-	OutputModes      []string     `json:"output_modes"`
-	InputModalities  []string     `json:"input_modalities"`
-	OutputModalities []string     `json:"output_modalities"`
-	Thinking         *rawThinking `json:"thinking"`
+	ID               string              `json:"id"`
+	DisplayName      *string             `json:"display_name"`
+	Description      *string             `json:"description"`
+	ContextWindow    *int64              `json:"context_window"`
+	MaxTokens        *int64              `json:"max_tokens"`
+	InputModalities  []string            `json:"input_modalities"`
+	OutputModalities []string            `json:"output_modalities"`
+	ReasoningLevels  []rawReasoningLevel `json:"supported_reasoning_levels"`
 }
 
-// rawThinking tolerantly decodes the optional per-model thinking object;
-// pluginapi.ThinkingSupport itself is untagged, so snake_case upstream keys
-// are decoded here and mapped field-by-field (partial objects decode to a
-// partial struct).
-type rawThinking struct {
-	Min            *int     `json:"min"`
-	Max            *int     `json:"max"`
-	ZeroAllowed    *bool    `json:"zero_allowed"`
-	DynamicAllowed *bool    `json:"dynamic_allowed"`
-	Levels         []string `json:"levels"`
+// rawReasoningLevel matches a Codex supported_reasoning_levels entry.
+type rawReasoningLevel struct {
+	Effort string `json:"effort"`
 }
 
 // prefixRoutes covers unknown variants of known families;
@@ -136,8 +131,11 @@ var prefixRoutes = []struct {
 // Manager owns the catalog snapshot. All accessors are safe for
 // concurrent use alongside Refresh.
 type Manager struct {
-	cfg    config.Config
-	client HostClient
+	cfg          config.Config
+	client       HostClient
+	refreshMu    sync.Mutex
+	fallback     map[string]modelmeta.Metadata
+	fallbackNext time.Time
 
 	mu sync.Mutex
 	// raw retains the decoded upstream entries behind the current snapshot
@@ -173,10 +171,28 @@ func New(cfg config.Config, client HostClient) *Manager {
 // its routes immediately instead of serving stale routable records until the
 // outage ends.
 func (m *Manager) SeedFrom(prev *Manager) {
+	m.SeedFallbackFrom(prev)
 	prev.mu.Lock()
 	raw := prev.raw
 	prev.mu.Unlock()
 	m.swap(raw)
+}
+
+// SeedFallbackFrom carries the independent metadata cache across reconfiguration
+// without carrying upstream models (which must still obey the catalog stale policy).
+func (m *Manager) SeedFallbackFrom(prev *Manager) {
+	if prev == nil || !m.cfg.ModelsDev.Enabled || m.cfg.ModelsDev.URL != prev.cfg.ModelsDev.URL {
+		return
+	}
+	prev.mu.Lock()
+	fallback, next := prev.fallback, prev.fallbackNext
+	prev.mu.Unlock()
+	if !next.IsZero() {
+		next = next.Add(m.cfg.ModelsDev.RefreshInterval - prev.cfg.ModelsDev.RefreshInterval)
+	}
+	m.mu.Lock()
+	m.fallback, m.fallbackNext = fallback, next
+	m.mu.Unlock()
 }
 
 // Refresh fetches and swaps the catalog snapshot. On failure it returns a
@@ -184,6 +200,8 @@ func (m *Manager) SeedFrom(prev *Manager) {
 // catalog.stale-while-unavailable is enabled, otherwise the routable set
 // is cleared until the next success (FR-002).
 func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
+	m.refreshMu.Lock()
+	defer m.refreshMu.Unlock()
 	if m.client == nil {
 		// Only direct construction can produce a nil host client
 		// (production always wires the bridge); fail loudly through the
@@ -225,6 +243,11 @@ func (m *Manager) Refresh(ctx context.Context, apiKey string) error {
 	} else if err := json.Unmarshal(env.Data, &entries); err != nil {
 		return m.fail("invalid json")
 	}
+	if len(entries) > 0 && m.cfg.ModelsDev.Enabled {
+		if warn := m.refreshFallback(ctx); warn != "" {
+			warns = append(warns, warn)
+		}
+	}
 	m.swap(entries, warns...)
 	return nil
 }
@@ -247,6 +270,13 @@ func (m *Manager) fail(category string) error {
 // extraWarns are caller-supplied snapshot diagnostics (e.g. decode-level
 // shape-drift notices) recorded alongside the per-entry ones.
 func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
+	m.mu.Lock()
+	fallback := m.fallback
+	m.mu.Unlock()
+	overrides := make(map[string]modelmeta.Metadata, len(m.cfg.Models))
+	for _, model := range m.cfg.Models {
+		overrides[model.Name] = model.Metadata
+	}
 	models := make([]ModelRecord, 0, len(entries))
 	index := make(map[string]ModelRecord, len(entries)*2)
 	var unsup []UnsupportedModel
@@ -297,23 +327,24 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 		if endpoint == "" {
 			endpoint = route.EndpointPath()
 		}
-		inputModes := firstNonEmpty(e.InputModes, e.InputModalities)
-		outputModes := firstNonEmpty(e.OutputModes, e.OutputModalities)
-		display := e.DisplayName
-		if display == "" {
+		metadata := modelmeta.Merge(fallback[e.ID], e.metadata())
+		metadata = modelmeta.Merge(metadata, overrides[e.ID])
+		display := modelmeta.Value(metadata.DisplayName)
+		if metadata.DisplayName == nil {
 			display = e.ID
 		}
 		rec := ModelRecord{
 			PublicID:     config.PublicID(m.cfg, e.ID),
 			UpstreamID:   e.ID,
 			DisplayName:  display,
+			Description:  modelmeta.Value(metadata.Description),
 			Protocol:     route,
 			EndpointPath: endpoint,
-			ContextLimit: e.ContextLength,
-			OutputLimit:  e.MaxOutputTokens,
-			InputModes:   inputModes,
-			OutputModes:  outputModes,
-			Thinking:     normalizeThinking(e.Thinking),
+			ContextLimit: modelmeta.Value(metadata.Context),
+			OutputLimit:  modelmeta.Value(metadata.Output),
+			InputModes:   metadata.InputModalities,
+			OutputModes:  metadata.OutputModalities,
+			Thinking:     metadata.Thinking.Support(),
 		}
 		// With a prefix enabled, one record's PublicID can equal another
 		// record's UpstreamID (upstream "foo" and "opencode-go/foo" both
@@ -404,36 +435,28 @@ func endpointEscapesBase(baseURL, endpoint string) bool {
 	return !strings.EqualFold(got.Host, base.Host) || got.Scheme != base.Scheme
 }
 
-func firstNonEmpty(a, b []string) []string {
-	if len(a) > 0 {
-		return a
-	}
-	return b
-}
-
-// normalizeThinking converts the decoded raw thinking object into its
-// pluginapi form; absent objects yield nil, partial ones a partial struct.
-func normalizeThinking(rt *rawThinking) *pluginapi.ThinkingSupport {
-	if rt == nil {
+// normalizeReasoningLevels preserves missing versus explicitly empty capabilities.
+func normalizeReasoningLevels(levels []rawReasoningLevel) *modelmeta.Thinking {
+	if levels == nil {
 		return nil
 	}
-	t := &pluginapi.ThinkingSupport{}
-	if rt.Min != nil {
-		t.Min = *rt.Min
-	}
-	if rt.Max != nil {
-		t.Max = *rt.Max
-	}
-	if rt.ZeroAllowed != nil {
-		t.ZeroAllowed = *rt.ZeroAllowed
-	}
-	if rt.DynamicAllowed != nil {
-		t.DynamicAllowed = *rt.DynamicAllowed
-	}
-	if len(rt.Levels) > 0 {
-		t.Levels = append([]string(nil), rt.Levels...)
+	t := &modelmeta.Thinking{Levels: make([]string, 0, len(levels)), ZeroAllowed: modelmeta.Ptr(false)}
+	for _, level := range levels {
+		if level.Effort == "" {
+			continue
+		}
+		t.Levels = append(t.Levels, level.Effort)
+		if level.Effort == "none" {
+			t.ZeroAllowed = modelmeta.Ptr(true)
+		}
 	}
 	return t
+}
+
+func (e rawModel) metadata() modelmeta.Metadata {
+	return modelmeta.Metadata{DisplayName: e.DisplayName, Description: e.Description,
+		Context: e.ContextWindow, Output: e.MaxTokens, InputModalities: e.InputModalities,
+		OutputModalities: e.OutputModalities, Thinking: normalizeReasoningLevels(e.ReasoningLevels)}
 }
 
 // Models returns the routable snapshot (FR-003 identity fields). The slice

@@ -20,6 +20,47 @@ func requireErrContains(t *testing.T, err error, want string) {
 // that target a later validation check.
 const withKey = "api-keys:\n  - value: sk-dummy\n"
 
+func TestModelMetadataOverrides(t *testing.T) {
+	c, err := Load([]byte(withKey + `models:
+  - name: glm-test
+    display-name: Custom
+    max-context-length: 200000
+    max-tokens: 0
+    input-modalities: []
+    output-modalities: [text]
+    thinking:
+      min: 0
+      max: 1000
+      zero-allowed: false
+      dynamic-allowed: true
+      levels: []
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := c.Models[0]
+	if m.Name != "glm-test" || m.DisplayName == nil || *m.DisplayName != "Custom" || m.Context == nil || *m.Context != 200000 ||
+		m.Output == nil || *m.Output != 0 || m.InputModalities == nil || len(m.InputModalities) != 0 ||
+		m.Thinking == nil || m.Thinking.ZeroAllowed == nil || *m.Thinking.ZeroAllowed || m.Thinking.Levels == nil {
+		t.Fatalf("CPA override presence lost: %+v", m)
+	}
+	if !c.ModelsDev.Enabled || c.ModelsDev.URL != "https://models.dev/api.json" || c.ModelsDev.RefreshInterval != 24*time.Hour {
+		t.Fatalf("fallback defaults: %+v", c.ModelsDev)
+	}
+}
+
+func TestModelMetadataValidation(t *testing.T) {
+	for _, yaml := range []string{
+		"models: [{name: ''}]", "models: [{name: glm}, {name: glm}]",
+		"models: [{name: glm, max-context-length: -1}]", "models: [{name: glm, thinking: {min: 10, max: 1}}]",
+		"models-dev: {url: http://metadata.test/api.json}", "models-dev: {refresh-interval: 1s}",
+	} {
+		if _, err := Load([]byte(withKey + yaml)); err == nil {
+			t.Errorf("accepted invalid metadata config %s", yaml)
+		}
+	}
+}
+
 func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	c, err := Load([]byte(withKey))
 	if err != nil {

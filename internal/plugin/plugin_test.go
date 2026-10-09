@@ -28,9 +28,9 @@ import (
 const (
 	testKey         = "sk-test-secret-1"
 	testCatalogJSON = `{"data":[{"id":"glm-5.3"}]}`
-	testValidYAML   = "api-keys:\n  - value: " + testKey + "\n"
+	testValidYAML   = "api-keys:\n  - value: " + testKey + "\nmodels-dev:\n  enabled: false\n"
 	dummyKey        = "sk-test"
-	dummyKeyYAML    = "api-keys:\n  - value: " + dummyKey + "\n"
+	dummyKeyYAML    = "api-keys:\n  - value: " + dummyKey + "\nmodels-dev:\n  enabled: false\n"
 )
 
 type capturedCall struct {
@@ -440,7 +440,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	}
 	if reg.Metadata.Name != "cpa-opencode-go" || reg.Metadata.Version != pluginVersion ||
 		reg.Metadata.Author != "dillonzq" || reg.Metadata.GitHubRepository != "https://github.com/dillonzq/cpa-opencode-go" ||
-		len(reg.Metadata.ConfigFields) != 10 {
+		len(reg.Metadata.ConfigFields) != 12 {
 		t.Fatalf("metadata wrong: %+v", reg.Metadata)
 	}
 	if !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider {
@@ -501,6 +501,8 @@ func TestRegistrationConfigFields(t *testing.T) {
 		name string
 		typ  pluginapi.ConfigFieldType
 	}{
+		{"models", pluginapi.ConfigFieldTypeArray},
+		{"models-dev", pluginapi.ConfigFieldTypeObject},
 		{"api-keys", pluginapi.ConfigFieldTypeArray},
 		{"base-url", pluginapi.ConfigFieldTypeString},
 		{"catalog-url", pluginapi.ConfigFieldTypeString},
