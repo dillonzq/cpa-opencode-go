@@ -1,4 +1,4 @@
-// Command opencode-go-cliproxyapi builds the CLIProxyAPI native plugin DLL
+// Command cpa-opencode-go builds the CLIProxyAPI native plugin DLL
 // exposing the OpenCode Go provider. This file is CGO glue only: every RPC
 // method is forwarded verbatim into internal/plugin.HandleCall.
 package main
@@ -64,7 +64,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 
-	"opencode-go-cliproxyapi/internal/plugin"
+	"github.com/dillonzq/cpa-opencode-go/internal/plugin"
 )
 
 func main() {}

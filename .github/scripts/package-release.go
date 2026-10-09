@@ -74,6 +74,19 @@ func packageLibrary(libraryPath, archivePath string) ([]byte, error) {
 	if _, errCopy := io.Copy(entry, library); errCopy != nil {
 		return nil, fmt.Errorf("copy library: %w", errCopy)
 	}
+	license, errReadLicense := os.ReadFile("LICENSE")
+	if errReadLicense != nil {
+		return nil, fmt.Errorf("read license: %w", errReadLicense)
+	}
+	licenseHeader := &zip.FileHeader{Name: "LICENSE", Method: zip.Deflate}
+	licenseHeader.SetMode(0o644)
+	licenseEntry, errLicenseEntry := writer.CreateHeader(licenseHeader)
+	if errLicenseEntry != nil {
+		return nil, fmt.Errorf("create license entry: %w", errLicenseEntry)
+	}
+	if _, errWriteLicense := licenseEntry.Write(license); errWriteLicense != nil {
+		return nil, fmt.Errorf("write license: %w", errWriteLicense)
+	}
 	if errClose := writer.Close(); errClose != nil {
 		return nil, fmt.Errorf("close zip writer: %w", errClose)
 	}

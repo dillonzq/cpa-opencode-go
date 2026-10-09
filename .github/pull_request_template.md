@@ -11,7 +11,8 @@ Before submitting, read [CONTRIBUTING.md](../CONTRIBUTING.md), especially the Pu
 ## Validation
 
 - [ ] `go test -tags debug ./...`
-- [ ] `go vet ./...`
+- [ ] `go test ./.github/scripts`
+- [ ] `go vet ./... ./.github/scripts`
 - [ ] New or modified behavioral paths have unit tests.
 - [ ] Protocol changes include streaming and non-streaming tests.
 - [ ] `RELEASE_NOTES.md` is updated.

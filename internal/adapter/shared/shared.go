@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"opencode-go-cliproxyapi/internal/errclass"
+	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 )
 
 // SSEFramer buffers SSE bytes across chunks and yields complete frames.

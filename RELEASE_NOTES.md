@@ -1,8 +1,18 @@
 ## What's Changed
 
-Full OpenAI Codex CLI support across all models: multi-agent namespaces, custom programmatic tools (`exec`), tool call results, and reasoning efforts are fully functional.
+`cpa-opencode-go` is now maintained independently at [dillonzq/cpa-opencode-go](https://github.com/dillonzq/cpa-opencode-go), based on [massiveits/opencode-go-cliproxyapi](https://github.com/massiveits/opencode-go-cliproxyapi).
 
-### Bug Fixes
+### Project Identity and Releases
+
+- Rename the plugin ID, configuration key, shared libraries, release archives, and quota management paths to `cpa-opencode-go`.
+- Use `github.com/dillonzq/cpa-opencode-go` as the Go module path and update plugin metadata and the quota page GitHub link to the independently maintained repository.
+- Keep the `opencode-go` provider ID, credential type, and model prefix for compatibility.
+- Inject the release tag version into plugin metadata on all build targets; local builds default to `0.0.0-dev`.
+- Include the MIT license in release archives, preserving the original copyright notice and adding the current maintainer's notice.
+- Validate release archive contents and reject missing licenses in packaging tests explicitly included in CI.
+- Run CI on pushes to `main` and align documented Go requirements with `go.mod` (Go 1.26.7+).
+
+### Inherited Adapter Fixes
 
 - Fix missing Responses stream item lifecycle completion events (output_text.done, content_part.done, function_call_arguments.done, output_item.done) prior to response.completed, resolving dropped assistant output and tool calls in OpenAI Codex CLI and strict Responses clients.
 - Fix handling of in-history messages with role: "system" across protocol adapters without rejecting them as unsupported roles or forwarding invalid turn roles to upstream providers that require alternating user/assistant turns.
@@ -19,8 +29,10 @@ Full OpenAI Codex CLI support across all models: multi-agent namespaces, custom 
 
 ## Upgrade Notes
 
-- Replace the old plugin binary with the new release binary.
-- Restart CLIProxyAPI after replacing the plugin.
-- Hard-refresh Management Center if the plugin page looks stale.
+- Stop CLIProxyAPI and rename `plugins.configs.opencode-go-cliproxyapi` to `plugins.configs.cpa-opencode-go`, keeping its plugin settings and setting `enabled: true`. Ensure `plugins.enabled` is also `true`.
+- For manual installation, remove any old `store` block from the renamed configuration so the old repository and version pin are not carried over. For a store-managed installation, install a new entry for `cpa-opencode-go` pointing to `dillonzq/cpa-opencode-go`.
+- Remove all old `opencode-go-cliproxyapi` shared libraries, including versioned filenames such as `opencode-go-cliproxyapi-v0.1.10.dylib`, before installing the new `cpa-opencode-go` binary. Enabling both registers the same provider twice.
+- Keep existing `opencode-go/<model>` IDs and credential records.
+- Restart CLIProxyAPI and hard-refresh Management Center. Quota management requests now use `/v0/management/plugins/cpa-opencode-go/quota-usage`, and the renamed session cache starts empty.
 
-**Full Changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.1.9...v0.1.10
+**Original upstream changelog**: https://github.com/massiveits/opencode-go-cliproxyapi/compare/v0.1.9...v0.1.10

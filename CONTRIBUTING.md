@@ -1,13 +1,15 @@
-# Contributing to OpenCode Go CLIProxyAPI Plugin
+# Contributing to cpa-opencode-go
 
 Thank you for contributing. This guide covers how to set up the development environment, build the plugin, and submit pull requests.
+
+Submit issues and pull requests to [dillonzq/cpa-opencode-go](https://github.com/dillonzq/cpa-opencode-go), which is maintained independently of the original project.
 
 ---
 
 ## Development Setup
 
 ### Prerequisites
-- Go 1.26+ (with CGO enabled for C-shared builds)
+- Go 1.26.7+ (with CGO enabled for C-shared builds)
 - Git
 
 ### Build & Test Commands
@@ -17,16 +19,17 @@ Thank you for contributing. This guide covers how to set up the development envi
 Run the test suite:
 ```powershell
 go test -tags debug ./...
+go test ./.github/scripts
 ```
 
 Run static analysis:
 ```powershell
-go vet ./...
+go vet ./... ./.github/scripts
 ```
 
 Build the native shared library for local testing:
 ```powershell
-go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/opencode-go-cliproxyapi.dll .
+go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-go.dll .
 ```
 
 ---
@@ -46,5 +49,5 @@ go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/opencode-go-cl
 
 1. Fork the repository and create a feature branch from `main`.
 2. Implement your changes following the code style and testing guidelines above.
-3. Ensure `go test -tags debug ./...` and `go vet ./...` pass cleanly.
+3. Ensure `go test -tags debug ./...`, `go test ./.github/scripts`, and `go vet ./... ./.github/scripts` pass cleanly.
 4. Open a pull request against `main` with a clear description of the change and any related issue references.
