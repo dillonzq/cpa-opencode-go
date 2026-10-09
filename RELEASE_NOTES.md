@@ -14,6 +14,17 @@
   English and Chinese. Provider-specific signatures and encrypted reasoning
   remain native-only; request-side historical reasoning policies are unchanged.
 
+## Request handling
+
+- Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`):
+  strip the suffix for catalog routing and apply its reasoning control
+  (`reasoning_effort`, a Messages thinking budget, or `reasoning.effort`) with
+  priority over the body's own control. `none` disables, `auto` defers to
+  upstream defaults, levels and numeric budgets use the fixed conversion
+  tables, and an unrecognized value strips the suffix only, matching CPA.
+  Catalog IDs that literally contain parentheses still resolve when the
+  stripped name does not.
+
 # v0.1.0
 
 First independent release of **cpa-opencode-go**, based on
