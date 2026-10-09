@@ -57,6 +57,7 @@ These are existing behaviors; the current changes do not extend their support.
 | Historical reasoning | Messages → Chat Completions/Responses drops thinking/redacted_thinking. Responses → Chat Completions drops reasoning items. Chat Completions → Messages/Responses does not map historical reasoning fields. Responses → Messages preserves summary text as unsigned thinking |
 | Native Responses requests for non-GPT models | Remove historical reasoning and compaction. The native GPT path only rewrites model, preserving other content |
 | Reasoning controls | `reasoning_effort` ↔ `reasoning.effort`. Messages uses a fixed budget table; the reverse mapping uses budget thresholds, so exact round trips are not possible. `none` disables reasoning; `auto` defers to upstream defaults. Budgets are not filtered or clamped by model capabilities |
+| Model-name thinking suffixes | CPA parses a trailing `model(value)` suffix only on its own executor paths, so the plugin strips it for catalog routing and applies the control itself: `reasoning_effort` on Chat Completions, an enabled budget (or disabled thinking) with `output_config.effort` removed on Messages, and `reasoning.effort` on Responses. `none`/`0` disables, `auto`/`-1` defers to upstream defaults, levels are `minimal`–`max`, and a non-negative budget maps to a level with the fixed thresholds. The suffix wins over the body's own control; an unrecognized value strips the suffix only. Other provider-specific controls already in the body are left untouched |
 | system/developer/instructions | Convert to the target's system/instructions format. Messages also merges user/tool_result content and consecutive assistant content. Original message boundaries are not guaranteed to survive |
 | Token limits | Map `max_tokens/max_completion_tokens/max_output_tokens`. Messages requires a positive limit and defaults missing or nonpositive values to 4096. Responses → Chat Completions omits nonpositive max_output_tokens |
 | stop/stop_sequences | Preserve between Chat Completions and Messages; drop when converting to Responses |
@@ -69,7 +70,7 @@ These are existing behaviors; the current changes do not extend their support.
 | Native Chat Completions requests | Change developer roles to system. Remove top-level thinking objects without a valid string type |
 | Native Messages requests | Fold historical system turns into the top-level system field, omitting their thinking/redacted_thinking content. Without system turns, only model is rewritten |
 
-Implementation entry points: `internal/adapter/*/request.go`, `convert.go`, and `stream.go`. Shared tool normalization lives in `internal/adapter/shared/responses_tools.go`; reasoning control tables live in `internal/thinking/thinking.go`.
+Implementation entry points: `internal/adapter/*/request.go`, `convert.go`, and `stream.go`. Shared tool normalization lives in `internal/adapter/shared/responses_tools.go`; reasoning control tables and model-name suffix parsing live in `internal/thinking`, and suffix application lives in `internal/plugin/reasoning_suffix.go`.
 
 
 ## Further compatibility work

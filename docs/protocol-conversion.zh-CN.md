@@ -57,6 +57,7 @@ Responses 的流式转换接收 `response.reasoning_summary_text.delta/done` 与
 | 历史推理 | Messages → Chat Completions/Responses 丢弃 thinking/redacted_thinking；Responses → Chat Completions 丢弃 reasoning items；Chat Completions → Messages/Responses 不映射历史 reasoning 字段。Responses → Messages 保留 summary 文本为无签名 thinking |
 | 原生 Responses 发给非 GPT 模型 | 删除历史 reasoning 和 compaction；原生 GPT 路径仅重写 model，保留其他内容 |
 | reasoning 控制 | `reasoning_effort` ↔ `reasoning.effort`；转 Messages 使用固定 budget 表，反向 budget 按阈值映射 effort，不能精确往返。`none` 为关闭；`auto` 留给上游默认。不会按模型能力过滤或截断 budget |
+| 模型名思考后缀 | CPA 仅在自身执行器链路解析尾部的 `model(value)` 后缀，因此插件自己剥离后缀用于目录路由，并应用对应参数：Chat Completions 写 `reasoning_effort`，Messages 写启用的 budget（或关闭）并删除 `output_config.effort`，Responses 写 `reasoning.effort`。`none`/`0` 关闭，`auto`/`-1` 交给上游默认，档位为 `minimal`–`max`，非负 budget 按固定阈值映射档位。后缀优先于请求体自身参数；无法识别的值只剥离后缀。请求体中已有的其他服务商专有参数不受影响 |
 | system/developer/instructions | 转成目标协议 system/instructions；Messages 还会合并 user/tool_result 与连续 assistant 内容；历史消息边界不保证原样保留 |
 | token 限制 | `max_tokens/max_completion_tokens/max_output_tokens` 映射；Messages 必须有正数限制，缺省或非正数默认 4096；Responses → Chat Completions 的非正数 max_output_tokens 被省略 |
 | stop/stop_sequences | Chat Completions ↔ Messages 保留；转 Responses 丢弃 |
@@ -69,7 +70,7 @@ Responses 的流式转换接收 `response.reasoning_summary_text.delta/done` 与
 | 原生 Chat Completions 请求 | developer 角色改为 system；缺少有效字符串 type 的顶层 thinking 对象删除 |
 | 原生 Messages 请求 | 历史 system turn 折叠到顶层 system；其中 thinking/redacted_thinking 被省略；没有 system turn 时只重写 model |
 
-实现入口：`internal/adapter/*/request.go`、`convert.go`、`stream.go`，共享工具规范化在 `internal/adapter/shared/responses_tools.go`，推理控制表在 `internal/thinking/thinking.go`。
+实现入口：`internal/adapter/*/request.go`、`convert.go`、`stream.go`，共享工具规范化在 `internal/adapter/shared/responses_tools.go`，推理控制表与模型名后缀解析在 `internal/thinking`，后缀应用在 `internal/plugin/reasoning_suffix.go`。
 
 
 ## 后续兼容升级方向
