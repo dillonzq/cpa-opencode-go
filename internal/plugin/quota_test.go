@@ -10,8 +10,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 
-	"opencode-go-cliproxyapi/internal/config"
-	"opencode-go-cliproxyapi/resources"
+	"github.com/dillonzq/cpa-opencode-go/internal/config"
+	"github.com/dillonzq/cpa-opencode-go/resources"
 )
 
 func TestManagementRegistration(t *testing.T) {
@@ -23,6 +23,9 @@ func TestManagementRegistration(t *testing.T) {
 	decodeResult(t, mustHandle(t, m, pluginabi.MethodManagementRegister, []byte(`{}`)), &got)
 	if len(got.Routes) != 1 || got.Routes[0].Method != http.MethodPost || got.Routes[0].Path != "/plugins/"+pluginName+"/quota-usage" {
 		t.Fatalf("routes = %+v", got.Routes)
+	}
+	if !strings.Contains(resources.QuotaPage, `const endpoint = "/v0/management`+got.Routes[0].Path+`";`) {
+		t.Fatal("quota page endpoint does not match the registered management route")
 	}
 	if len(got.Resources) != 1 || got.Resources[0].Path != "/quota" || got.Resources[0].Menu != "OpenCode Go Quota" {
 		t.Fatalf("resources = %+v", got.Resources)
@@ -152,7 +155,7 @@ func TestQuotaPageIsStaticAndSecretFree(t *testing.T) {
 func TestQuotaPageUsesManualSessionCache(t *testing.T) {
 	page := resources.QuotaPage
 	for _, marker := range []string{
-		`const storageKey = "opencode-go-cliproxyapi:quota"`,
+		`const storageKey = "cpa-opencode-go:quota"`,
 		"sessionStorage.getItem(storageKey)",
 		"sessionStorage.setItem(storageKey, JSON.stringify(cache))",
 		"JSON.parse(stored)",

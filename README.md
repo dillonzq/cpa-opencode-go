@@ -1,8 +1,14 @@
-# OpenCode Go CLIProxyAPI Plugin
+# cpa-opencode-go
+
+[English](README.md) | [简体中文](README.zh-CN.md)
 
 A native dynamic Go plugin for [CLIProxyAPI](https://help.router-for.me/plugin/development) that exposes OpenCode Go as a single provider (`opencode-go`).
 
 The plugin unifies model discovery, protocol translation, and execution across OpenCode Go's upstream endpoints while leveraging CLIProxyAPI's built-in authentication, scheduling, keys rotation, and cooldown management.
+
+Independently maintained by [dillonzq](https://github.com/dillonzq), based on [massiveits/opencode-go-cliproxyapi](https://github.com/massiveits/opencode-go-cliproxyapi). The original MIT license and copyright notice are preserved.
+
+The plugin ID is `cpa-opencode-go`. The provider ID, credential type, and default model prefix remain `opencode-go`.
 
 ## The Problem
 
@@ -36,7 +42,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 ## Requirements
 
 - **CLIProxyAPI**: `v7.2.138+`
-- **Go Toolchain**: Go 1.24+ (with CGO enabled for C-shared build mode)
+- **Go Toolchain**: Go 1.26.7+ (with CGO enabled for C-shared build mode)
 
 ## Build
 
@@ -44,29 +50,44 @@ Build the dynamic shared library for your platform:
 
 ### Windows (AMD64)
 ```powershell
-go build -buildmode=c-shared -o plugins/windows/amd64/opencode-go-cliproxyapi.dll .
+go build -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-go.dll .
 ```
 
 ### Linux (AMD64)
 ```bash
-go build -buildmode=c-shared -o plugins/linux/amd64/opencode-go-cliproxyapi.so .
+go build -buildmode=c-shared -o plugins/linux/amd64/cpa-opencode-go.so .
 ```
 
 ### macOS (ARM64)
 ```bash
-go build -buildmode=c-shared -o plugins/darwin/arm64/opencode-go-cliproxyapi.dylib .
+go build -buildmode=c-shared -o plugins/darwin/arm64/cpa-opencode-go.dylib .
 ```
 
 Place the compiled binary into your CLIProxyAPI plugin directory (e.g. `<cliproxyapi_root>/plugins/<os>/<arch>/`).
 
+Release builds inject the Git tag version into plugin metadata. Local builds report `0.0.0-dev` unless built with `-ldflags "-X github.com/dillonzq/cpa-opencode-go/internal/plugin.pluginVersion=<version>"`.
+
+### Migrating from opencode-go-cliproxyapi
+
+1. Stop CLIProxyAPI.
+2. Rename `plugins.configs.opencode-go-cliproxyapi` to `plugins.configs.cpa-opencode-go`, keeping the plugin settings and setting `enabled: true`.
+3. Remove all old `opencode-go-cliproxyapi` shared libraries, including versioned filenames such as `opencode-go-cliproxyapi-v0.1.10.dylib`, and install the new `cpa-opencode-go` library for your platform. Do not enable both plugins: they register the same provider.
+4. Restart CLIProxyAPI and hard-refresh Management Center. The quota page now uses `/v0/management/plugins/cpa-opencode-go/quota-usage`; its session cache starts empty after migration.
+
+Existing `opencode-go/<model>` IDs, API keys, and credential records continue to work.
+
+If the old plugin was installed through Plugin Store, its configuration may contain a `store` block with the old repository and a pinned version. For manual installation, remove this block from the renamed configuration; otherwise CPA may skip the new binary because its filename does not match the old version pin. For a store-managed installation, install a new store entry for `cpa-opencode-go` pointing to `dillonzq/cpa-opencode-go` instead of copying the old `store` metadata.
+
 ## Configuration
 
-Configure the plugin in your CLIProxyAPI `config.yaml` under `plugins.configs.opencode-go-cliproxyapi`:
+Configure the plugin in your CLIProxyAPI `config.yaml` under `plugins.configs.cpa-opencode-go`:
 
 ```yaml
 plugins:
+  enabled: true
   configs:
-    opencode-go-cliproxyapi:
+    cpa-opencode-go:
+      enabled: true
       # Upstream base URL (default: "https://opencode.ai/zen/go/v1")
       base-url: "https://opencode.ai/zen/go/v1"
 
@@ -132,9 +153,12 @@ plugins:
 # Run all tests
 go test ./...
 
+# Verify release archives include the library and license
+go test ./.github/scripts
+
 # Run tests with coverage
 go test ./... -cover
 
 # Run linter / vetting
-go vet ./...
+go vet ./... ./.github/scripts
 ```

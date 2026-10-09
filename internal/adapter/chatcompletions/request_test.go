@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	"opencode-go-cliproxyapi/internal/adapter/shared"
-	"opencode-go-cliproxyapi/internal/errclass"
+	"github.com/dillonzq/cpa-opencode-go/internal/adapter/shared"
+	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 )
 
 func decodeOut(t *testing.T, out []byte, eErr *errclass.Error) map[string]any {

@@ -87,7 +87,7 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
     </div>
     <div class="quota-header-actions">
       <button id="refresh-all-btn" class="quota-btn" style="display: none;">Refresh All</button>
-      <a href="https://github.com/massiveits/opencode-go-cliproxyapi" target="_blank" rel="noopener noreferrer" class="quota-btn" aria-label="Star on GitHub">
+      <a href="https://github.com/dillonzq/cpa-opencode-go" target="_blank" rel="noopener noreferrer" class="quota-btn" aria-label="Star on GitHub">
         <span aria-hidden="true">&#9733;</span> Star on GitHub
       </a>
     </div>
@@ -121,8 +121,8 @@ body { margin: 0; padding: 32px; color: var(--text-primary); background: var(--b
 (() => {
   const app = document.getElementById("app");
   const refreshAllBtn = document.getElementById("refresh-all-btn");
-  const endpoint = "/v0/management/plugins/opencode-go-cliproxyapi/quota-usage";
-  const storageKey = "opencode-go-cliproxyapi:quota";
+  const endpoint = "/v0/management/plugins/cpa-opencode-go/quota-usage";
+  const storageKey = "cpa-opencode-go:quota";
   const values = new Map();
   const fetchedAt = new Map();
   const cardErrors = new Map();
