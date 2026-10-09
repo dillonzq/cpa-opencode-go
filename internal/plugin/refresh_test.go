@@ -23,7 +23,7 @@ const (
 	refreshTwoKeyYAML = "api-keys:\n" +
 		"  - value: " + cooledRefreshKey + "\n" +
 		"  - value: " + goodRefreshKey + "\n" +
-		"catalog-url: https://catalog.test/models\n"
+		"catalog-url: https://catalog.test/models\nmodels-dev:\n  enabled: false\n"
 )
 
 // authRecorder answers host.http.do, records every Authorization header, and

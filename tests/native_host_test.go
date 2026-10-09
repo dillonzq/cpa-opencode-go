@@ -90,7 +90,7 @@ func TestNativeHostABI(t *testing.T) {
 	if err := os.WriteFile(overlayPath, overlay, 0644); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"TestOpenCodeNativeABI", "TestOpenCodeNativeUnload", "TestOpenCodeNativeAuthNames", "TestOpenCodeNativeTerminalShapes"} {
+	for _, name := range []string{"TestOpenCodeNativeABI", "TestOpenCodeNativeUnload", "TestOpenCodeNativeAuthNames", "TestOpenCodeNativeTerminalShapes", "TestOpenCodeNativeMetadata"} {
 		// A fresh process for each load: C-shared Go runtimes need not support
 		// unloading/reinitializing the same library in a single host process.
 		out := run(hostDir, "test", "-overlay", overlayPath, "-tags", "debug", "./internal/pluginhost", "-run", "^"+name+"$", "-count=1", "-timeout=90s", "-v")

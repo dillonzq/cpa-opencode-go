@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dillonzq/cpa-opencode-go/internal/modelmeta"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,6 +51,8 @@ type RouteOverride struct {
 }
 
 type Config struct {
+	Models           []ModelOverride
+	ModelsDev        ModelsDev
 	BaseURL          string
 	CatalogURL       string
 	ModelPrefix      ModelPrefix
@@ -61,10 +65,27 @@ type Config struct {
 	MaxResponseBytes int64
 }
 
+type ModelOverride struct {
+	Name               string `yaml:"name"`
+	modelmeta.Metadata `yaml:",inline"`
+}
+
+type ModelsDev struct {
+	Enabled         bool
+	URL             string
+	RefreshInterval time.Duration
+}
+
 // rawConfig mirrors the YAML shape; pointer fields distinguish "unset"
 // (apply default) from explicitly-set values including "" (validate as-is).
 // Unknown fields are ignored (host may pass extra keys).
 type rawConfig struct {
+	Models    []ModelOverride `yaml:"models"`
+	ModelsDev struct {
+		Enabled         *bool   `yaml:"enabled"`
+		URL             *string `yaml:"url"`
+		RefreshInterval *string `yaml:"refresh-interval"`
+	} `yaml:"models-dev"`
 	BaseURL          *string                  `yaml:"base-url"`
 	CatalogURL       *string                  `yaml:"catalog-url"`
 	ModelPrefix      rawPrefix                `yaml:"model-prefix"`
@@ -130,7 +151,9 @@ func Load(yamlBytes []byte) (Config, error) {
 		return Config{}, fmt.Errorf("request-timeout: must be positive")
 	}
 	c := Config{
-		BaseURL: orDefault(raw.BaseURL, DefaultBaseURL),
+		Models:    raw.Models,
+		ModelsDev: ModelsDev{Enabled: orDefault(raw.ModelsDev.Enabled, true), URL: orDefault(raw.ModelsDev.URL, "https://models.dev/api.json")},
+		BaseURL:   orDefault(raw.BaseURL, DefaultBaseURL),
 		ModelPrefix: ModelPrefix{
 			Enabled: orDefault(raw.ModelPrefix.Enabled, true),
 			Value:   orDefault(raw.ModelPrefix.Value, DefaultModelPrefix),
@@ -149,6 +172,10 @@ func Load(yamlBytes []byte) (Config, error) {
 		AllowHTTP:        raw.AllowHTTP,
 		RequestTimeout:   requestTimeout,
 		MaxResponseBytes: orDefault(raw.MaxResponseBytes, DefaultMaxResponseBytes),
+	}
+	c.ModelsDev.RefreshInterval, err = parseDuration("models-dev.refresh-interval", raw.ModelsDev.RefreshInterval, 24*time.Hour)
+	if err != nil {
+		return Config{}, err
 	}
 	if raw.CatalogURL != nil {
 		// Mirror the derived-default trim so an explicit trailing-slash
@@ -172,6 +199,28 @@ func PublicID(c Config, upstreamID string) string {
 }
 
 func (c Config) validate() error {
+	if err := validateURL("models-dev.url", c.ModelsDev.URL, c.AllowHTTP); err != nil {
+		return err
+	}
+	if c.ModelsDev.RefreshInterval < time.Minute {
+		return fmt.Errorf("models-dev.refresh-interval: must be at least 1m")
+	}
+	seenModels := map[string]bool{}
+	for i, model := range c.Models {
+		if strings.TrimSpace(model.Name) == "" || seenModels[model.Name] {
+			return fmt.Errorf("models[%d].name: must be non-empty and unique", i)
+		}
+		seenModels[model.Name] = true
+		if model.Context != nil && *model.Context < 0 || model.Output != nil && *model.Output < 0 {
+			return fmt.Errorf("models[%d]: token limits must be non-negative", i)
+		}
+		if model.Thinking != nil {
+			t := model.Thinking
+			if t.Min != nil && *t.Min < 0 || t.Max != nil && *t.Max < 0 || t.Min != nil && t.Max != nil && *t.Min > *t.Max {
+				return fmt.Errorf("models[%d].thinking: invalid budget range", i)
+			}
+		}
+	}
 	if err := validateURL("base-url", c.BaseURL, c.AllowHTTP); err != nil {
 		return err
 	}

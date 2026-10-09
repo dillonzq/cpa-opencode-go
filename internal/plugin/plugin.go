@@ -211,6 +211,8 @@ type registrationResult struct {
 
 func pluginConfigFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
+		{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Model declarations and metadata overrides using CPA provider fields: name, display-name, max-context-length, input-modalities, output-modalities, thinking; plus description and max-tokens. New IDs use family routing or route-overrides."},
+		{Name: "models-dev", Type: pluginapi.ConfigFieldTypeObject, Description: "Fallback metadata source (enabled, url, refresh-interval); priority: models > catalog > models.dev."},
 		{
 			Name:        "api-keys",
 			Type:        pluginapi.ConfigFieldTypeArray,
@@ -315,6 +317,10 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 		client = m.bridge
 	}
 	mgr := catalog.New(cfg, client)
+	m.mu.RLock()
+	previous := m.mgr
+	m.mu.RUnlock()
+	mgr.SeedFallbackFrom(previous)
 	refreshErr := refreshOnce(m.workContext(), mgr, m.bridge, registerRefreshTimeout, cfg)
 	debugTrace("lifecycle refresh_complete model_count=%d refresh_error=%t", len(mgr.Models()), refreshErr != nil)
 
@@ -443,11 +449,13 @@ func (m *Manager) handleModels() ([]byte, error) {
 				Object:                    "model",
 				OwnedBy:                   ProviderID,
 				DisplayName:               rec.DisplayName,
+				Description:               rec.Description,
 				ContextLength:             rec.ContextLimit,
 				MaxCompletionTokens:       rec.OutputLimit,
 				SupportedInputModalities:  rec.InputModes,
 				SupportedOutputModalities: rec.OutputModes,
 				Thinking:                  rec.Thinking,
+				UserDefined:               rec.UserDefined,
 			})
 		}
 	}

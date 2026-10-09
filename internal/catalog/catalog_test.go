@@ -106,6 +106,36 @@ func TestRefreshRequestShape(t *testing.T) {
 	}
 }
 
+func TestCodexCatalogExtensions(t *testing.T) {
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[
+		{"id":"glm-capable","context_window":200000,"max_tokens":64000,
+		 "input_modalities":["text","image"],"output_modalities":["text"],
+		 "supported_reasoning_levels":[{"effort":"none"},{"effort":"high","description":"More reasoning"}]},
+		{"id":"glm-empty","supported_reasoning_levels":[]},
+		{"id":"glm-legacy","context_length":123,"max_output_tokens":456,
+		 "input_modes":["image"],"output_modes":["audio"],"thinking":{"levels":["high"]}}
+	]}`)}}
+	m := newManager(testCfg(), fc)
+	mustRefresh(t, m)
+	got := findModel(t, m.Models(), "glm-capable")
+	if got.ContextLimit != 200000 || got.OutputLimit != 64000 ||
+		!reflect.DeepEqual(got.InputModes, []string{"text", "image"}) ||
+		!reflect.DeepEqual(got.OutputModes, []string{"text"}) ||
+		got.Thinking == nil || !got.Thinking.ZeroAllowed ||
+		!reflect.DeepEqual(got.Thinking.Levels, []string{"none", "high"}) {
+		t.Fatalf("Codex capability mapping: %+v", got)
+	}
+	empty := findModel(t, m.Models(), "glm-empty")
+	if empty.Thinking == nil || len(empty.Thinking.Levels) != 0 {
+		t.Fatalf("explicit empty reasoning capabilities: %+v", empty.Thinking)
+	}
+	legacy := findModel(t, m.Models(), "glm-legacy")
+	if legacy.ContextLimit != 0 || legacy.OutputLimit != 0 ||
+		legacy.InputModes != nil || legacy.OutputModes != nil || legacy.Thinking != nil {
+		t.Fatalf("legacy extension names must be ignored: %+v", legacy)
+	}
+}
+
 func TestRefreshSuccess(t *testing.T) {
 	body := `{"data":[
 		{"id":"gpt-5.6-luna"},

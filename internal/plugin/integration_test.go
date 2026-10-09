@@ -411,7 +411,7 @@ func integrationYAML(baseURL string) string {
 	// The real base-url carries the version segment (.../zen/go/v1); the
 	// mock server root therefore gets "/v1" appended so /v1/models and
 	// /v1/chat/completions line up.
-	return fmt.Sprintf("base-url: %s/v1\nallow-http: true\napi-keys:\n  - value: sk-test-1\n", baseURL)
+	return fmt.Sprintf("base-url: %s/v1\nallow-http: true\napi-keys:\n  - value: sk-test-1\nmodels-dev:\n  enabled: false\n", baseURL)
 }
 
 // newIntegrationManager registers a manager whose outbound calls flow
@@ -1077,7 +1077,7 @@ func TestResponsesUnsupportedFeatureDescriptive(t *testing.T) {
 // ---- AC §E upstream errors + §F security, end to end -------------------
 
 func integrationTwoKeyYAML(baseURL string) string {
-	return fmt.Sprintf("base-url: %s/v1\nallow-http: true\napi-keys:\n  - value: sk-test-1\n  - value: sk-test-2\n", baseURL)
+	return fmt.Sprintf("base-url: %s/v1\nallow-http: true\napi-keys:\n  - value: sk-test-1\n  - value: sk-test-2\nmodels-dev:\n  enabled: false\n", baseURL)
 }
 
 func newTwoKeyManager(t *testing.T) (*Manager, *fakeCaller, *mockOpenCode) {

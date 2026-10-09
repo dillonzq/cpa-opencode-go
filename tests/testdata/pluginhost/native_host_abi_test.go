@@ -11,19 +11,172 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
+
+func TestOpenCodeNativeMetadata(t *testing.T) {
+	var fallbackCalls atomic.Int32
+	var customExecutions atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/models":
+			io.WriteString(w, `{"data":[{"id":"glm-metadata-test","context_window":200000,"max_tokens":64000}]}`)
+		case "/metadata":
+			fallbackCalls.Add(1)
+			if r.Header.Get("Authorization") != "" {
+				t.Error("metadata service received credential")
+			}
+			io.WriteString(w, `{"opencode-go":{"models":{"glm-metadata-test":{"name":"Fallback name","description":"Fallback description","limit":{"context":100000,"output":32000},"modalities":{"input":["text","image"],"output":["text"]},"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]}}}}`)
+		case "/responses":
+			var request struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != "custom-only-model" {
+				t.Errorf("custom request model: %q, %v", request.Model, err)
+			}
+			customExecutions.Add(1)
+			io.WriteString(w, `{"id":"resp_custom","object":"response","status":"completed","output":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	host := New()
+	host.runtimeConfig = &config.Config{AuthDir: t.TempDir()}
+	file := pluginFile{ID: "cpa-opencode-go", Path: os.Getenv("CPA_NATIVE_PLUGIN")}
+	native, err := defaultPluginLoader().Open(file, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newGuardedPluginClient(native)
+	defer client.Shutdown()
+	yaml := []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nmodels-dev:\n  url: %s/metadata\nmodels:\n  - name: glm-metadata-test\n    display-name: User name\n    max-context-length: 300000\n", server.URL, server.URL))
+	plug, err := registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginRegister, yaml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forAuth := range []bool{false, true} {
+		var response pluginapi.ModelResponse
+		if forAuth {
+			response, err = plug.Capabilities.ModelProvider.ModelsForAuth(context.Background(), pluginapi.AuthModelRequest{})
+		} else {
+			response, err = plug.Capabilities.ModelProvider.StaticModels(context.Background(), pluginapi.StaticModelRequest{})
+		}
+		if err != nil || len(response.Models) != 1 {
+			t.Fatalf("native model response: %+v, %v", response, err)
+		}
+		model := pluginModelInfoToRegistryModelInfo(response.Models[0])
+		if model.DisplayName != "User name" || model.Description != "Fallback description" || model.ContextLength != 300000 || model.MaxCompletionTokens != 64000 ||
+			!reflect.DeepEqual(model.SupportedInputModalities, []string{"text", "image"}) || !reflect.DeepEqual(model.SupportedOutputModalities, []string{"text"}) ||
+			model.Thinking == nil || !reflect.DeepEqual(model.Thinking.Levels, []string{"low", "medium", "high"}) {
+			t.Fatalf("host metadata lost: %+v", model)
+		}
+		reg := registry.GetGlobalRegistry()
+		reg.RegisterClient("metadata-test", "opencode-go", []*registry.ModelInfo{model})
+		payload := codexmodels.BuildResponseForClient(reg.GetAvailableModels("openai"), reg.GetModelProviders, false, "pi")
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var catalog struct {
+			Models []struct {
+				Slug    string   `json:"slug"`
+				Context int      `json:"context_window"`
+				Output  int      `json:"max_tokens"`
+				Inputs  []string `json:"input_modalities"`
+				Levels  []struct {
+					Effort string `json:"effort"`
+				} `json:"supported_reasoning_levels"`
+			} `json:"models"`
+		}
+		if err = json.Unmarshal(encoded, &catalog); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, entry := range catalog.Models {
+			if entry.Slug != model.ID {
+				continue
+			}
+			found = true
+			if entry.Context != 300000 || entry.Output != 64000 || !reflect.DeepEqual(entry.Inputs, []string{"text", "image"}) || len(entry.Levels) != 3 {
+				t.Fatalf("Codex metadata lost: %+v", entry)
+			}
+		}
+		reg.UnregisterClient("metadata-test")
+		if !found {
+			t.Fatal("model missing from Codex catalog")
+		}
+	}
+	if fallbackCalls.Load() != 1 {
+		t.Fatalf("fallback calls=%d", fallbackCalls.Load())
+	}
+	// Reconfiguration must reuse cached fallback metadata independently of model
+	// discovery; otherwise a new manager refetches and can lose capability fields.
+	reconfigured := strings.ReplaceAll(string(yaml), "User name", "Reconfigured name")
+	plug, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginReconfigure, []byte(reconfigured))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := plug.Capabilities.ModelProvider.StaticModels(context.Background(), pluginapi.StaticModelRequest{})
+	if err != nil || len(response.Models) != 1 {
+		t.Fatalf("reconfigured metadata: %+v, %v", response, err)
+	}
+	if model := response.Models[0]; model.DisplayName != "Reconfigured name" || model.Description != "Fallback description" || !reflect.DeepEqual(model.SupportedInputModalities, []string{"text", "image"}) {
+		t.Fatalf("reconfiguration lost cached metadata or ignored new override: %+v", model)
+	}
+	if fallbackCalls.Load() != 1 {
+		t.Fatalf("reconfiguration refetched unexpired cache: %d", fallbackCalls.Load())
+	}
+	declared := reconfigured + "  - name: custom-only-model\n    display-name: Custom model\n    max-context-length: 222222\n    max-tokens: 64000\n    input-modalities: [text]\n    thinking:\n      levels: [high]\nroute-overrides:\n  custom-only-model:\n    protocol: responses\n    endpoint: /v1/responses\n"
+	plug, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginReconfigure, []byte(declared))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forAuth := range []bool{false, true} {
+		if forAuth {
+			response, err = plug.Capabilities.ModelProvider.ModelsForAuth(context.Background(), pluginapi.AuthModelRequest{})
+		} else {
+			response, err = plug.Capabilities.ModelProvider.StaticModels(context.Background(), pluginapi.StaticModelRequest{})
+		}
+		if err != nil || len(response.Models) != 2 {
+			t.Fatalf("custom catalog: %+v, %v", response, err)
+		}
+		found := false
+		for _, item := range response.Models {
+			if item.ID != "opencode-go/custom-only-model" {
+				continue
+			}
+			found = true
+			model := pluginModelInfoToRegistryModelInfo(item)
+			if !model.UserDefined || model.DisplayName != "Custom model" || model.ContextLength != 222222 || model.MaxCompletionTokens != 64000 || model.Thinking == nil || !reflect.DeepEqual(model.Thinking.Levels, []string{"high"}) {
+				t.Fatalf("custom metadata lost at host: %+v", model)
+			}
+		}
+		if !found {
+			t.Fatal("configured custom model missing from native response")
+		}
+	}
+	rpc := &rpcPluginAdapter{id: file.ID, host: host, client: client, instance: pluginCallbackInstance(client)}
+	_, err = rpc.Execute(context.Background(), pluginapi.ExecutorRequest{Model: "opencode-go/custom-only-model", AuthProvider: "opencode-go", AuthAttributes: map[string]string{"api_key": "offline-test-key"}, SourceFormat: "openai-response", Format: "openai-response", Payload: []byte(`{"input":"hello"}`)})
+	if err != nil || customExecutions.Load() != 1 {
+		t.Fatalf("custom execution: %v, upstream calls=%d", err, customExecutions.Load())
+	}
+}
 
 func TestOpenCodeNativeABI(t *testing.T) {
 	started := make(chan string, 16)
@@ -118,7 +271,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 	defer client.Shutdown()
 	register := func(timeout string) pluginapi.Plugin {
 		t.Helper()
-		yaml := []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nrequest-timeout: %s\n", server.URL, timeout))
+		yaml := []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nrequest-timeout: %s\nmodels-dev:\n  enabled: false\n", server.URL, timeout))
 		plug, err := registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginReconfigure, yaml)
 		if err != nil {
 			t.Fatal(err)
@@ -333,7 +486,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 		blockCatalog.Store(true)
 		reconfigured := make(chan error, 1)
 		go func() {
-			_, err := registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginReconfigure, []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\n", server.URL)))
+			_, err := registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginReconfigure, []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nmodels-dev:\n  enabled: false\n", server.URL)))
 			reconfigured <- err
 		}()
 		await(started, "catalog")
@@ -408,7 +561,7 @@ func TestOpenCodeNativeUnload(t *testing.T) {
 	}
 	client := newGuardedPluginClient(native)
 	defer client.Shutdown()
-	_, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginRegister, []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nrequest-timeout: 30s\n", server.URL)))
+	_, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginRegister, []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nrequest-timeout: 30s\nmodels-dev:\n  enabled: false\n", server.URL)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +648,7 @@ func TestOpenCodeNativeAuthNames(t *testing.T) {
 	}
 	client := newGuardedPluginClient(native)
 	defer client.Shutdown()
-	yaml := []byte(fmt.Sprintf("api-keys:\n  - value: offline-first\n    name: Personal\n  - value: offline-second\n    name: personal\n  - value: offline-third\n    name: CON\n  - value: offline-fourth\n    name: aux\nbase-url: %s\nallow-http: true\n", server.URL))
+	yaml := []byte(fmt.Sprintf("api-keys:\n  - value: offline-first\n    name: Personal\n  - value: offline-second\n    name: personal\n  - value: offline-third\n    name: CON\n  - value: offline-fourth\n    name: aux\nbase-url: %s\nallow-http: true\nmodels-dev:\n  enabled: false\n", server.URL))
 	for _, method := range []string{pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure} {
 		if _, err := registerRPCPlugin(context.Background(), host, file.ID, client, method, yaml); err != nil {
 			t.Fatal(err)
@@ -610,7 +763,7 @@ func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 	}
 	client := newGuardedPluginClient(native)
 	defer client.Shutdown()
-	_, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginRegister, []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\n", server.URL)))
+	_, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginRegister, []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nmodels-dev:\n  enabled: false\n", server.URL)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -161,6 +161,50 @@ plugins:
 | `max-response-bytes` | `int64` | `67108864`（64 MiB） | 非流式响应体的字节数上限。 |
 | `allow-http` | `bool` | `false` | 允许 `base-url` 和 `catalog-url` 使用 `http://`，用于本地测试。 |
 
+### 模型目录能力扩展
+
+`catalog-url` 接受 OpenAI 风格的 `{"data":[{"id":"..."}]}` 列表。可选元数据字段包括 `display_name`、`description`、`context_window`、`max_tokens`、`input_modalities`、`output_modalities` 和 `supported_reasoning_levels`（包含 `effort` 和可选 `description` 的对象数组）。推理档位映射为宿主的 `Thinking.Levels`，`none` 同时启用 `ZeroAllowed`。缺失推理字段表示未知，空数组明确表示没有推理档位。旧扩展 `context_length`、`max_output_tokens`、`input_modes`、`output_modes` 和 `thinking` 不再解析。目录仍采用 `data`/`id`，不接受完整 Codex `models`/`slug` 响应。
+
+元数据按字段合并，优先级为 **用户 `models` 配置 > catalog 接口 > models.dev**。显式 `0`、`false` 和空数组都会覆盖低优先级数据，`thinking` 的各字段也独立合并。`models[].name` 使用上游原始 ID：目录中已有的模型覆盖元数据，目录中不存在的模型作为新增声明。新增模型沿用家族路由规则，未知家族通过 `route-overrides` 指定路由；协议开关、端点检查和 ID 冲突检查均适用。显式声明的模型在目录为空或不可用时仍保留，包括 `stale-while-unavailable: false`；删除声明后模型移除，除非上游目录仍列出该 ID。models.dev 本身不会新增模型。覆盖字段沿用 CPA 供应商配置名称：`display-name`、`max-context-length`、`input-modalities`、`output-modalities` 和 `thinking`（`min`、`max`、`zero-allowed`、`dynamic-allowed`、`levels`）；`description` 和 `max-tokens` 是本插件新增的扩展。
+
+在插件配置中添加：
+
+```yaml
+models:
+  - name: glm-5.3
+    display-name: My GLM
+    max-context-length: 200000
+    max-tokens: 64000
+    input-modalities: [text]
+    output-modalities: [text]
+    thinking:
+      levels: [none, low, medium, high]
+      zero-allowed: true
+models-dev:
+  enabled: true                     # 默认开启
+  url: https://models.dev/api.json   # 默认地址
+  refresh-interval: 24h              # 默认 24 小时，最短 1 分钟
+```
+
+未知家族的新模型需要同时声明模型及路由：
+
+```yaml
+models:
+  - name: custom-model
+    display-name: Custom model
+    max-context-length: 200000
+route-overrides:
+  custom-model:
+    protocol: responses
+    endpoint: /v1/responses
+```
+
+上游目录中不存在的声明模型以 `UserDefined: true` 传给宿主，客户端 ID 沿用配置的模型前缀。执行时向配置的上游发送原始 `name`，声明不会改变上游实际可用性，也不会新增别名。
+
+兜底数据仅匹配 `opencode-go.models[上游 ID]`，不会跨供应商猜测。请求使用宿主 HTTP 通道，不携带上游 API Key，超时 3 秒，响应上限 16 MiB。成功数据按配置间隔缓存在内存中，重新配置时在数据源 URL 相同的情况下继承缓存；失败时保留旧兜底数据、记录警告，并在后续 catalog 刷新时重试，不影响模型发现。仅声明支持推理但未提供 effort 的模型不会被补上猜测档位；预算和开关能力保存在宿主推理元数据中。合并后的描述、上下文、输出上限、模态和推理能力均通过 `model.static` 与 `model.for_auth` 返回宿主，不包含价格。
+
+CPA v8.0.0 的普通 `/v1/models` 会过滤能力扩展。Codex 目录对部分已知模型使用宿主模板，由于插件 SDK 没有独立的 `MaxContextLength` 覆盖字段，这些模型可能仍显示模板中的上下文长度。合并后的上下文会以 `ContextLength` 传入宿主注册表，但客户端输出仍受宿主目录生成规则影响。
+
 ## 测试
 
 ```powershell
