@@ -17,11 +17,13 @@ import (
 // ---- upstream Responses result shapes (decode-only) ----
 
 type respTextPart struct {
-	Type string `json:"type"` // output_text | ...
-	Text string `json:"text"`
+	Type    string `json:"type"` // output_text | ...
+	Text    string `json:"text"`
+	Refusal string `json:"refusal"`
 }
 
 type respOutputItem struct {
+	Summary   []respTextPart `json:"summary"`
 	Type      string         `json:"type"` // message | function_call | ...
 	CallID    string         `json:"call_id"`
 	Name      string         `json:"name"`
@@ -147,16 +149,14 @@ func respItemCarriesPayload(item respOutputItem) bool {
 // response: output_text parts concatenate into message.content,
 // function_call items become indexed tool_calls with their arguments
 // verbatim, status maps to finish_reason, and input/output tokens map to
-// prompt/completion usage (FR-006, AC §D). Reasoning summaries and other
-// informational output items have no equivalent and are omitted per the
-// FR-005/FR-006 compatibility policy; only items carrying real content
-// fail descriptively.
+// prompt/completion usage (FR-006, AC §D). Visible reasoning maps to
+// reasoning_content. Unsupported items carrying payload fail descriptively.
 func responsesToChat(body []byte) ([]byte, *errclass.Error) {
 	resp, eErr := decodeResp(body)
 	if eErr != nil {
 		return nil, eErr
 	}
-	msg := shared.CCMessage{Role: "assistant"}
+	msg := shared.CCResponseMessage{CCMessage: shared.CCMessage{Role: "assistant"}}
 	var text strings.Builder
 	sawToolCall := false
 	for _, item := range resp.Output {
@@ -165,6 +165,8 @@ func responsesToChat(body []byte) ([]byte, *errclass.Error) {
 			for _, part := range item.Content {
 				if part.Type == "output_text" {
 					text.WriteString(part.Text)
+				} else if part.Type == "refusal" {
+					msg.Refusal += part.Refusal
 				}
 			}
 		case "function_call":
@@ -174,8 +176,7 @@ func responsesToChat(body []byte) ([]byte, *errclass.Error) {
 			msg.ToolCalls = append(msg.ToolCalls, tc)
 			sawToolCall = true
 		case "reasoning":
-			// Reasoning summaries have no Chat Completions equivalent and
-			// are omitted per the FR-005/FR-006 compatibility policy.
+			msg.ReasoningContent += item.reasoningText()
 		default:
 			if respItemCarriesPayload(item) {
 				return nil, errclass.Translation(fmt.Sprintf(
@@ -193,12 +194,18 @@ func responsesToChat(body []byte) ([]byte, *errclass.Error) {
 		[]map[string]any{{
 			"index":         0,
 			"message":       msg,
-			"finish_reason": ccFinishFromStatus(resp.Status, sawToolCall),
+			"finish_reason": shared.FinishWithRefusal(ccFinishFromStatus(resp.Status, sawToolCall), msg.Refusal != ""),
 		}},
 		shared.CCUsageFrom(resp.Usage.InputTokens, resp.Usage.OutputTokens, shared.UsageDetails{
 			CachedTokens: func() *int64 {
 				if resp.Usage.InputDetails != nil {
 					return resp.Usage.InputDetails.CachedTokens
+				}
+				return nil
+			}(),
+			CacheWriteTokens: func() *int64 {
+				if resp.Usage.InputDetails != nil {
+					return resp.Usage.InputDetails.CacheWriteTokens
 				}
 				return nil
 			}(),
@@ -219,16 +226,16 @@ func responsesToChat(body []byte) ([]byte, *errclass.Error) {
 // route's block builder), function_call items become tool_use blocks with
 // arguments decoded as input, completed status maps to stop_reason
 // end_turn (tool_use when tools were called, max_tokens when incomplete),
-// and input/output tokens map to input/output usage (FR-006). Reasoning
-// summaries and other informational output items are omitted per the
-// FR-005/FR-006 compatibility policy; only items carrying real content
-// fail descriptively.
+// and input/output tokens map to input/output usage (FR-006). Visible
+// reasoning maps to thinking blocks without fabricated signatures.
+// Unsupported items carrying payload fail descriptively.
 func responsesToClaude(body []byte) ([]byte, *errclass.Error) {
 	resp, eErr := decodeResp(body)
 	if eErr != nil {
 		return nil, eErr
 	}
 	sawToolCall := false
+	refused := false
 	blocks := make([]map[string]any, 0, len(resp.Output))
 	for _, item := range resp.Output {
 		switch item.Type {
@@ -236,6 +243,12 @@ func responsesToClaude(body []byte) ([]byte, *errclass.Error) {
 			for _, part := range item.Content {
 				// Uniform DROP policy (route parity): empty output_text
 				// parts ship no dead text block.
+				if part.Type == "refusal" {
+					refused = true
+					if part.Refusal != "" {
+						blocks = append(blocks, map[string]any{"type": "text", "text": part.Refusal})
+					}
+				}
 				if part.Type == "output_text" && part.Text != "" {
 					blocks = append(blocks, map[string]any{"type": "text", "text": part.Text})
 				}
@@ -250,8 +263,9 @@ func responsesToClaude(body []byte) ([]byte, *errclass.Error) {
 			})
 			sawToolCall = true
 		case "reasoning":
-			// Reasoning summaries have no Messages equivalent and are
-			// omitted per the FR-005/FR-006 compatibility policy.
+			if text := item.reasoningText(); text != "" {
+				blocks = append(blocks, map[string]any{"type": "thinking", "thinking": text})
+			}
 		default:
 			if respItemCarriesPayload(item) {
 				return nil, errclass.Translation(fmt.Sprintf(
@@ -259,7 +273,7 @@ func responsesToClaude(body []byte) ([]byte, *errclass.Error) {
 			}
 		}
 	}
-	statusStop := shared.ClaudeStopFromResponseStatus(resp.Status)
+	statusStop := shared.FinishToClaudeStop(shared.FinishWithRefusal(shared.CCFinishFromResponseStatus(resp.Status), refused))
 	stop := shared.TerminalReason(sawToolCall, "tool_use", statusStop)
 	var cacheRead, cacheWrite *int64
 	if resp.Usage.InputDetails != nil {
@@ -270,4 +284,21 @@ func responsesToClaude(body []byte) ([]byte, *errclass.Error) {
 		shared.ClampSubtract(resp.Usage.InputTokens, cacheRead, cacheWrite), resp.Usage.OutputTokens,
 		cacheRead, cacheWrite, blocks))
 	return b, nil // composed marshallable types only; cannot fail
+}
+
+// reasoningText retains both summaries and visible reasoning content (CPA
+// also accepts reasoning_text content emitted by compatible providers).
+func (item respOutputItem) reasoningText() string {
+	var b strings.Builder
+	for _, part := range item.Summary {
+		if part.Type == "summary_text" {
+			b.WriteString(part.Text)
+		}
+	}
+	for _, part := range item.Content {
+		if part.Type == "reasoning_text" || part.Type == "text" {
+			b.WriteString(part.Text)
+		}
+	}
+	return b.String()
 }

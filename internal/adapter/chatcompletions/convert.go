@@ -11,6 +11,8 @@ import (
 // ---- upstream Chat Completions response shapes (FR-006) ----
 
 type ccRespMessage struct {
+	shared.ReasoningFields
+	Refusal   string              `json:"refusal"`
 	Content   json.RawMessage     `json:"content"` // JSON string or part array
 	ToolCalls []shared.CCToolCall `json:"tool_calls"`
 }
@@ -24,7 +26,8 @@ type ccUsage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	PromptDetails    *struct {
-		CachedTokens *int64 `json:"cached_tokens"`
+		CachedTokens     *int64 `json:"cached_tokens"`
+		CacheWriteTokens *int64 `json:"cache_write_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionDetails *struct {
 		ReasoningTokens *int64 `json:"reasoning_tokens"`
@@ -100,24 +103,31 @@ func chatToClaude(body []byte) ([]byte, *errclass.Error) {
 	if eErr != nil {
 		return nil, eErr
 	}
+	if choice.Message.Refusal != "" {
+		blocks = append(blocks, claudeBlock{"type": "text", "text": choice.Message.Refusal})
+	}
+	if reasoning := choice.Message.Text(); reasoning != "" {
+		blocks = append([]claudeBlock{{"type": "thinking", "thinking": reasoning}}, blocks...)
+	}
 	toolUse, eErr := claudeToolUseBlocks(choice.Message.ToolCalls)
 	if eErr != nil {
 		return nil, eErr
 	}
 	var inputTokens, outputTokens int64
-	var cacheRead *int64
+	var cacheRead, cacheWrite *int64
 	if resp.Usage != nil {
 		inputTokens, outputTokens = resp.Usage.PromptTokens, resp.Usage.CompletionTokens
 		if resp.Usage.PromptDetails != nil {
 			cacheRead = resp.Usage.PromptDetails.CachedTokens
+			cacheWrite = resp.Usage.PromptDetails.CacheWriteTokens
 		}
 	}
 	// Observed tool calls outrank the status-derived reason: a terminal
 	// length cannot downgrade tool_calls to max_tokens.
 	stop := shared.TerminalReason(len(choice.Message.ToolCalls) > 0,
-		"tool_use", shared.FinishToClaudeStop(choice.FinishReason))
+		"tool_use", shared.FinishToClaudeStop(shared.FinishWithRefusal(choice.FinishReason, choice.Message.Refusal != "")))
 	b, _ := json.Marshal(shared.NewClaudeResult(resp.ID, resp.Model, stop,
-		shared.ClampSubtract(inputTokens, cacheRead), outputTokens, cacheRead, nil, append(blocks, toolUse...)))
+		shared.ClampSubtract(inputTokens, cacheRead, cacheWrite), outputTokens, cacheRead, cacheWrite, append(blocks, toolUse...)))
 	return b, nil // only marshallable composed types; cannot fail
 }
 
@@ -177,10 +187,15 @@ func chatToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *errc
 	if eErr != nil {
 		return nil, eErr
 	}
-	// The shared assembler gives Chat Completions placement (no reserved
-	// slot): the message leads and appears only when text is non-empty,
-	// matching the streaming terminal (FR-006 sibling parity).
+	// Visible reasoning precedes text. Reserve the text position only when
+	// content exists, so reasoning-only turns carry no empty message.
 	oa := shared.NewOutputAssembler(resp.ID, tools...)
+	if reasoning := choice.Message.Text(); reasoning != "" {
+		oa.AppendReasoning(resp.ID+"_reasoning", reasoning)
+		if len(blocks) > 0 || choice.Message.Refusal != "" {
+			oa.ReserveTextSlot()
+		}
+	}
 	for _, b := range blocks {
 		if b["type"] != "text" {
 			return nil, errclass.Translation(fmt.Sprintf(
@@ -188,6 +203,7 @@ func chatToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *errc
 		}
 		oa.AddText(b["text"].(string))
 	}
+	oa.AddRefusal(choice.Message.Refusal)
 	for _, tc := range choice.Message.ToolCalls {
 		oa.AppendFunctionCall(tc.ID, tc.Function.Name, shared.DefaultArgs(tc.Function.Arguments))
 	}
@@ -196,6 +212,7 @@ func chatToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *errc
 		var details shared.UsageDetails
 		if resp.Usage.PromptDetails != nil {
 			details.CachedTokens = resp.Usage.PromptDetails.CachedTokens
+			details.CacheWriteTokens = resp.Usage.PromptDetails.CacheWriteTokens
 		}
 		if resp.Usage.CompletionDetails != nil {
 			details.ReasoningTokens = resp.Usage.CompletionDetails.ReasoningTokens

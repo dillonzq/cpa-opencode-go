@@ -38,10 +38,16 @@ type StreamConverter struct {
 	toolOrder    []int64 // upstream tool_call indices in first-arrival order
 	toolsSeen    bool    // any tool_calls entry observed (terminal-reason precedence)
 	usage        *ccUsage
-	finished     bool            // finish_reason processed
-	heldFinish   string          // finish_reason awaiting terminal emission (flushed on the next data line or [DONE], so the standard include_usage trailer lands in the terminal event; Flush covers close-without-[DONE])
-	terminalSent bool            // claudeTerminal already emitted message_delta (Flush must still close with message_stop)
-	flushed      bool            // Flush already ran (one-shot guard)
+	finished     bool   // finish_reason processed
+	heldFinish   string // finish_reason awaiting terminal emission (flushed on the next data line or [DONE], so the standard include_usage trailer lands in the terminal event; Flush covers close-without-[DONE])
+	terminalSent bool   // claudeTerminal already emitted message_delta (Flush must still close with message_stop)
+	flushed      bool   // Flush already ran (one-shot guard)
+	reasonOpen   bool
+	reasonIndex  int
+	respReason   strings.Builder
+	refused      bool
+	refusalFirst bool
+	respRefusal  strings.Builder
 	respText     strings.Builder // openai-response accumulated output_text
 	respTools    *shared.ResponseTools
 }
@@ -64,6 +70,7 @@ func NewStreamConverter(sourceFormat string, tools ...*shared.ResponseTools) *St
 	sc := &StreamConverter{
 		sourceFormat: sourceFormat,
 		msgIndex:     -1,
+		reasonIndex:  -1,
 		tools:        map[int64]*streamTool{},
 	}
 	if len(tools) > 0 && tools[0] != nil {
@@ -227,6 +234,8 @@ type ccToolCallDelta struct {
 }
 
 type ccDelta struct {
+	shared.ReasoningFields
+	Refusal   string            `json:"refusal"`
 	Content   string            `json:"content"`
 	ToolCalls []ccToolCallDelta `json:"tool_calls"`
 }
@@ -350,7 +359,21 @@ func (sc *StreamConverter) claudeLine(line string) ([][]byte, *errclass.Error) {
 		return events, nil
 	}
 	choice := chunk.Choices[0]
-	if choice.Delta.Content != "" {
+	if reasoning := choice.Delta.Text(); reasoning != "" {
+		if !sc.reasonOpen {
+			events = append(events, sc.stopBlocks()...)
+			sc.reasonIndex = sc.nextIndex
+			sc.nextIndex++
+			sc.reasonOpen = true
+			events = append(events, sc.claudeEm.ContentBlockStart(sc.reasonIndex, "thinking", map[string]any{"thinking": ""}))
+		}
+		events = append(events, sc.claudeEm.ContentBlockDelta(sc.reasonIndex, map[string]any{"type": "thinking_delta", "thinking": reasoning}))
+	}
+	if choice.Delta.Refusal != "" {
+		sc.refused = true
+	}
+	text := choice.Delta.Content + choice.Delta.Refusal
+	if text != "" {
 		// The text block opens lazily on first non-empty content so pure
 		// tool-call streams carry no phantom empty text block, matching
 		// non-stream chatToClaude's block shape. Every content_block_start
@@ -368,7 +391,7 @@ func (sc *StreamConverter) claudeLine(line string) ([][]byte, *errclass.Error) {
 			events = append(events, sc.claudeEm.ContentBlockStart(sc.textIndex, "text", map[string]any{"text": ""}))
 		}
 		events = append(events, sc.claudeEm.ContentBlockDelta(sc.textIndex,
-			map[string]any{"type": "text_delta", "text": choice.Delta.Content}))
+			map[string]any{"type": "text_delta", "text": text}))
 	}
 	for _, tc := range choice.Delta.ToolCalls {
 		t := sc.tools[tc.Index]
@@ -406,20 +429,21 @@ func (sc *StreamConverter) claudeTerminal() [][]byte {
 	sc.terminalSent = true
 	// Observed tool calls outrank the status-derived reason, mirroring
 	// non-stream chatToClaude (FR-006).
-	reason := shared.TerminalReason(sc.toolsSeen, "tool_use", shared.FinishToClaudeStop(finish))
+	reason := shared.TerminalReason(sc.toolsSeen, "tool_use", shared.FinishToClaudeStop(shared.FinishWithRefusal(finish, sc.refused)))
 	// Always attach: sibling terminals never omit usage; fields zero when
 	// upstream reported none (F-R6).
 	input, output := int64(0), int64(0)
-	var cacheRead *int64
+	var cacheRead, cacheWrite *int64
 	if sc.usage != nil {
 		input = sc.usage.PromptTokens
 		output = sc.usage.CompletionTokens
 		if sc.usage.PromptDetails != nil {
 			cacheRead = sc.usage.PromptDetails.CachedTokens
+			cacheWrite = sc.usage.PromptDetails.CacheWriteTokens
 		}
 	}
 	return [][]byte{sc.claudeEm.MessageDelta(&reason,
-		shared.ClaudeUsage(shared.ClampSubtract(input, cacheRead), output, cacheRead, nil))}
+		shared.ClaudeUsage(shared.ClampSubtract(input, cacheRead, cacheWrite), output, cacheRead, cacheWrite))}
 }
 
 // stopText closes the open text content block, if any.
@@ -436,6 +460,10 @@ func (sc *StreamConverter) stopText() [][]byte {
 // overlap) and again (as a no-op) on finish_reason and [DONE].
 func (sc *StreamConverter) stopBlocks() [][]byte {
 	var events [][]byte
+	if sc.reasonOpen {
+		sc.reasonOpen = false
+		events = append(events, sc.claudeEm.ContentBlockStop(sc.reasonIndex))
+	}
 	events = append(events, sc.stopText()...)
 	for _, idx := range sc.toolOrder {
 		t := sc.tools[idx]
@@ -487,7 +515,16 @@ func (sc *StreamConverter) responsesLine(line string) ([][]byte, *errclass.Error
 		return events, nil
 	}
 	choice := chunk.Choices[0]
-	if choice.Delta.Content != "" {
+	if reasoning := choice.Delta.Text(); reasoning != "" {
+		if sc.reasonIndex < 0 {
+			sc.reasonIndex = sc.nextIndex
+			sc.nextIndex++
+			events = append(events, sc.responsesEm().ReasoningAdded(sc.id+"_reasoning", sc.reasonIndex)...)
+		}
+		sc.respReason.WriteString(reasoning)
+		events = append(events, sc.responsesEm().ReasoningDelta(sc.id+"_reasoning", sc.reasonIndex, reasoning))
+	}
+	if choice.Delta.Content != "" || choice.Delta.Refusal != "" {
 		if sc.msgIndex < 0 {
 			sc.msgIndex = sc.nextIndex
 			sc.nextIndex++
@@ -495,8 +532,25 @@ func (sc *StreamConverter) responsesLine(line string) ([][]byte, *errclass.Error
 				"type": "message", "role": "assistant", "id": sc.id, "content": []any{},
 			}))
 		}
-		sc.respText.WriteString(choice.Delta.Content)
-		events = append(events, sc.responsesEm().TextDelta(sc.id, sc.msgIndex, choice.Delta.Content))
+		if choice.Delta.Content != "" {
+			sc.respText.WriteString(choice.Delta.Content)
+			partIndex := 0
+			if sc.refusalFirst {
+				partIndex = 1
+			}
+			events = append(events, sc.responsesEm().TextDeltaAt(sc.id, sc.msgIndex, partIndex, choice.Delta.Content))
+		}
+		if choice.Delta.Refusal != "" {
+			if sc.respText.Len() == 0 {
+				sc.refusalFirst = true
+			}
+			sc.respRefusal.WriteString(choice.Delta.Refusal)
+			partIndex := 0
+			if !sc.refusalFirst {
+				partIndex = 1
+			}
+			events = append(events, sc.responsesEm().RefusalDelta(sc.id, sc.msgIndex, partIndex, choice.Delta.Refusal))
+		}
 	}
 	for _, tc := range choice.Delta.ToolCalls {
 		t := sc.tools[tc.Index]
@@ -575,7 +629,13 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 	if sc.msgIndex >= 0 && !reserved {
 		oa.ReserveTextSlot()
 	}
-	oa.AddText(sc.respText.String())
+	if sc.refusalFirst {
+		oa.AddRefusal(sc.respRefusal.String())
+		oa.AddText(sc.respText.String())
+	} else {
+		oa.AddText(sc.respText.String())
+		oa.AddRefusal(sc.respRefusal.String())
+	}
 	// Always attach (F-R6): zero-valued fields when upstream sent none.
 	input, outputTokens := int64(0), int64(0)
 	if sc.usage != nil {
@@ -586,6 +646,7 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 	if sc.usage != nil {
 		if sc.usage.PromptDetails != nil {
 			details.CachedTokens = sc.usage.PromptDetails.CachedTokens
+			details.CacheWriteTokens = sc.usage.PromptDetails.CacheWriteTokens
 		}
 		if sc.usage.CompletionDetails != nil {
 			details.ReasoningTokens = sc.usage.CompletionDetails.ReasoningTokens
@@ -593,6 +654,12 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 	}
 	usage := shared.NewResponsesUsageFrom(input, outputTokens, details)
 	items := oa.Render()
+	if sc.reasonIndex >= 0 {
+		item := shared.ReasoningItem(sc.id+"_reasoning", sc.respReason.String())
+		items = append(items, nil)
+		copy(items[sc.reasonIndex+1:], items[sc.reasonIndex:])
+		items[sc.reasonIndex] = item
+	}
 	em := sc.responsesEm()
 	var events [][]byte
 	for idx, item := range items {
@@ -601,11 +668,10 @@ func (sc *StreamConverter) responsesTerminal() [][]byte {
 			continue
 		}
 		switch v.Type {
+		case "reasoning":
+			events = append(events, em.ReasoningDone(v, idx)...)
 		case "message":
-			text := sc.respText.String()
-			events = append(events, em.TextDone(v.ID, idx, text))
-			events = append(events, em.ContentPartDone(v.ID, idx, text))
-			events = append(events, em.ItemDone(idx, v))
+			events = append(events, em.MessageDone(v, idx)...)
 		case "function_call":
 			events = append(events, em.ArgsDone(v.CallID, idx, v.Name, v.Arguments))
 			events = append(events, em.ItemDone(idx, v))

@@ -472,11 +472,15 @@ func TestOpenAISecondAddedIgnored(t *testing.T) {
 	}
 }
 
-func TestOpenAINonFunctionItemIgnored(t *testing.T) {
+func TestOpenAIMessageSnapshotPreserved(t *testing.T) {
 	events, _, eErr := runStream(t, "openai",
 		frame("response.output_item.done", `{"item":{"type":"message","content":[{"type":"output_text","text":"x"}]}}`))
-	if eErr != nil || len(events) != 0 {
+	if eErr != nil || len(events) != 1 {
 		t.Fatalf("events=%d err=%v", len(events), eErr)
+	}
+	delta := choice0(t, payloadOf(t, events[0]))["delta"].(map[string]any)
+	if delta["content"] != "x" {
+		t.Fatalf("snapshot text lost: %v", delta)
 	}
 }
 

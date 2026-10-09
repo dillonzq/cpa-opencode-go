@@ -48,6 +48,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 ## 请求行为
 
+- 跨协议普通和流式响应保留可读推理，映射为 `reasoning_content`、`thinking` 或 Responses reasoning summary；其他字段的映射与丢弃详见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 按 `SourceFormat` 执行 CLIProxyAPI 的有效 `Payload`，保留拦截器修改。只有缺省或 null Payload 的旧调用才回退到 `OriginalRequest`；显式空 Payload 按空输入校验；`Format` 决定输出协议。
 - 每次上游 HTTP 调用独立持有宿主 operation 与请求 callback scope。客户端断开、scope 结束、`request-timeout` 和目录刷新停止会取消实际 HTTP；流式超时覆盖建立连接与消费流的总时长。
 - `plugin.quiesce` 拒绝新工作、取消活动任务并等待回调退出。Shutdown 等待所有回调结束后才允许卸载动态库，因此永不返回的宿主回调会一直延迟关闭。

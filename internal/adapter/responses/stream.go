@@ -38,16 +38,24 @@ type StreamConverter struct {
 	// openai (Chat Completions) target state.
 	toolCallsSeen bool
 
-	// claude (Messages) target state.
-	textIndex  int
-	textOpen   bool
-	nextIndex  int
-	openBlocks []int
+	// Reasoning parts track both target formats; block state is Messages-only.
+	reasonIndex    int
+	reasonOpen     bool
+	reasoningParts map[string]*strings.Builder
+	visibleParts   map[string]*strings.Builder
+	refused        bool
+	textIndex      int
+	textOpen       bool
+	nextIndex      int
+	openBlocks     []int
 
 	// Shared function_call announce-or-replay decision table for both
 	// conversion targets; an instance converts to exactly one target,
 	// so nextIndex doubles as the tool block index allocator.
-	tracker *toolCallTracker
+	tracker         *toolCallTracker
+	pendingToolDone map[string]functionCallItem
+	messagesTools   map[int]*messagesTool
+	messagesQueue   []messagesEmission
 }
 
 // NewStreamConverter builds a converter for sourceFormat ("openai",
@@ -67,7 +75,14 @@ func NewStreamConverter(sourceFormat string, tools ...*shared.ResponseTools) *St
 		respTools:   shared.ResponseToolContext(tools),
 		customItems: map[string]struct{}{},
 	}
-	sc.tracker = newToolCallTracker(sc.allocIndex)
+	alloc := sc.allocIndex
+	if sourceFormat == "claude" {
+		// Tool tracker ordinals are separate from wire block indexes. Blocks
+		// receive their index when emitted from the serialized Messages queue.
+		ordinal := 0
+		alloc = func() int { i := ordinal; ordinal++; return i }
+	}
+	sc.tracker = newToolCallTracker(alloc)
 	return sc
 }
 
@@ -83,9 +98,8 @@ func (sc *StreamConverter) allocIndex() int {
 // toolCallTracker is the single announce-or-replay decision table for
 // upstream function_call items, keyed by call_id and owned by both
 // conversion targets so their delivery decisions cannot diverge:
-// announce once per call, deliver complete arguments the moment they are
-// observed (at output_item.added or .done alike), and replay at done
-// only when nothing was delivered earlier (FR-006).
+// announce once per call, and deliver only a complete snapshot's missing
+// suffix after any previously streamed argument fragments.
 //
 // OpenAI-conformant Responses streams identify one item in TWO distinct
 // namespaces: output_item events carry call_id ("call_…") while
@@ -100,35 +114,29 @@ type toolCallTracker struct {
 }
 
 type toolCallState struct {
-	index     int
-	delivered bool
+	index int
+	args  strings.Builder
 }
 
 func newToolCallTracker(alloc func() int) *toolCallTracker {
 	return &toolCallTracker{calls: map[string]*toolCallState{}, alloc: alloc}
 }
 
-// Observe records an output_item.added/.done sighting of a function_call
-// (callID from item.call_id, itemID from the item's own "id" field) and
-// reports whether this is the first sight (the caller must emit its
-// announce frame), the call's stable index, and whether complete
-// arguments must be delivered with this event.
-func (t *toolCallTracker) Observe(callID, itemID string, argsComplete bool) (first bool, index int, deliverArgs bool) {
+// Observe fills a complete argument snapshot's missing suffix, using both
+// identifiers to avoid replaying arguments already emitted as deltas.
+func (t *toolCallTracker) Observe(callID, itemID, args string) (first bool, index int, tail string) {
 	first, st := t.state(callID, itemID)
-	if argsComplete && !st.delivered {
-		st.delivered = true
-		deliverArgs = true
+	previous := st.args.String()
+	if strings.HasPrefix(args, previous) {
+		tail = args[len(previous):]
+		st.args.WriteString(tail)
 	}
-	return first, st.index, deliverArgs
+	return first, st.index, tail
 }
 
-// StreamArgs records argument fragments streamed outside item events;
-// any fragment counts as delivered, so a later done cannot replay
-// duplicates. It reports whether the call was first seen here (the
-// caller must open its entry/block defensively).
-func (t *toolCallTracker) StreamArgs(itemID string) (first bool, index int) {
+func (t *toolCallTracker) StreamArgs(itemID, delta string) (first bool, index int) {
 	first, st := t.state(itemID, "")
-	st.delivered = true
+	st.args.WriteString(delta)
 	return first, st.index
 }
 
@@ -179,20 +187,23 @@ type errorMessage struct {
 }
 
 type responseMeta struct {
-	ID         string       `json:"id"`
-	Model      string       `json:"model"`
-	CreatedAt  float64      `json:"created_at"`
-	StatusCode float64      `json:"status_code"`
-	Usage      usageCounts  `json:"usage"`
-	Error      errorMessage `json:"error"`
+	ID         string             `json:"id"`
+	Model      string             `json:"model"`
+	CreatedAt  float64            `json:"created_at"`
+	StatusCode float64            `json:"status_code"`
+	Output     []functionCallItem `json:"output"`
+	Usage      usageCounts        `json:"usage"`
+	Error      errorMessage       `json:"error"`
 }
 
 type functionCallItem struct {
-	Type      string `json:"type"`
-	CallID    string `json:"call_id"`
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Summary   []respTextPart `json:"summary"`
+	Content   []respTextPart `json:"content"`
+	Type      string         `json:"type"`
+	CallID    string         `json:"call_id"`
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Arguments string         `json:"arguments"`
 }
 
 type createdEvent struct {
@@ -200,7 +211,11 @@ type createdEvent struct {
 }
 
 type textDeltaEvent struct {
-	Delta string `json:"delta"`
+	ItemID       string `json:"item_id"`
+	ContentIndex int    `json:"content_index"`
+	Delta        string `json:"delta"`
+	Text         string `json:"text"`
+	Refusal      string `json:"refusal"`
 }
 
 type itemEvent struct {
@@ -208,8 +223,11 @@ type itemEvent struct {
 }
 
 type argsDeltaEvent struct {
-	ItemID string `json:"item_id"`
-	Delta  string `json:"delta"`
+	ItemID    string `json:"item_id"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Delta     string `json:"delta"`
+	Arguments string `json:"arguments"`
 }
 
 type terminalEvent struct {
@@ -373,7 +391,28 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 		// clients read authoritative usage from message_delta, so
 		// starting at zero is lossless here.
 		return [][]byte{sc.claudeChunks().MessageStart(0)}, false, nil
-	case "response.output_text.delta":
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.done", "response.reasoning_text.done":
+		var ev reasoningEvent
+		if eErr := decodeEvent(eventType, payload, &ev); eErr != nil {
+			return nil, false, eErr
+		}
+		if eErr := sc.checkTarget(); eErr != nil {
+			return nil, false, eErr
+		}
+		kind, index := "content", ev.ContentIndex
+		if strings.Contains(eventType, "summary") {
+			kind, index = "summary", ev.SummaryIndex
+		}
+		key := fmt.Sprintf("%s/%s/%d", ev.ItemID, kind, index)
+		if strings.HasSuffix(eventType, ".done") {
+			events := sc.reasoningPart(key, ev.Text, true)
+			if sc.source == "claude" {
+				events = append(events, sc.queueMessagesContent("reasoning_stop", "")...)
+			}
+			return events, false, nil
+		}
+		return sc.reasoningPart(key, ev.Delta, false), false, nil
+	case "response.output_text.delta", "response.output_text.done", "response.refusal.delta", "response.refusal.done":
 		var ev textDeltaEvent
 		if eErr := decodeEvent(eventType, payload, &ev); eErr != nil {
 			return nil, false, eErr
@@ -381,7 +420,16 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 		if eErr := sc.checkTarget(); eErr != nil {
 			return nil, false, eErr
 		}
-		return sc.textDelta(ev.Delta)
+		refused := strings.HasPrefix(eventType, "response.refusal.")
+		complete := strings.HasSuffix(eventType, ".done")
+		text := ev.Delta
+		if complete {
+			text = ev.Text
+			if refused {
+				text = ev.Refusal
+			}
+		}
+		return sc.visiblePart(ev.ItemID, ev.ContentIndex, refused, text, complete)
 	case "response.output_item.added", "response.output_item.done":
 		var ev itemEvent
 		if eErr := decodeEvent(eventType, payload, &ev); eErr != nil {
@@ -390,7 +438,37 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 		if eErr := sc.checkTarget(); eErr != nil {
 			return nil, false, eErr
 		}
-		return sc.outputItem(&ev.Item)
+		if ev.Item.Type == "reasoning" {
+			return sc.reasoningSnapshot(ev.Item), false, nil
+		}
+		if ev.Item.Type == "message" {
+			return sc.messageSnapshot(ev.Item)
+		}
+		return sc.outputItem(&ev.Item, eventType == "response.output_item.done")
+	case "response.function_call_arguments.done":
+		var ev argsDeltaEvent
+		if eErr := decodeEvent(eventType, payload, &ev); eErr != nil {
+			return nil, false, eErr
+		}
+		if eErr := sc.checkTarget(); eErr != nil {
+			return nil, false, eErr
+		}
+		item := functionCallItem{Type: "function_call", ID: ev.ItemID, CallID: ev.CallID, Name: ev.Name, Arguments: ev.Arguments}
+		if sc.tracker.calls[ev.ItemID] == nil && sc.tracker.calls[ev.CallID] == nil && (ev.CallID == "" || ev.Name == "") {
+			key := ev.ItemID
+			if key == "" {
+				key = ev.CallID
+			}
+			if key == "" {
+				return nil, false, errclass.Translation("Responses tool arguments completion has no item identity")
+			}
+			if sc.pendingToolDone == nil {
+				sc.pendingToolDone = map[string]functionCallItem{}
+			}
+			sc.pendingToolDone[key] = item
+			return nil, false, nil
+		}
+		return sc.outputItem(&item, true)
 	case "response.function_call_arguments.delta":
 		var ev argsDeltaEvent
 		if eErr := decodeEvent(eventType, payload, &ev); eErr != nil {
@@ -423,7 +501,27 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 			v := int64(*ev.Response.Usage.OutputDetails.ReasoningTokens)
 			details.ReasoningTokens = &v
 		}
-		return sc.terminal(eventType == "response.incomplete", int(ev.Response.Usage.InputTokens), int(ev.Response.Usage.OutputTokens), details)
+		var events [][]byte
+		for _, item := range ev.Response.Output {
+			switch item.Type {
+			case "reasoning":
+				events = append(events, sc.reasoningSnapshot(item)...)
+			case "message":
+				more, _, eErr := sc.messageSnapshot(item)
+				if eErr != nil {
+					return nil, false, eErr
+				}
+				events = append(events, more...)
+			case "function_call":
+				more, _, eErr := sc.outputItem(&item, true)
+				if eErr != nil {
+					return nil, false, eErr
+				}
+				events = append(events, more...)
+			}
+		}
+		tail, done, eErr := sc.terminal(eventType == "response.incomplete", int(ev.Response.Usage.InputTokens), int(ev.Response.Usage.OutputTokens), details)
+		return append(events, tail...), done, eErr
 	case "response.failed", "error":
 		var ev failureEvent
 		if eErr := decodeEvent(eventType, payload, &ev); eErr != nil {
@@ -434,8 +532,8 @@ func (sc *StreamConverter) convertEvent(eventType, payload string) ([][]byte, bo
 		}
 		return nil, false, failureError(&ev)
 	default:
-		// Informational events (response.in_progress, annotations,
-		// reasoning summaries) have no client equivalent and are omitted
+		// Informational events (response.in_progress, annotations)
+		// have no client equivalent and are omitted
 		// per the FR-005/FR-006 compatibility policy; the payload is
 		// validated without materializing a discarded generic graph.
 		if payload != "" && !json.Valid([]byte(payload)) {
@@ -557,7 +655,7 @@ func (sc *StreamConverter) restoreCustomInputDone(payload string) ([]byte, bool)
 // textDelta emits one output text delta: a plain Chat Completions content
 // chunk, or a Messages content_block_delta that auto-opens (and may
 // reopen) the text block.
-func (sc *StreamConverter) textDelta(delta string) ([][]byte, bool, *errclass.Error) {
+func (sc *StreamConverter) emitTextDelta(delta string) ([][]byte, bool, *errclass.Error) {
 	if sc.source == "openai" {
 		return [][]byte{sc.chatChunks().Delta(map[string]any{"content": delta})}, false, nil
 	}
@@ -583,50 +681,54 @@ func (sc *StreamConverter) textDelta(delta string) ([][]byte, bool, *errclass.Er
 // outputItem handles output_item.added/.done through the shared tracker:
 // Chat Completions announces/replays tool_calls entries, Messages opens
 // tool_use blocks with mandated pairing; non-function items are ignored.
-func (sc *StreamConverter) outputItem(item *functionCallItem) ([][]byte, bool, *errclass.Error) {
+func (sc *StreamConverter) outputItem(item *functionCallItem, complete bool) ([][]byte, bool, *errclass.Error) {
 	if item.Type != "function_call" {
 		return nil, false, nil
 	}
+	for _, key := range []string{item.ID, item.CallID} {
+		if pending, ok := sc.pendingToolDone[key]; ok {
+			// No downstream tool has been announced for this cached done.
+			// Preserve its arguments even if the later identity item is empty.
+			if item.Arguments == "" {
+				item.Arguments = pending.Arguments
+			}
+			if item.CallID == "" {
+				item.CallID = pending.CallID
+			}
+			if item.Name == "" {
+				item.Name = pending.Name
+			}
+			if item.CallID == "" || item.Name == "" {
+				return nil, false, nil
+			}
+			delete(sc.pendingToolDone, key)
+			complete = true
+		}
+	}
 	sc.toolCallsSeen = true
-	first, idx, deliver := sc.tracker.Observe(item.CallID, item.ID, item.Arguments != "")
+	first, idx, deliver := sc.tracker.Observe(item.CallID, item.ID, item.Arguments)
 	if sc.source == "openai" {
 		switch {
 		case first:
 			// The announcement embeds complete arguments when the item
 			// event already carries them.
 			entryArgs := ""
-			if deliver {
-				entryArgs = item.Arguments
+			if deliver != "" {
+				entryArgs = deliver
 			}
 			return [][]byte{sc.chatChunks().Delta(map[string]any{"tool_calls": []any{
 				shared.CCToolCallOpeningEntry(idx, item.CallID, item.Name, entryArgs),
 			}})}, false, nil
-		case deliver:
-			// Done for an already-announced call with no streamed arguments:
-			// replay the complete arguments so none are lost (FR-006).
+		case deliver != "":
+			// A complete snapshot fills only the unsent argument suffix.
 			return [][]byte{sc.chatChunks().Delta(map[string]any{"tool_calls": []any{map[string]any{
-				"index": idx, "function": map[string]any{"arguments": item.Arguments},
+				"index": idx, "function": map[string]any{"arguments": deliver},
 			}}})}, false, nil
 		}
 		return nil, false, nil
 	}
-	var out [][]byte
-	if first {
-		out = append(out, sc.closeOpenBlocks()...)
-		sc.openBlocks = append(sc.openBlocks, idx)
-		out = append(out, sc.claudeChunks().ContentBlockStart(idx, "tool_use",
-			map[string]any{"id": item.CallID, "name": item.Name, "input": map[string]any{}}))
-	}
-	if deliver {
-		// Complete arguments are delivered the moment they are seen,
-		// whether they arrive at added or at done (FR-006) — the
-		// same decision table as the Chat Completions route.
-		out = append(out, sc.argsDelta(idx, item.Arguments))
-	}
-	if len(out) == 0 {
-		return nil, false, nil
-	}
-	return out, false, nil
+	events, eErr := sc.queueMessagesTool(idx, item.CallID, item.Name, deliver, complete)
+	return events, false, eErr
 }
 
 // argsFragment streams one function_call_arguments.delta: Chat
@@ -634,7 +736,7 @@ func (sc *StreamConverter) outputItem(item *functionCallItem) ([][]byte, bool, *
 // it when arguments precede the announcement), Messages mirrors that with
 // input_json_delta blocks.
 func (sc *StreamConverter) argsFragment(itemID, delta string) ([][]byte, bool, *errclass.Error) {
-	first, idx := sc.tracker.StreamArgs(itemID)
+	first, idx := sc.tracker.StreamArgs(itemID, delta)
 	if sc.source == "openai" {
 		sc.toolCallsSeen = true
 		if first {
@@ -648,17 +750,9 @@ func (sc *StreamConverter) argsFragment(itemID, delta string) ([][]byte, bool, *
 			"index": idx, "function": map[string]any{"arguments": delta},
 		}}})}, false, nil
 	}
-	var out [][]byte
-	if first {
-		// Arguments before the item announcement: open the block with
-		// the identifiers available so no partial JSON is lost.
-		out = append(out, sc.closeOpenBlocks()...)
-		sc.openBlocks = append(sc.openBlocks, idx)
-		out = append(out, sc.claudeChunks().ContentBlockStart(idx, "tool_use",
-			map[string]any{"id": itemID, "name": "", "input": map[string]any{}}))
-	}
-	out = append(out, sc.argsDelta(idx, delta))
-	return out, false, nil
+	sc.toolCallsSeen = true
+	events, eErr := sc.queueMessagesTool(idx, itemID, "", delta, false)
+	return events, false, eErr
 }
 
 // terminal renders the completed/incomplete tail: Chat Completions gets a
@@ -667,12 +761,15 @@ func (sc *StreamConverter) argsFragment(itemID, delta string) ([][]byte, bool, *
 // message_stop. Shared precedence: tool calls outrank the status-derived
 // reason, so response.incomplete cannot downgrade them.
 func (sc *StreamConverter) terminal(incomplete bool, in, out int, details shared.UsageDetails) ([][]byte, bool, *errclass.Error) {
+	if len(sc.pendingToolDone) > 0 {
+		return nil, false, errclass.Translation("Responses stream ended before completed tool arguments received a tool identity")
+	}
 	st := "completed"
 	if incomplete {
 		st = "incomplete"
 	}
 	if sc.source == "openai" {
-		finish := shared.TerminalReason(sc.toolCallsSeen, "tool_calls", shared.CCFinishFromResponseStatus(st))
+		finish := shared.TerminalReason(sc.toolCallsSeen, "tool_calls", shared.FinishWithRefusal(shared.CCFinishFromResponseStatus(st), sc.refused))
 		// Always attached (F-R6 parity with the Messages route's terminal
 		// chunk): typed clients prefer a stable schema, zero-valued fields
 		// when upstream reported none. Shared kernel keeps total_tokens
@@ -680,11 +777,14 @@ func (sc *StreamConverter) terminal(incomplete bool, in, out int, details shared
 		chunk := sc.chatChunks().Finish(finish, shared.CCUsageFrom(int64(in), int64(out), details))
 		return [][]byte{chunk}, true, nil
 	}
-	statusStop := shared.ClaudeStopFromResponseStatus(st)
+	statusStop := shared.FinishToClaudeStop(shared.FinishWithRefusal(shared.CCFinishFromResponseStatus(st), sc.refused))
 	stop := shared.TerminalReason(sc.toolCallsSeen, "tool_use", statusStop)
 	cacheRead, cacheWrite := details.CachedTokens, details.CacheWriteTokens
 	em := sc.claudeChunks()
-	var events [][]byte
+	for _, tool := range sc.messagesTools {
+		tool.complete = true
+	}
+	events := sc.drainMessages()
 	for _, idx := range sc.openBlocks {
 		events = append(events, em.ContentBlockStop(idx))
 	}
@@ -727,6 +827,7 @@ func (sc *StreamConverter) closeOpenBlocks() [][]byte {
 	}
 	sc.openBlocks = nil
 	sc.textOpen = false
+	sc.reasonOpen = false
 	return out
 }
 
@@ -763,4 +864,105 @@ func failureError(ev *failureEvent) *errclass.Error {
 		return errclass.FromStatus(status, msg)
 	}
 	return errclass.UpstreamFallback(msg)
+}
+
+type reasoningEvent struct {
+	ItemID       string `json:"item_id"`
+	SummaryIndex int    `json:"summary_index"`
+	ContentIndex int    `json:"content_index"`
+	Delta        string `json:"delta"`
+	Text         string `json:"text"`
+}
+
+// Complete part/item/terminal snapshots fill missing tails without replaying
+// text already delivered as deltas. Summary and content use separate keys.
+func (sc *StreamConverter) reasoningSnapshot(item functionCallItem) [][]byte {
+	var events [][]byte
+	for i, p := range item.Summary {
+		if p.Type == "summary_text" {
+			events = append(events, sc.reasoningPart(fmt.Sprintf("%s/summary/%d", item.ID, i), p.Text, true)...)
+		}
+	}
+	for i, p := range item.Content {
+		if p.Type == "reasoning_text" || p.Type == "text" {
+			events = append(events, sc.reasoningPart(fmt.Sprintf("%s/content/%d", item.ID, i), p.Text, true)...)
+		}
+	}
+	return events
+}
+
+func (sc *StreamConverter) reasoningPart(key, text string, complete bool) [][]byte {
+	if sc.reasoningParts == nil {
+		sc.reasoningParts = map[string]*strings.Builder{}
+	}
+	part := sc.reasoningParts[key]
+	if part == nil {
+		part = &strings.Builder{}
+		sc.reasoningParts[key] = part
+	}
+	if complete {
+		previous := part.String()
+		if !strings.HasPrefix(text, previous) {
+			return nil
+		}
+		text = text[len(previous):]
+	}
+	if text == "" {
+		return nil
+	}
+	part.WriteString(text)
+	if sc.source == "openai" {
+		return [][]byte{sc.chatChunks().Delta(map[string]any{"reasoning_content": text})}
+	}
+	return sc.queueMessagesContent("reasoning", text)
+}
+
+// Text/refusal done and item/terminal snapshots can carry the full content
+// without deltas. Separate per-part accumulation prevents duplicate output.
+func (sc *StreamConverter) visiblePart(id string, index int, refused bool, text string, complete bool) ([][]byte, bool, *errclass.Error) {
+	if sc.visibleParts == nil {
+		sc.visibleParts = map[string]*strings.Builder{}
+	}
+	key := fmt.Sprintf("%s/%d/%t", id, index, refused)
+	part := sc.visibleParts[key]
+	if part == nil {
+		part = &strings.Builder{}
+		sc.visibleParts[key] = part
+	}
+	if complete {
+		previous := part.String()
+		if !strings.HasPrefix(text, previous) {
+			return nil, false, nil
+		}
+		text = text[len(previous):]
+	}
+	if text == "" {
+		return nil, false, nil
+	}
+	part.WriteString(text)
+	if refused {
+		sc.refused = true
+		if sc.source == "openai" {
+			return [][]byte{sc.chatChunks().Delta(map[string]any{"refusal": text})}, false, nil
+		}
+	}
+	return sc.textDelta(text)
+}
+
+func (sc *StreamConverter) messageSnapshot(item functionCallItem) ([][]byte, bool, *errclass.Error) {
+	var events [][]byte
+	for i, part := range item.Content {
+		text := part.Text
+		if part.Type == "refusal" {
+			text = part.Refusal
+		} else if part.Type != "output_text" {
+			continue
+		}
+		more, _, eErr := sc.visiblePart(item.ID, i, part.Type == "refusal", text, true)
+		if eErr != nil {
+			return nil, false, eErr
+		}
+		events = append(events, more...)
+	}
+	return events, false, nil
 }

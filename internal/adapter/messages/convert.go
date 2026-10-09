@@ -1,9 +1,8 @@
 // Non-stream response conversion for the Messages adapter (FR-006,
 // AC §C): an upstream Anthropic Messages HTTP response is translated back
 // into the client protocol — validated passthrough for claude clients,
-// Chat Completions / Responses synthesis otherwise. Reasoning content has
-// no representation outside Anthropic wire format and is explicitly
-// omitted (FR-005 policy).
+// Chat Completions / Responses synthesis otherwise. Visible thinking maps
+// to reasoning_content or reasoning summaries; opaque metadata is omitted.
 package messages
 
 import (
@@ -19,11 +18,12 @@ import (
 // ---- upstream Anthropic Messages response shapes (decode-only) ----
 
 type claudeBlockIn struct {
-	Type  string          `json:"type"` // text | thinking | tool_use | ...
-	Text  string          `json:"text"`
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	Thinking string          `json:"thinking"`
+	Type     string          `json:"type"` // text | thinking | tool_use | ...
+	Text     string          `json:"text"`
+	ID       string          `json:"id"`
+	Name     string          `json:"name"`
+	Input    json.RawMessage `json:"input"`
 }
 
 type claudeUsageIn struct {
@@ -45,8 +45,7 @@ type claudeResponseIn struct {
 // response back into the client protocol sourceFormat (FR-006, AC §C).
 // Statuses >= 400 become classified redacted errors (§7); "claude"
 // passes through; "openai" and "openai-response" are converted, preserving
-// text, tool_use, stop reason, and usage while dropping thinking blocks
-// (FR-005 explicit omission). Unknown formats are ClassUnsupported;
+// text, thinking, tool_use, stop reason, and usage. Unknown formats are ClassUnsupported;
 // malformed upstream bodies are ClassTranslation.
 func ConvertNonStreamResponse(sourceFormat string, status int, upstreamBody []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	if status >= 400 {
@@ -85,16 +84,15 @@ func decodeClaude(body []byte) (*claudeResponseIn, *errclass.Error) {
 // response: text blocks concatenate into message.content, tool_use blocks
 // become indexed tool_calls with JSON-encoded arguments, stop_reason maps
 // to finish_reason, and input/output tokens map to prompt/completion
-// usage (FR-006, AC §C). Thinking and redacted_thinking blocks are
-// omitted — Chat Completions has no standard reasoning-delta field
-// (FR-005 explicit omission).
+// usage (FR-006, AC §C). Thinking maps to CPA-compatible reasoning_content;
+// redacted_thinking and signatures have no compatible representation.
 func claudeToChat(body []byte) ([]byte, *errclass.Error) {
 	resp, eErr := decodeClaude(body)
 	if eErr != nil {
 		return nil, eErr
 	}
 	var text strings.Builder
-	msg := shared.CCMessage{Role: "assistant"}
+	msg := shared.CCResponseMessage{CCMessage: shared.CCMessage{Role: "assistant"}}
 	for _, blk := range resp.Content {
 		switch blk.Type {
 		case "text":
@@ -105,12 +103,10 @@ func claudeToChat(body []byte) ([]byte, *errclass.Error) {
 			tc.Function.Name = blk.Name
 			tc.Function.Arguments = string(args)
 			msg.ToolCalls = append(msg.ToolCalls, tc)
-		case "thinking", "redacted_thinking":
-			// FR-005 explicit omission policy: no standard Chat
-			// Completions reasoning field; dropped rather than put in a
-			// non-standard one. redacted_thinking is pure encrypted
-			// reasoning metadata, omitted like the stream path instead of
-			// failing the conversion.
+		case "thinking":
+			msg.ReasoningContent += blk.Thinking
+		case "redacted_thinking":
+			// Opaque provider metadata cannot be mapped to readable reasoning.
 		default:
 			return nil, errclass.Translation(fmt.Sprintf(
 				"%s output cannot represent %q content blocks", EndpointPath, blk.Type))
@@ -131,7 +127,7 @@ func claudeToChat(body []byte) ([]byte, *errclass.Error) {
 			"message":       msg,
 			"finish_reason": finish,
 		}},
-		shared.CCUsageFrom(resp.Usage.InputTokens+valueOrZero(resp.Usage.CacheRead)+valueOrZero(resp.Usage.CacheCreation), resp.Usage.OutputTokens, shared.UsageDetails{CachedTokens: resp.Usage.CacheRead}))
+		shared.CCUsageFrom(resp.Usage.InputTokens+valueOrZero(resp.Usage.CacheRead)+valueOrZero(resp.Usage.CacheCreation), resp.Usage.OutputTokens, shared.UsageDetails{CachedTokens: resp.Usage.CacheRead, CacheWriteTokens: resp.Usage.CacheCreation}))
 	b, _ := json.Marshal(out) // composed marshallable types only; cannot fail
 	return b, nil
 }
@@ -155,9 +151,8 @@ func decodeBlockInput(raw json.RawMessage) any {
 // text blocks aggregate into an assistant output_text message item,
 // tool_use blocks become function_call items, stop_reason end_turn maps to
 // status completed, and input/output tokens map to input/output usage
-// (FR-006). Thinking and redacted_thinking blocks are omitted — Responses
-// has no standard reasoning-summary equivalent without signatures (FR-005
-// policy).
+// (FR-006). Thinking becomes reasoning summary items; redacted_thinking
+// and signatures have no compatible representation.
 func claudeToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
 	resp, eErr := decodeClaude(body)
 	if eErr != nil {
@@ -176,7 +171,7 @@ func claudeToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *er
 		Usage:  shared.NewResponsesUsageFrom(resp.Usage.InputTokens+valueOrZero(resp.Usage.CacheRead)+valueOrZero(resp.Usage.CacheCreation), resp.Usage.OutputTokens, shared.UsageDetails{CachedTokens: resp.Usage.CacheRead, CacheWriteTokens: resp.Usage.CacheCreation}),
 	}
 	oa := shared.NewOutputAssembler(resp.ID, tools...)
-	for _, blk := range resp.Content {
+	for idx, blk := range resp.Content {
 		switch blk.Type {
 		case "text":
 			// The shared assembler reserves the first text block's slot so
@@ -188,8 +183,10 @@ func claudeToResponses(body []byte, tools ...*shared.ResponseTools) ([]byte, *er
 		case "tool_use":
 			args, _ := json.Marshal(decodeBlockInput(blk.Input))
 			oa.AppendFunctionCall(blk.ID, blk.Name, string(args))
-		case "thinking", "redacted_thinking":
-			// FR-005 explicit omission policy (see claudeToChat).
+		case "thinking":
+			oa.AppendReasoning(fmt.Sprintf("%s_reasoning_%d", resp.ID, idx), blk.Thinking)
+		case "redacted_thinking":
+			// Opaque provider metadata has no compatible representation.
 		default:
 			return nil, errclass.Translation(fmt.Sprintf(
 				"%s output cannot represent %q content blocks", EndpointPath, blk.Type))

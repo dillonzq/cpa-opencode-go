@@ -1,3 +1,19 @@
+# Unreleased
+
+## Protocol conversion
+
+- Preserve visible reasoning in regular and streaming responses across Chat
+  Completions, Messages, and Responses, including compatible provider aliases.
+- Retain refusal text and cache-write token details across supported response
+  conversions, preserving explicit zero counts and existing token accounting.
+- Reconcile Responses text, reasoning, and tool-argument completion snapshots
+  without replaying previously emitted prefixes. Buffer early argument completion
+  until tool identity is available, and serialize Messages tool blocks so later
+  content cannot close a tool before its arguments finish.
+- Document supported mappings, omissions, and remaining compatibility gaps in
+  English and Chinese. Provider-specific signatures and encrypted reasoning
+  remain native-only; request-side historical reasoning policies are unchanged.
+
 # v0.1.0
 
 First independent release of **cpa-opencode-go**, based on
