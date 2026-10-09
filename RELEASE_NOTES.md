@@ -15,6 +15,8 @@
 
 - Review follow-up: reject missing/partial terminal SSE payloads, including native EOF tails after a known finish, and include native `input_image.file_id` in stable session hashes. Distinguish an explicit empty effective payload from an omitted/null payload so interceptor output cannot replay the original request. Add converter, non-stream/stream execution, and real-host ABI regressions.
 
+- Address PR #3 review: require the `message_stop` discriminator and coherent Responses terminal snapshots (`type`, response `id`, `object`, terminal `status`, and an `output` array). Reject empty/unrelated objects before native passthrough or conversion; cover framed and EOF terminals across all output formats with converter and real-host ABI tests.
+
 ## CLIProxyAPI v8
 
 ### Features

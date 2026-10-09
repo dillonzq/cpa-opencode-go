@@ -95,7 +95,7 @@ const createdPayload = `{"response":{"id":"resp_1","model":"gpt-5.6-luna","creat
 func TestPassthroughVerbatimAndTerminal(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
 		frame("response.output_text.delta", `{"delta":"hi"}`) +
-		frame("response.completed", `{"response":{"usage":{"input_tokens":5,"output_tokens":7}}}`)
+		frame("response.completed", `{"response":{"usage":{"input_tokens":5,"output_tokens":7},"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai-response", raw)
 	if eErr != nil {
 		t.Fatalf("unexpected error: %v", eErr)
@@ -191,7 +191,7 @@ func TestPassthroughNonCustomToolUntouched(t *testing.T) {
 }
 
 func TestPassthroughIncompleteDone(t *testing.T) {
-	_, done, eErr := runStream(t, "openai-response", frame("response.incomplete", `{}`))
+	_, done, eErr := runStream(t, "openai-response", frame("response.incomplete", `{"response":{"id":"resp_terminal","object":"response","status":"incomplete","output":[]},"type":"response.incomplete"}`))
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
 	}
@@ -244,7 +244,7 @@ func TestConversionMultiLineDataJoinedWithoutRaw(t *testing.T) {
 	// Conversion targets run with wantRaw=false; a legal
 	// multi-data-line frame must still join into one payload.
 	raw := "event: response.output_text.delta\ndata: {\"delta\":\ndata: \"joined\"}\n\n" +
-		frame("response.completed", `{"response":{"usage":{"input_tokens":1,"output_tokens":1}}}`)
+		frame("response.completed", `{"response":{"usage":{"input_tokens":1,"output_tokens":1},"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil {
 		t.Fatalf("unexpected error: %v", eErr)
@@ -316,8 +316,8 @@ func TestUnsupportedTargetRejectedOnEveryHandledEvent(t *testing.T) {
 		{"response.output_text.delta", `{"delta":"x"}`},
 		{"response.output_item.added", `{"item":{"type":"function_call"}}`},
 		{"response.function_call_arguments.delta", `{"item_id":"x","delta":"y"}`},
-		{"response.completed", `{}`},
-		{"response.incomplete", `{}`},
+		{"response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`},
+		{"response.incomplete", `{"response":{"id":"resp_terminal","object":"response","status":"incomplete","output":[]},"type":"response.incomplete"}`},
 		{"response.failed", `{}`},
 		{"error", `{}`},
 	}
@@ -397,7 +397,7 @@ func TestOpenAIToolCallFlow(t *testing.T) {
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":""}}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fc1","delta":"{\"q\":"}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fc1","delta":"\"x\"}"}`) +
-		frame("response.completed", `{"response":{"usage":{"input_tokens":11,"output_tokens":3}}}`)
+		frame("response.completed", `{"response":{"usage":{"input_tokens":11,"output_tokens":3},"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -438,7 +438,7 @@ func TestOpenAIToolCallReplayOnDone(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":""}}`) +
 		frame("response.output_item.done", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":"{\"q\":1}"}}`) +
-		frame("response.completed", `{}`)
+		frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -483,7 +483,7 @@ func TestOpenAINonFunctionItemIgnored(t *testing.T) {
 func TestOpenAICompletedStopNoTools(t *testing.T) {
 	raw := frame("response.created", `{}`) +
 		frame("response.output_text.delta", `{"delta":"hi"}`) +
-		frame("response.completed", `{}`)
+		frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -507,7 +507,7 @@ func TestOpenAICompletedStopNoTools(t *testing.T) {
 
 func TestOpenAIIncompleteLength(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
-		frame("response.incomplete", `{"response":{"usage":{"input_tokens":2,"output_tokens":1}}}`)
+		frame("response.incomplete", `{"response":{"usage":{"input_tokens":2,"output_tokens":1},"id":"resp_terminal","object":"response","status":"incomplete","output":[]},"type":"response.incomplete"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -522,7 +522,7 @@ func TestOpenAIIncompleteWithToolsKeepsToolCalls(t *testing.T) {
 	// Shared precedence: response.incomplete cannot downgrade tool_calls.
 	raw := frame("response.created", createdPayload) +
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":""}}`) +
-		frame("response.incomplete", `{}`)
+		frame("response.incomplete", `{"response":{"id":"resp_terminal","object":"response","status":"incomplete","output":[]},"type":"response.incomplete"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -606,7 +606,7 @@ func TestClaudeToolUseFlow(t *testing.T) {
 		frame("response.output_text.delta", `{"delta":"hi"}`) +
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":""}}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fc1","delta":"{\"a\":1}"}`) +
-		frame("response.completed", `{"response":{"usage":{"input_tokens":4,"output_tokens":9}}}`)
+		frame("response.completed", `{"response":{"usage":{"input_tokens":4,"output_tokens":9},"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -669,7 +669,7 @@ func TestClaudeToolDoneReplaysArgs(t *testing.T) {
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":""}}`) +
 		frame("response.output_item.done", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":"{\"k\":1}"}}`) +
 		frame("response.output_item.done", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":""}}`) +
-		frame("response.completed", `{}`)
+		frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -689,7 +689,7 @@ func TestClaudeToolDoneReplaysArgs(t *testing.T) {
 func TestClaudeArgsDeltaBeforeItemAnnouncement(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fcX","delta":"{}"}`) +
-		frame("response.completed", `{}`)
+		frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -707,7 +707,7 @@ func TestClaudeArgsDeltaBeforeItemAnnouncement(t *testing.T) {
 func TestClaudeToolDoneAsFirstEventStartsWithArgs(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
 		frame("response.output_item.done", `{"item":{"type":"function_call","call_id":"fc2","name":"calc","arguments":"{\"n\":3}"}}`) +
-		frame("response.completed", `{}`)
+		frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -735,7 +735,7 @@ func TestClaudeInterleavedTextToolTextPairing(t *testing.T) {
 		frame("response.function_call_arguments.delta", `{"item_id":"fc1","delta":"{\"a\":1}"}`) +
 		frame("response.output_item.done", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":"{\"a\":1}"}}`) +
 		frame("response.output_text.delta", `{"delta":"bye"}`) +
-		frame("response.completed", `{"response":{"usage":{"input_tokens":3,"output_tokens":5}}}`)
+		frame("response.completed", `{"response":{"usage":{"input_tokens":3,"output_tokens":5},"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -812,7 +812,7 @@ func TestClaudeNonFunctionItemIgnored(t *testing.T) {
 func TestClaudeEndTurnNoTools(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
 		frame("response.output_text.delta", `{"delta":"done"}`) +
-		frame("response.completed", `{"response":{"usage":{"input_tokens":1,"output_tokens":2}}}`)
+		frame("response.completed", `{"response":{"usage":{"input_tokens":1,"output_tokens":2},"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -834,7 +834,7 @@ func TestClaudeEndTurnNoTools(t *testing.T) {
 }
 
 func TestClaudeIncompleteMaxTokens(t *testing.T) {
-	raw := frame("response.created", `{}`) + frame("response.incomplete", `{"response":{}}`)
+	raw := frame("response.created", `{}`) + frame("response.incomplete", `{"response":{"id":"resp_terminal","object":"response","status":"incomplete","output":[]},"type":"response.incomplete"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -857,7 +857,7 @@ func TestClaudeIncompleteWithToolsKeepsToolUse(t *testing.T) {
 	// downgrade tool_use to max_tokens.
 	raw := frame("response.created", createdPayload) +
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"fc1","name":"lookup","arguments":""}}`) +
-		frame("response.incomplete", `{}`)
+		frame("response.incomplete", `{"response":{"id":"resp_terminal","object":"response","status":"incomplete","output":[]},"type":"response.incomplete"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -901,7 +901,7 @@ func TestPartialLineSplitAcrossFeeds(t *testing.T) {
 
 func TestCRLFStreamTolerated(t *testing.T) {
 	raw := "event: response.created\r\ndata: " + createdPayload + "\r\n\r\n" +
-		"event: response.completed\r\ndata: {}\r\n\r\n"
+		"event: response.completed\r\ndata: {\"response\":{\"id\":\"resp_terminal\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]},\"type\":\"response.completed\"}\r\n\r\n"
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -950,7 +950,7 @@ func TestOpenAITwoInterleavedToolCalls(t *testing.T) {
 		frame("response.function_call_arguments.delta", `{"item_id":"fb","delta":"{\"b\":"}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fa","delta":"1}"}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fb","delta":"2}"}`) +
-		frame("response.completed", `{"response":{"usage":{"input_tokens":1,"output_tokens":2}}}`)
+		frame("response.completed", `{"response":{"usage":{"input_tokens":1,"output_tokens":2},"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -1083,7 +1083,7 @@ func TestOpenAIToolDoneReplayPerCall(t *testing.T) {
 func TestOpenAIToolAnnounceCarriesArguments(t *testing.T) {
 	raw := frame("response.created", createdPayload) +
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"fcz","name":"zf","arguments":"{\"z\":9}"}}`) +
-		frame("response.completed", `{"response":{"status":"completed"}}`)
+		frame("response.completed", `{"response":{"status":"completed","id":"resp_terminal","object":"response","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -1123,7 +1123,7 @@ func TestOpenAIArgsDeltaBeforeAnnouncementIsOneCall(t *testing.T) {
 		frame("response.function_call_arguments.delta", `{"item_id":"fc_1","delta":"{\"a\":"}`) +
 		frame("response.output_item.added", `{"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"calc","arguments":""}}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fc_1","delta":"1}"}`) +
-		frame("response.completed", `{}`)
+		frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -1187,7 +1187,7 @@ func TestAddedCompleteArgsParityAcrossTargets(t *testing.T) {
 	}
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
-			raw := frame("response.created", createdPayload) + s.raw + frame("response.completed", `{}`)
+			raw := frame("response.created", createdPayload) + s.raw + frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 			const want = `{"k":7}`
 			ccEvents, done, eErr := runStream(t, "openai", raw)
 			if eErr != nil || !done {
@@ -1239,7 +1239,7 @@ func TestOpenAICallIDAndItemIDAreOneCall(t *testing.T) {
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"call_1","id":"fc_1","name":"lookup","arguments":""}}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fc_1","delta":"{\"q\":"}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fc_1","delta":"\"x\"}"}`) +
-		frame("response.completed", `{"response":{"usage":{"input_tokens":1,"output_tokens":2}}}`)
+		frame("response.completed", `{"response":{"usage":{"input_tokens":1,"output_tokens":2},"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "openai", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
@@ -1275,7 +1275,7 @@ func TestClaudeCallIDAndItemIDAreOneBlock(t *testing.T) {
 		frame("response.output_item.added", `{"item":{"type":"function_call","call_id":"call_1","id":"fc_1","name":"lookup","arguments":""}}`) +
 		frame("response.function_call_arguments.delta", `{"item_id":"fc_1","delta":"{\"a\":1}"}`) +
 		frame("response.output_item.done", `{"item":{"type":"function_call","call_id":"call_1","id":"fc_1","name":"lookup","arguments":"{\"a\":1}"}}`) +
-		frame("response.completed", `{}`)
+		frame("response.completed", `{"response":{"id":"resp_terminal","object":"response","status":"completed","output":[]},"type":"response.completed"}`)
 	events, done, eErr := runStream(t, "claude", raw)
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)

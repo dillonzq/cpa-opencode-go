@@ -32,7 +32,7 @@ func TestStreamEOFRequiresTerminalState(t *testing.T) {
 		{"responses", func(f string) eofConverter { return responses.NewStreamConverter(f) },
 			"event: response.created\ndata: {\"response\":{\"id\":\"r1\"}}\n\nevent: response.output_text.delta\ndata: {\"delta\":\"partial\"}\n\n",
 			"event: response.output_item.added\ndata: {\"item\":{\"type\":\"function_call\",\"id\":\"t1\",\"call_id\":\"t1\",\"name\":\"f\"}}\n\nevent: response.function_call_arguments.delta\ndata: {\"item_id\":\"t1\",\"delta\":\"{\\\"x\\\":\"}\n\n",
-			"event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[]}}"},
+			"event: response.completed\ndata: {\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[],\"object\":\"response\"},\"type\":\"response.completed\"}"},
 	}
 	for _, route := range routes {
 		for _, format := range []string{"openai", "claude", "openai-response"} {
@@ -105,7 +105,7 @@ func TestConvertersDoNotDuplicateTerminal(t *testing.T) {
 		}{
 			{chatcompletions.NewStreamConverter(format), `data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"},
 			{messages.NewStreamConverter(format), "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"},
-			{responses.NewStreamConverter(format), "event: response.completed\ndata: {\"response\":{\"status\":\"completed\"}}\n\n"},
+			{responses.NewStreamConverter(format), "event: response.completed\ndata: {\"response\":{\"status\":\"completed\",\"id\":\"resp_terminal\",\"object\":\"response\",\"output\":[]},\"type\":\"response.completed\"}\n\n"},
 		}
 		for _, tc := range converters {
 			events, done, eErr := tc.converter.Feed([]byte(tc.body))

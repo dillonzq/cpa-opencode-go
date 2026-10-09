@@ -107,6 +107,16 @@ func (sc *StreamConverter) dispatch(etype, data string, rawBlock []byte, events 
 	if (etype == "message_stop" || sc.ending && data != "") && !shared.IsJSONObject(data) {
 		return false, errclass.Translation("Messages stream has an incomplete event payload")
 	}
+	// Validate the discriminator before either native passthrough or synthesis
+	// can mark completion. Extra fields remain forward-compatible.
+	if etype == "message_stop" {
+		var terminal struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(data), &terminal) != nil || terminal.Type != "message_stop" {
+			return false, errclass.Translation("Messages message_stop payload must have type message_stop")
+		}
+	}
 	if sc.sourceFormat == "claude" {
 		return sc.dispatchClaude(etype, data, rawBlock, events)
 	}

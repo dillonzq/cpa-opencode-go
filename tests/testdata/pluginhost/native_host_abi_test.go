@@ -529,3 +529,152 @@ func TestOpenCodeNativeAuthNames(t *testing.T) {
 		t.Fatal("native parsing replaced custom label/metadata")
 	}
 }
+
+// Invalid terminal snapshots must fail through the real host stream bridge,
+// for both native passthrough and cross-protocol synthesis, with or without
+// the final SSE separator. Valid snapshots must retain one terminal only.
+func TestOpenCodeNativeTerminalShapes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			io.WriteString(w, `{"data":[{"id":"minimax-m3"},{"id":"gpt-5.6-luna"}]}`)
+			return
+		}
+		var req struct {
+			Input    string `json:"input"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid offline request", 400)
+			return
+		}
+		mode := req.Input
+		if len(req.Messages) > 0 {
+			mode = req.Messages[0].Content
+		}
+		parts := strings.Split(mode, "/")
+		if len(parts) != 3 {
+			http.Error(w, "invalid offline test mode", 400)
+			return
+		}
+		shape, ending, event := parts[0], parts[1], parts[2]
+		payload := ""
+		if r.URL.Path == "/messages" {
+			switch shape {
+			case "empty":
+				payload = `{}`
+			case "unrelated":
+				payload = `{"type":"ping"}`
+			case "valid":
+				payload = `{"type":"message_stop"}`
+			}
+		} else {
+			status := strings.TrimPrefix(event, "response.")
+			switch shape {
+			case "empty":
+				payload = `{}`
+			case "empty-response":
+				payload = `{"response":{}}`
+			case "missing-output":
+				payload = fmt.Sprintf(`{"type":%q,"response":{"id":"resp_1","object":"response","status":%q}}`, event, status)
+			case "valid":
+				payload = fmt.Sprintf(`{"type":%q,"response":{"id":"resp_1","object":"response","status":%q,"output":[]}}`, event, status)
+			}
+		}
+		if payload == "" {
+			http.Error(w, "unknown offline shape", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if r.URL.Path == "/messages" {
+			io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n")
+			if shape == "valid" {
+				io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
+			}
+		} else {
+			io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n")
+		}
+		io.WriteString(w, "event: "+event+"\ndata: "+payload)
+		if ending == "framed" {
+			io.WriteString(w, "\n\n")
+		}
+	}))
+	defer server.Close()
+	host := New()
+	host.runtimeConfig = &config.Config{AuthDir: t.TempDir()}
+	file := pluginFile{ID: "cpa-opencode-go", Path: os.Getenv("CPA_NATIVE_PLUGIN")}
+	native, err := defaultPluginLoader().Open(file, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newGuardedPluginClient(native)
+	defer client.Shutdown()
+	_, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginRegister, []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\n", server.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rpc := &rpcPluginAdapter{id: file.ID, host: host, client: client, instance: pluginCallbackInstance(client)}
+	for _, route := range []struct {
+		model, source  string
+		events, shapes []string
+	}{
+		{"minimax-m3", "claude", []string{"message_stop"}, []string{"empty", "unrelated", "valid"}},
+		{"gpt-5.6-luna", "openai-response", []string{"response.completed", "response.incomplete"}, []string{"empty", "empty-response", "missing-output", "valid"}},
+	} {
+		for _, event := range route.events {
+			for _, shape := range route.shapes {
+				for _, ending := range []string{"framed", "eof"} {
+					for _, output := range []string{"openai", "claude", "openai-response"} {
+						t.Run(route.model+"/"+event+"/"+shape+"/"+ending+"/"+output, func(t *testing.T) {
+							mode := shape + "/" + ending + "/" + event
+							var body []byte
+							if route.source == "claude" {
+								body = []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":%q}],"max_tokens":16,"stream":true}`, mode))
+							} else {
+								body = []byte(fmt.Sprintf(`{"input":%q,"stream":true}`, mode))
+							}
+							req := pluginapi.ExecutorRequest{Model: "opencode-go/" + route.model, AuthProvider: "opencode-go", AuthAttributes: map[string]string{"api_key": "offline-test-key"}, SourceFormat: route.source, Format: output, Payload: body, Stream: true}
+							resp, err := rpc.ExecuteStream(context.Background(), req)
+							if err != nil {
+								t.Fatal(err)
+							}
+							var events strings.Builder
+							var streamErr error
+							for chunk := range resp.Chunks {
+								events.Write(chunk.Payload)
+								if chunk.Err != nil {
+									streamErr = chunk.Err
+								}
+							}
+							if shape != "valid" {
+								if streamErr == nil || strings.Contains(events.String(), "response.completed") || strings.Contains(events.String(), "response.incomplete") || strings.Contains(events.String(), "message_stop") || strings.Contains(events.String(), `"finish_reason":"stop"`) {
+									t.Fatal("invalid terminal reported success through ABI")
+								}
+							} else {
+								if streamErr != nil {
+									t.Fatalf("valid terminal failed: %v", streamErr)
+								}
+								marker := "event: message_stop"
+								if output == "openai-response" {
+									marker = "event: response.completed"
+									if route.source == "openai-response" {
+										marker = "event: " + event
+									}
+								} else if output == "openai" {
+									marker = `"finish_reason":"stop"`
+									if event == "response.incomplete" {
+										marker = `"finish_reason":"length"`
+									}
+								}
+								if strings.Count(events.String(), marker) != 1 {
+									t.Fatal("valid terminal missing/duplicated")
+								}
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
