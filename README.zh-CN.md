@@ -39,33 +39,33 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 - **思考与推理支持**：在支持的客户端和上游格式之间映射推理强度。
 - **动态模型发现**：获取远程模型目录，支持本地回退和自定义路由覆盖。
 - **多密钥调度**：使用 CLIProxyAPI 原生调度器，在不同协议间共享密钥轮换、重试和错误冷却状态。
-- **OpenCode Go 额度页面**：在管理中心提供独立的 `OpenCode Go Quota` 页面。页面加载时仅列出凭证，不向 OpenCode 发起请求；每张卡片可单独手动刷新。额度数据不参与路由，也不影响 CPA 原生额度页面。
+- **原生额度查询**：通过 CLIProxyAPI 通用额度接口查询当前选中凭证的滚动、每周和每月额度，移除独立插件额度页面。
 
 ## 环境要求
 
-- **CLIProxyAPI**：`v7.2.138+`
+- **CLIProxyAPI**：`v8.0.0+`
 - **Go 工具链**：Go 1.26.7+，构建 C 共享库时需启用 CGO。
 
 ## 构建
 
-根据目标平台构建动态库。
+本地开发使用 `debug` 标签构建动态库，发布构建由 CI 完成。
 
 ### Windows（AMD64）
 
 ```powershell
-go build -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-go.dll .
+go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-go.dll .
 ```
 
 ### Linux（AMD64）
 
 ```bash
-go build -buildmode=c-shared -o plugins/linux/amd64/cpa-opencode-go.so .
+go build -tags debug -buildmode=c-shared -o plugins/linux/amd64/cpa-opencode-go.so .
 ```
 
 ### macOS（ARM64）
 
 ```bash
-go build -buildmode=c-shared -o plugins/darwin/arm64/cpa-opencode-go.dylib .
+go build -tags debug -buildmode=c-shared -o plugins/darwin/arm64/cpa-opencode-go.dylib .
 ```
 
 将动态库放入 CLIProxyAPI 的插件目录，例如 `<cliproxyapi_root>/plugins/<os>/<arch>/`。
@@ -77,7 +77,7 @@ go build -buildmode=c-shared -o plugins/darwin/arm64/cpa-opencode-go.dylib .
 1. 停止 CLIProxyAPI。
 2. 将配置键 `plugins.configs.opencode-go-cliproxyapi` 改为 `plugins.configs.cpa-opencode-go`，保留插件设置，并设置 `enabled: true`。
 3. 删除所有旧的 `opencode-go-cliproxyapi` 动态库，包括 `opencode-go-cliproxyapi-v0.1.10.dylib` 这类带版本号的文件，然后安装对应平台的 `cpa-opencode-go` 动态库。两个插件会注册同一个服务商，请勿同时启用。
-4. 重启 CLIProxyAPI，并强制刷新管理中心页面。额度接口已改为 `/v0/management/plugins/cpa-opencode-go/quota-usage`，迁移后的额度会话缓存初始为空。
+4. 重启 CLIProxyAPI，并强制刷新管理中心页面。额度查询改用[账户名称与额度](#账户名称与额度)中的原生接口，需要 CLIProxyAPI v8.0.0 或更高版本，以及支持通用额度接口的管理界面。
 
 已有的 `opencode-go/<model>` 模型 ID、API 密钥和凭证记录可以继续使用。
 
@@ -107,6 +107,7 @@ plugins:
       # OpenCode Go API 密钥，至少需要一个；支持 ${ENV_VAR} 环境变量展开
       api-keys:
         - value: "sk-opencode-key-1"
+          name: "Personal"      # 可选账户名称
         - value: "sk-opencode-key-2"
         - value: "${OPENCODE_GO_API_KEY}"
 
@@ -137,7 +138,7 @@ plugins:
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `api-keys` | `[]object` | 必填 | API 密钥列表，格式为 `- value: "..."`。支持 `${ENV_VAR}` 环境变量展开，不允许重复或空值。 |
+| `api-keys` | `[]object` | 必填 | API 密钥列表，格式为 `- value: "..."`，可选 `name: "Personal"`。支持 `${ENV_VAR}` 环境变量展开，不允许重复或空值。 |
 | `base-url` | `string` | `https://opencode.ai/zen/go/v1` | 上游基础 URL。必须是有效的 HTTPS 地址；仅在 `allow-http: true` 时允许 HTTP。不得包含查询参数、片段或用户认证信息。 |
 | `catalog-url` | `string` | `{base-url}/models` | 模型目录的完整 URL，默认使用 `{base-url}/models`。 |
 | `model-prefix.enabled` | `bool` | `true` | 为 `true` 时，客户端模型名称使用 `<prefix>/<model>`；为 `false` 时，仅使用模型 ID。 |
@@ -156,16 +157,26 @@ plugins:
 
 ```powershell
 # 运行全部测试
-go test ./...
+go test -tags debug ./...
 
 # 验证发布压缩包包含动态库和许可证
 go test ./.github/scripts
 
 # 查看测试覆盖率
-go test ./... -cover
+go test -tags debug ./... -cover
 
 # 运行静态检查
 go vet ./... ./.github/scripts
 ```
 
 本地开发的 debug 构建和验证要求见 [贡献指南](CONTRIBUTING.md)。
+
+## 账户名称与额度
+
+可为每个 `api-keys` 条目设置 `name`，例如 `Personal` 或 `Work`。未设置时，单密钥显示为 **OpenCode Go**，多密钥按配置顺序显示为 **OpenCode Go 1**、**OpenCode Go 2** 等。显式名称不受密钥顺序调整影响。上游额度响应不包含邮箱或账户身份，插件不会从密钥推断邮箱。
+
+新凭证文件使用可读名称。已有凭证 ID 和文件名保持不变；解析时替换旧版自动生成的标签，保留自定义标签，除非配置指定了 `name`。如需手动改名，先备份凭证文件并停止 CLIProxyAPI，再修改 `.json` 文件名，保持 JSON 中的 `id` 和其他字段不变。
+
+通过 `GET /v0/management/quota/providers` 查询支持情况，再以 `{"auth_index":"<选中的索引>"}` 调用 `POST /v0/management/quota/fetch`。两者均需 CLIProxyAPI 管理密钥。标准响应包含 `subscription.plan`、`groups[].buckets[].window`、`remainingFraction` 和 `resetTime`。缺失的时间窗口会被省略，无效数据会返回错误，不会填充为零。
+
+额度重置不受支持，旧版插件额度接口和独立页面已移除。管理界面需支持通用额度 API 才能显示插件刷新控件。
