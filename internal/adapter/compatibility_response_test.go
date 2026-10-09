@@ -68,19 +68,22 @@ func TestChatRefusalStreamPartIndexes(t *testing.T) {
 			}
 			var parts []any
 			deltas := map[int]string{}
-			finished := map[int]bool{}
+			finished := map[int]int{}
+			partFinished := map[int]int{}
 			for _, event := range events {
 				m := decodeReasoningFrame(t, event)
 				switch m["type"] {
 				case "response.refusal.delta", "response.output_text.delta":
 					deltas[int(m["content_index"].(float64))] = m["delta"].(string)
 				case "response.refusal.done", "response.output_text.done":
-					finished[int(m["content_index"].(float64))] = true
+					finished[int(m["content_index"].(float64))]++
+				case "response.content_part.done":
+					partFinished[int(m["content_index"].(float64))]++
 				case "response.completed":
 					parts = m["response"].(map[string]any)["output"].([]any)[0].(map[string]any)["content"].([]any)
 				}
 			}
-			if len(parts) != len(deltas) {
+			if len(parts) != len(deltas) || len(finished) != len(parts) || len(partFinished) != len(parts) {
 				t.Fatalf("parts=%v,deltas=%v", parts, deltas)
 			}
 			for i, part := range parts {
@@ -89,8 +92,8 @@ func TestChatRefusalStreamPartIndexes(t *testing.T) {
 				if p["type"] == "refusal" {
 					text = p["refusal"].(string)
 				}
-				if deltas[i] != text || !finished[i] {
-					t.Fatalf("part %d lifecycle mismatch: %v, deltas=%v", i, p, deltas)
+				if deltas[i] != text || finished[i] != 1 || partFinished[i] != 1 {
+					t.Fatalf("part %d lifecycle mismatch: %v, deltas=%v, done=%v, partDone=%v", i, p, deltas, finished, partFinished)
 				}
 			}
 			claude := chatcompletions.NewStreamConverter("claude")
