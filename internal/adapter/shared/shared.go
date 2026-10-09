@@ -38,6 +38,18 @@ func (f *SSEFramer) Push(chunk []byte) {
 	f.buf = append(f.buf, chunk...)
 }
 
+// End frames the final data line at EOF, including a valid SSE event whose
+// final newline/blank separator was omitted. Incomplete JSON still fails in
+// the converter; residual bytes must not disappear behind a success terminal.
+func (f *SSEFramer) End() { f.Push([]byte("\n\n")) }
+
+// IsJSONObject checks EOF payloads before a missing SSE separator is filled
+// in. An event name alone or a partial JSON value cannot establish completion.
+func IsJSONObject(payload string) bool {
+	payload = strings.TrimSpace(payload)
+	return strings.HasPrefix(payload, "{") && json.Valid([]byte(payload))
+}
+
 // Next returns the next complete frame (eventType, joined data, raw block).
 // ok=false means the buffer needs more input.
 func (f *SSEFramer) Next() (eventType, data string, raw []byte, ok bool) {
@@ -478,7 +490,6 @@ func RespOutputText(raw json.RawMessage, targetNoun string) (string, *errclass.E
 	}
 	return b.String(), nil
 }
-
 
 // ClaudeImageURL converts an Anthropic image block source into an image
 // URL for OpenAI-style targets, encoding base64 sources as data URLs
@@ -1118,7 +1129,7 @@ type RespItem struct {
 	Summary   []struct {
 		Text string `json:"text"`
 	} `json:"summary,omitempty"`
-	Tools     []RespTool      `json:"tools,omitempty"`
+	Tools []RespTool `json:"tools,omitempty"`
 }
 
 // CCFunction is one Chat Completions tool function definition (decode and

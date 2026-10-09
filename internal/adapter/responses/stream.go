@@ -17,6 +17,8 @@ import (
 // internal locking. Partial SSE lines are buffered until a blank line
 // completes the `event:`/`data:` pair.
 type StreamConverter struct {
+	done   bool
+	ending bool
 	framer *shared.SSEFramer
 	source string
 
@@ -250,11 +252,17 @@ func (sc *StreamConverter) checkTarget() *errclass.Error {
 // are forwarded verbatim without JSON validation; conversion targets
 // parse eagerly into typed per-event structs.
 func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr *errclass.Error) {
+	if sc.done {
+		return nil, true, nil
+	}
 	sc.framer.Push(chunk)
 	for {
 		eventType, payload, raw, ok := sc.framer.Next()
 		if !ok {
 			return events, done, nil
+		}
+		if (eventType == "response.completed" || eventType == "response.incomplete" || sc.ending && payload != "") && !shared.IsJSONObject(payload) {
+			return nil, false, errclass.Translation("Responses stream has an incomplete event payload")
 		}
 		if sc.source == "openai-response" {
 			evs, d, dErr := sc.passthroughEvent(eventType, payload, raw)
@@ -262,7 +270,10 @@ func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr 
 			if dErr != nil {
 				return events, false, dErr
 			}
-			done = done || d
+			if d {
+				sc.done = true
+				return events, true, nil
+			}
 			continue
 		}
 		evs, d, dErr := sc.convertEvent(eventType, payload)
@@ -270,8 +281,29 @@ func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr 
 		if dErr != nil {
 			return events, false, dErr
 		}
-		done = done || d
+		if d {
+			sc.done = true
+			return events, true, nil
+		}
 	}
+}
+
+// Finish drains the last SSE frame and requires an explicit Responses
+// terminal event. EOF alone cannot complete text or function arguments.
+func (sc *StreamConverter) Finish() ([][]byte, *errclass.Error) {
+	if sc.done {
+		return nil, nil
+	}
+	sc.ending = true
+	sc.framer.End()
+	events, done, eErr := sc.Feed(nil)
+	if eErr != nil {
+		return nil, eErr
+	}
+	if !done {
+		return nil, errclass.Translation("Responses stream ended before a terminal state")
+	}
+	return events, nil
 }
 
 // convertEvent routes one complete SSE frame to a conversion target:

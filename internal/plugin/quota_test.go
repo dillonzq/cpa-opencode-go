@@ -89,12 +89,13 @@ func TestAccountLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tt := range []struct{ key, old, want string }{{"one", "OpenCode Go credential hash", "Personal"}, {"two", "opencode-go-key-hash", "OpenCode Go 2"}, {"two", "Work", "Work"}} {
+	digest := strings.Repeat("a", 64)
+	for _, tt := range []struct{ key, old, want string }{{"one", "OpenCode Go credential " + digest, "Personal"}, {"two", "opencode-go-key-" + digest, "OpenCode Go 2"}, {"two", "Work", "Work"}} {
 		if got := accountLabel(cfg, tt.key, tt.old, 0); got != tt.want {
 			t.Fatalf("got %q want %q", got, tt.want)
 		}
 	}
-	raw := []byte(`{"type":"opencode-go","id":"stable-id","label":"OpenCode Go credential hash","api_key":"one","disabled":true}`)
+	raw := []byte(`{"type":"opencode-go","id":"stable-id","label":"OpenCode Go credential ` + digest + `","api_key":"one","disabled":true}`)
 	result, err := (authProvider{cfg: cfg}).ParseAuth(context.Background(), pluginapi.AuthParseRequest{Provider: ProviderID, RawJSON: raw})
 	if err != nil || result.Auth.Label != "Personal" || result.Auth.ID != "stable-id" || string(result.Auth.StorageJSON) != string(raw) {
 		t.Fatal("name migration changed credential storage")

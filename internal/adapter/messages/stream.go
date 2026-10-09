@@ -34,21 +34,24 @@ type StreamConverter struct {
 	msgIdx           int  // responses: compacted output_index of the ONE announced message item (-1 until then)
 	outCount         int  // responses: next compacted output position; thinking blocks consume none (FR-005 omission)
 	emitted          bool // any client event emitted (Flush eligibility)
+	done             bool
+	ending           bool
+	terminalSent     bool
 	flushed          bool // one-shot guard for Flush
 	respTools        *shared.ResponseTools
 }
 
 // blockState tracks one open upstream content block by index.
 type blockState struct {
-	kind    string
-	id      string
-	name    string
-	ordinal int             // compact tool_calls index for openai chunks
-	outIdx  int             // responses: compacted output_index assigned at block start
-	emitted bool            // openai: id/name attached to the first arguments fragment
-	text    strings.Builder // accumulated text_delta content (responses target)
-	args    strings.Builder // accumulated input_json_delta content (responses target)
-	customEmitted int // custom_tool_call_input bytes already emitted as deltas
+	kind          string
+	id            string
+	name          string
+	ordinal       int             // compact tool_calls index for openai chunks
+	outIdx        int             // responses: compacted output_index assigned at block start
+	emitted       bool            // openai: id/name attached to the first arguments fragment
+	text          strings.Builder // accumulated text_delta content (responses target)
+	args          strings.Builder // accumulated input_json_delta content (responses target)
+	customEmitted int             // custom_tool_call_input bytes already emitted as deltas
 }
 
 // NewStreamConverter prepares stream conversion for sourceFormat
@@ -72,6 +75,9 @@ func NewStreamConverter(sourceFormat string, tools ...*shared.ResponseTools) *St
 // whether the upstream stream is finished (message_stop seen), and a
 // classified error. Partial lines are buffered until complete.
 func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr *errclass.Error) {
+	if sc.done {
+		return nil, true, nil
+	}
 	sc.framer.Push(chunk)
 	for {
 		etype, data, rawBlock, ok := sc.framer.Next()
@@ -86,6 +92,7 @@ func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr 
 			return events, false, eErr
 		}
 		if d {
+			sc.done = true
 			return events, true, nil
 		}
 	}
@@ -97,6 +104,9 @@ func (sc *StreamConverter) Feed(chunk []byte) (events [][]byte, done bool, eErr 
 // passthrough forwards the verbatim raw block and parses only what error
 // handling and done-detection require.
 func (sc *StreamConverter) dispatch(etype, data string, rawBlock []byte, events *[][]byte) (bool, *errclass.Error) {
+	if (etype == "message_stop" || sc.ending && data != "") && !shared.IsJSONObject(data) {
+		return false, errclass.Translation("Messages stream has an incomplete event payload")
+	}
 	if sc.sourceFormat == "claude" {
 		return sc.dispatchClaude(etype, data, rawBlock, events)
 	}
@@ -108,6 +118,9 @@ func (sc *StreamConverter) dispatch(etype, data string, rawBlock []byte, events 
 		if etype == "" {
 			etype = ev.Type // tolerate missing event: line
 		}
+	}
+	if etype == "message_delta" && ev.Delta.StopReason != "" {
+		sc.stopReason = ev.Delta.StopReason
 	}
 	switch sc.sourceFormat {
 	case "openai":
@@ -170,6 +183,16 @@ func (sc *StreamConverter) dispatchClaude(etype, data string, raw []byte, events
 	if etype == "" && data != "" {
 		json.Unmarshal([]byte(data), &payload) // best-effort type probe
 		etype, _ = payload["type"].(string)
+	}
+	if etype == "message_delta" {
+		if payload == nil {
+			json.Unmarshal([]byte(data), &payload)
+		}
+		if delta, ok := payload["delta"].(map[string]any); ok {
+			if stop, ok := delta["stop_reason"].(string); ok && stop != "" {
+				sc.stopReason = stop
+			}
+		}
 	}
 	if etype == "error" {
 		if payload == nil && data != "" {
@@ -236,6 +259,10 @@ func (sc *StreamConverter) dispatchOpenAI(etype string, ev *sseEvent, events *[]
 		sc.captureCache(ev.Usage)
 		// Observed tool calls outrank the status-derived reason: a
 		// terminal max_tokens cannot downgrade tool_calls to length.
+		if sc.stopReason == "" || sc.terminalSent {
+			break
+		}
+		sc.terminalSent = true
 		sc.emitChunk(events, map[string]any{},
 			shared.TerminalReason(sc.toolsSeen, "tool_calls",
 				shared.ClaudeStopToFinish(ev.Delta.StopReason)), true)
@@ -327,7 +354,9 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 		}
 		sc.completionTokens = int64(ev.Usage.OutputTokens) // accumulated, reported on completion
 		sc.captureCache(ev.Usage)
-		sc.stopReason = ev.Delta.StopReason
+		if ev.Delta.StopReason != "" {
+			sc.stopReason = ev.Delta.StopReason
+		}
 	case "message_stop":
 		*events = append(*events, sc.responsesCompleted()...)
 		return true, nil
@@ -395,20 +424,18 @@ func (sc *StreamConverter) responsesEm() shared.ResponsesEventEmitter {
 	return shared.ResponsesEventEmitter{ID: sc.msgID, Model: sc.model, Tools: sc.respTools}
 }
 
-// Flush terminates a stream whose upstream closed before message_stop:
-// without this the client never sees response.completed nor [DONE] (F5,
-// FR-006). Responses synthesis emits response.completed from captured
-// identity, usage, and accumulated output items; openai targets get the
-// missing [DONE]; claude passthrough holds nothing back. One-shot: later
-// calls return nothing, as does any call with nothing emitted.
+// Flush emits a deferred Responses terminal only after stop_reason was
+// observed. EOF without a terminal state must be checked with Finish. Native
+// Messages and Chat Completions have no deferred events. One-shot, and a
+// previously observed message_stop prevents any duplicate terminal.
 func (sc *StreamConverter) Flush() [][]byte {
-	if sc.flushed {
+	if sc.flushed || sc.done {
+		return nil
+	}
+	if !sc.emitted || sc.stopReason == "" {
 		return nil
 	}
 	sc.flushed = true
-	if !sc.emitted {
-		return nil
-	}
 	switch sc.sourceFormat {
 	case "openai-response":
 		return sc.responsesCompleted()
@@ -417,6 +444,28 @@ func (sc *StreamConverter) Flush() [][]byte {
 	default: // claude passthrough forwards verbatim; nothing deferred
 		return nil
 	}
+}
+
+// Finish accepts EOF only after a terminal state was observed. A missing
+// message_stop after stop_reason is compatible; partial output without either
+// is a stream error, never a synthesized response.completed.
+func (sc *StreamConverter) Finish() ([][]byte, *errclass.Error) {
+	if sc.done || sc.flushed {
+		return nil, nil
+	}
+	sc.ending = true
+	sc.framer.End()
+	events, done, eErr := sc.Feed(nil)
+	if eErr != nil {
+		return nil, eErr
+	}
+	if done {
+		return events, nil
+	}
+	if sc.stopReason == "" {
+		return nil, errclass.Translation("Messages stream ended before a terminal state")
+	}
+	return append(events, sc.Flush()...), nil
 }
 
 // outputItems materializes the Responses output array from observed

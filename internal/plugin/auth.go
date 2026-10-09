@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -82,11 +83,25 @@ func accountLabel(cfg config.Config, key, existing string, fallbackIndex int) st
 		}
 	}
 	label := strings.TrimSpace(existing)
-	if label != "" && !strings.HasPrefix(label, "OpenCode Go credential ") && !strings.HasPrefix(label, "opencode-go-key-") {
+	if label != "" && !isLegacyAccountLabel(label) {
 		return label
 	}
 	if len(cfg.APIKeys) > 1 {
 		return fmt.Sprintf("OpenCode Go %d", index+1)
 	}
 	return "OpenCode Go"
+}
+
+// Only historical generated labels contain a full SHA-256 hex digest.
+// Labels that merely start with the same prefix are user-owned presentation.
+func isLegacyAccountLabel(label string) bool {
+	for _, prefix := range []string{"OpenCode Go credential ", "opencode-go-key-"} {
+		digest, ok := strings.CutPrefix(label, prefix)
+		if !ok || len(digest) != 64 {
+			continue
+		}
+		_, err := hex.DecodeString(digest)
+		return err == nil
+	}
+	return false
 }

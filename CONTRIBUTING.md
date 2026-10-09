@@ -22,9 +22,16 @@ go test -tags debug ./...
 go test ./.github/scripts
 ```
 
+Run the race detector:
+```powershell
+go test -tags debug -race ./...
+```
+
+On macOS/Linux with CGO, the debug suite also builds a temporary C-shared library and runs offline ABI tests against the pinned CLIProxyAPI SDK's actual loader and HTTP callbacks. The driver is `tests/native_host_test.go` and resolves the project root through the Go module system. The host tests are standard Go files under `tests/testdata/pluginhost`, which `./...` skips. The driver uses a Go overlay in a temporary SDK module to read host sources from the module cache and include those tests; only `go.mod` and `go.sum` are copied. Module downloads are disabled. Cache dependencies beforehand with `go mod download all`; tests need permission to bind local loopback ports. No real upstream or credentials are used. Other platforms still require a local debug C-shared build.
+
 Run static analysis:
 ```powershell
-go vet ./... ./.github/scripts
+go vet -tags debug ./... ./.github/scripts
 ```
 
 Build the native shared library for local testing:
@@ -49,5 +56,5 @@ go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-g
 
 1. Fork the repository and create a feature branch from `main`.
 2. Implement your changes following the code style and testing guidelines above.
-3. Ensure `go test -tags debug ./...`, `go test ./.github/scripts`, and `go vet ./... ./.github/scripts` pass cleanly.
+3. Ensure `go test -tags debug ./...`, `go test ./.github/scripts`, and `go vet -tags debug ./... ./.github/scripts` pass cleanly.
 4. Open a pull request against `main` with a clear description of the change and any related issue references.
