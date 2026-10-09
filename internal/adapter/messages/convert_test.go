@@ -193,7 +193,7 @@ func TestConvertMessagesToOpenAIRefusalContentFilter(t *testing.T) {
 	}
 }
 
-func TestConvertMessagesToOpenAIThinkingOmitted(t *testing.T) {
+func TestConvertMessagesToOpenAIThinkingPreserved(t *testing.T) {
 	out, eErr := ConvertNonStreamResponse("openai", 200, []byte(claudeThinking))
 	if eErr != nil {
 		t.Fatalf("convert: %v", eErr)
@@ -212,8 +212,8 @@ func TestConvertMessagesToOpenAIThinkingOmitted(t *testing.T) {
 	if cc.Choices[0].Message.Content != "answer" || cc.Choices[0].Message.ToolCalls != nil {
 		t.Fatalf("thinking block leaked or text lost: %s", out)
 	}
-	if strings.Contains(string(out), "thinking") {
-		t.Fatalf("reasoning material in output: %s", out)
+	if !strings.Contains(string(out), `"reasoning_content":"hmm"`) || strings.Contains(string(out), "s1") {
+		t.Fatalf("visible reasoning lost or signature leaked: %s", out)
 	}
 }
 
@@ -363,18 +363,18 @@ func TestConvertMessagesToolUseAbsentInput(t *testing.T) {
 	}
 }
 
-func TestConvertMessagesToResponsesThinkingOmitted(t *testing.T) {
+func TestConvertMessagesToResponsesThinkingPreserved(t *testing.T) {
 	out, eErr := ConvertNonStreamResponse("openai-response", 200, []byte(claudeThinking))
 	if eErr != nil {
 		t.Fatalf("convert: %v", eErr)
 	}
-	if !strings.Contains(string(out), `"text":"answer"`) || strings.Contains(string(out), "thinking") {
+	if !strings.Contains(string(out), `"text":"answer"`) || !strings.Contains(string(out), `"type":"summary_text","text":"hmm"`) || strings.Contains(string(out), "s1") {
 		t.Fatalf("thinking leaked or text lost: %s", out)
 	}
 }
 
 // redacted_thinking is pure encrypted reasoning metadata with no
-// representable payload; like thinking it is omitted (FR-005) instead of
+// representable payload; it is omitted instead of
 // failing conversion, matching the stream path. Content-bearing unknown
 // block types still error (see TestConvertMessagesUnknownBlockType).
 func TestConvertMessagesRedactedThinkingOmitted(t *testing.T) {

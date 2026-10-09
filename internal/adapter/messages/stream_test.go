@@ -571,11 +571,8 @@ func TestStreamClaudeTypeFallbackFromPayload(t *testing.T) {
 	}
 }
 
-// Leading-thinking pin: FR-005 omits thinking blocks from the Responses
-// output entirely, so streamed announcements/deltas must reference the
-// SAME compacted positions response.completed.output renders — never raw
-// upstream block indexes, which skip omitted blocks and point at items
-// that do not exist in the terminal array.
+// Leading reasoning occupies its own output position. All announcements
+// and deltas must reference the same positions as the terminal output.
 func TestStreamResponsesLeadingThinkingCompactedOutputIndexes(t *testing.T) {
 	sc := NewStreamConverter("openai-response")
 	events, done, eErr := feed(t, sc,
@@ -592,19 +589,19 @@ func TestStreamResponsesLeadingThinkingCompactedOutputIndexes(t *testing.T) {
 	if eErr != nil || !done {
 		t.Fatalf("done=%v err=%v", done, eErr)
 	}
-	if strings.Contains(strings.Join(mapJoin(events), ""), "hush") {
-		t.Fatal("thinking leaked into responses stream (FR-005 omission policy)")
+	if !strings.Contains(strings.Join(mapJoin(events), ""), "hush") {
+		t.Fatal("thinking lost from responses stream")
 	}
 	completed := namedEvents(t, events)["response.completed"][0]["response"].(map[string]any)
 	output, ok := completed["output"].([]any)
-	if !ok || len(output) != 2 {
+	if !ok || len(output) != 3 {
 		t.Fatalf("terminal output = %T %v", completed["output"], completed["output"])
 	}
 	idAt := make([]string, len(output)) // item identity per compacted position
 	for i, it := range output {
 		m := it.(map[string]any)
 		switch m["type"] {
-		case "message":
+		case "reasoning", "message":
 			idAt[i] = m["id"].(string)
 		case "function_call":
 			idAt[i] = m["call_id"].(string)
@@ -622,14 +619,14 @@ func TestStreamResponsesLeadingThinkingCompactedOutputIndexes(t *testing.T) {
 		return -1
 	}
 	msgPos, callPos := positionOf("msg_t"), positionOf("call_1")
-	if msgPos != 0 || callPos != 1 {
+	if msgPos != 1 || callPos != 2 {
 		t.Fatalf("compacted layout = %v", idAt)
 	}
 	byName := namedEvents(t, events)
 	added := byName["response.output_item.added"]
-	if len(added) != 2 ||
-		added[0]["output_index"] != float64(msgPos) ||
-		added[1]["output_index"] != float64(callPos) {
+	if len(added) != 3 ||
+		added[1]["output_index"] != float64(msgPos) ||
+		added[2]["output_index"] != float64(callPos) {
 		t.Fatalf("announcements must reference terminal positions %d/%d: %v %v",
 			msgPos, callPos, added[0], added[1])
 	}

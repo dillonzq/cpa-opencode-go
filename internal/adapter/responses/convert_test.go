@@ -349,10 +349,8 @@ func TestConvertResponsesUnknownOutputItem(t *testing.T) {
 	}
 }
 
-// Reasoning output items (emitted whenever Luna reasons) are informational
-// and are omitted per the FR-005/FR-006 compatibility policy — matching
-// the stream side — instead of failing the whole conversion.
-func TestConvertResponsesReasoningItemOmitted(t *testing.T) {
+// Visible reasoning summaries are preserved on both conversion targets.
+func TestConvertResponsesReasoningItemPreserved(t *testing.T) {
 	body := strings.Replace(respTextOnly,
 		`"output":[{"type":"message"`,
 		`"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"pondering"}]},{"type":"message"`, 1)
@@ -362,8 +360,8 @@ func TestConvertResponsesReasoningItemOmitted(t *testing.T) {
 			t.Fatalf("%s: reasoning item errored: %v", format, eErr)
 		}
 		if !strings.Contains(string(out), `"hi there"`) ||
-			strings.Contains(string(out), "pondering") {
-			t.Fatalf("%s: reasoning item not omitted cleanly: %s", format, out)
+			!strings.Contains(string(out), "pondering") {
+			t.Fatalf("%s: reasoning item lost: %s", format, out)
 		}
 	}
 }

@@ -32,7 +32,7 @@ type StreamConverter struct {
 	toolsSeen        bool   // any tool_use block observed (openai finish-reason precedence)
 	roleSent         bool
 	msgIdx           int  // responses: compacted output_index of the ONE announced message item (-1 until then)
-	outCount         int  // responses: next compacted output position; thinking blocks consume none (FR-005 omission)
+	outCount         int  // responses: next compacted output position; includes visible thinking items
 	emitted          bool // any client event emitted (Flush eligibility)
 	done             bool
 	ending           bool
@@ -165,12 +165,14 @@ type startMessage struct {
 }
 
 type contentBlock struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	Thinking string `json:"thinking"`
+	Type     string `json:"type"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
 }
 
 type deltaBody struct {
+	Thinking    string `json:"thinking"`
 	Type        string `json:"type"`
 	Text        string `json:"text"`
 	PartialJSON string `json:"partial_json"`
@@ -233,6 +235,10 @@ func (sc *StreamConverter) dispatchOpenAI(etype string, ev *sseEvent, events *[]
 			sc.toolsSeen = true
 		}
 		sc.blocks[int(ev.Index)] = bs
+		if bs.kind == "thinking" && ev.ContentBlock.Thinking != "" {
+			sc.emitRole(events)
+			sc.emitChunk(events, map[string]any{"reasoning_content": ev.ContentBlock.Thinking}, "", false)
+		}
 	case "content_block_delta":
 		bs := sc.blocks[int(ev.Index)]
 		switch ev.Delta.Type {
@@ -256,10 +262,10 @@ func (sc *StreamConverter) dispatchOpenAI(etype string, ev *sseEvent, events *[]
 			sc.emitRole(events)
 			sc.emitChunk(events, map[string]any{"tool_calls": []any{tc}}, "", false)
 		case "thinking_delta":
-			// FR-005 explicit omission policy: chat.completion.chunk has no
-			// standard reasoning-delta field, so thinking text is dropped
-			// rather than put in a non-standard field. Signatures have no
-			// destination either.
+			if bs != nil && bs.kind == "thinking" {
+				sc.emitRole(events)
+				sc.emitChunk(events, map[string]any{"reasoning_content": ev.Delta.Thinking}, "", false)
+			}
 		}
 	case "message_delta":
 		if ev.Usage.InputTokens != 0 {
@@ -300,11 +306,20 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 		bs := &blockState{kind: ev.ContentBlock.Type, id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}
 		sc.blocks[int(ev.Index)] = bs
 		// Announce each translatable item before its first delta (F18
-		// lifecycle parity); thinking blocks produce no deltas and are
-		// omitted entirely (FR-005). Indexes come from the SAME compacted
+		// lifecycle parity), including visible thinking blocks. Indexes come
+		// from the SAME compacted
 		// space outputItems() renders, so streamed output_index values
 		// always match terminal response.completed.output positions.
 		switch bs.kind {
+		case "thinking":
+			bs.id = fmt.Sprintf("%s_reasoning_%d", sc.msgID, int(ev.Index))
+			bs.outIdx = sc.outCount
+			sc.outCount++
+			*events = append(*events, sc.responsesEm().ReasoningAdded(bs.id, bs.outIdx)...)
+			bs.text.WriteString(ev.ContentBlock.Thinking)
+			if ev.ContentBlock.Thinking != "" {
+				*events = append(*events, sc.responsesEm().ReasoningDelta(bs.id, bs.outIdx, ev.ContentBlock.Thinking))
+			}
 		case "text":
 			if sc.msgIdx >= 0 {
 				break // one message item aggregates every text block (canonical shape)
@@ -355,8 +370,10 @@ func (sc *StreamConverter) dispatchResponses(etype string, ev *sseEvent, events 
 				*events = append(*events, sc.responsesEm().ArgsDelta(bs.id, bs.outIdx, ev.Delta.PartialJSON))
 			}
 		case "thinking_delta":
-			// FR-005 explicit omission policy: no standard Responses
-			// reasoning-delta event; dropped.
+			if bs != nil && bs.kind == "thinking" {
+				bs.text.WriteString(ev.Delta.Thinking)
+				*events = append(*events, sc.responsesEm().ReasoningDelta(bs.id, bs.outIdx, ev.Delta.Thinking))
+			}
 		}
 	case "message_delta":
 		if ev.Usage.InputTokens != 0 {
@@ -399,6 +416,8 @@ func (sc *StreamConverter) responsesCompleted() [][]byte {
 			continue
 		}
 		switch v.Type {
+		case "reasoning":
+			out = append(out, em.ReasoningDone(v, idx)...)
 		case "message":
 			text := responsesMessageText(v.Content)
 			out = append(out, em.TextDone(v.ID, idx, text), em.ContentPartDone(v.ID, idx, text), em.ItemDone(idx, v))
@@ -484,7 +503,7 @@ func (sc *StreamConverter) Finish() ([][]byte, *errclass.Error) {
 // positioned at the first text block's slot while tool_use blocks become
 // separate function_call items — the canonical native shape, equal to the
 // non-stream claudeToResponses converter (FR-006 mode parity); thinking
-// blocks are omitted (FR-005).
+// blocks become reasoning summaries.
 func (sc *StreamConverter) outputItems() []any {
 	indexes := make([]int, 0, len(sc.blocks))
 	for i := range sc.blocks {
@@ -495,6 +514,8 @@ func (sc *StreamConverter) outputItems() []any {
 	for _, i := range indexes {
 		bs := sc.blocks[i]
 		switch bs.kind {
+		case "thinking":
+			oa.AppendReasoning(bs.id, bs.text.String())
 		case "text":
 			oa.ReserveTextSlot()
 			oa.AddText(bs.text.String())
@@ -533,7 +554,7 @@ func (sc *StreamConverter) emitChunk(events *[][]byte, delta map[string]any, fin
 	var usage map[string]any
 	if withUsage {
 		usage = shared.CCUsageFrom(sc.promptTokens+valueOrZero(sc.cacheRead)+valueOrZero(sc.cacheCreation), sc.completionTokens,
-			shared.UsageDetails{CachedTokens: sc.cacheRead})
+			shared.UsageDetails{CachedTokens: sc.cacheRead, CacheWriteTokens: sc.cacheCreation})
 	}
 	*events = append(*events, b.Finish(finish, usage))
 }

@@ -711,9 +711,7 @@ func (e ResponsesEventEmitter) ItemAdded(outputIndex int, item map[string]any) [
 // TextDelta streams one partial output_text delta referencing the
 // announced message item by item_id and output_index.
 func (e ResponsesEventEmitter) TextDelta(itemID string, outputIndex int, delta string) []byte {
-	return SSEEvent("response.output_text.delta", map[string]any{
-		"type": "response.output_text.delta", "item_id": itemID, "output_index": outputIndex, "delta": delta,
-	})
+	return e.TextDeltaAt(itemID, outputIndex, 0, delta)
 }
 
 // ArgsDelta streams one partial function_call_arguments delta referencing
@@ -949,8 +947,15 @@ func CCUsageFrom(promptTokens, completionTokens int64, details UsageDetails) map
 		"completion_tokens": completionTokens,
 		"total_tokens":      promptTokens + completionTokens,
 	}
-	if details.CachedTokens != nil {
-		usage["prompt_tokens_details"] = map[string]any{"cached_tokens": *details.CachedTokens}
+	if details.CachedTokens != nil || details.CacheWriteTokens != nil {
+		promptDetails := map[string]any{}
+		if details.CachedTokens != nil {
+			promptDetails["cached_tokens"] = *details.CachedTokens
+		}
+		if details.CacheWriteTokens != nil {
+			promptDetails["cache_write_tokens"] = *details.CacheWriteTokens
+		}
+		usage["prompt_tokens_details"] = promptDetails
 	}
 	if details.ReasoningTokens != nil {
 		usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": *details.ReasoningTokens}
@@ -1117,20 +1122,18 @@ func (r *ResponsesRequest) DecodeInputItems() ([]RespItem, *errclass.Error) {
 // response.output_item.added announcement used); function_call items stay
 // call_id-only per the documented canonical shape.
 type RespItem struct {
-	Type      string          `json:"type"`
-	ID        string          `json:"id,omitempty"`
-	Role      string          `json:"role,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
-	CallID    string          `json:"call_id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Namespace string          `json:"namespace,omitempty"`
-	Arguments string          `json:"arguments,omitempty"`
-	Input     string          `json:"input,omitempty"`
-	Output    json.RawMessage `json:"output,omitempty"`
-	Summary   []struct {
-		Text string `json:"text"`
-	} `json:"summary,omitempty"`
-	Tools []RespTool `json:"tools,omitempty"`
+	Type      string             `json:"type"`
+	ID        string             `json:"id,omitempty"`
+	Role      string             `json:"role,omitempty"`
+	Content   json.RawMessage    `json:"content,omitempty"`
+	CallID    string             `json:"call_id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Namespace string             `json:"namespace,omitempty"`
+	Arguments string             `json:"arguments,omitempty"`
+	Input     string             `json:"input,omitempty"`
+	Output    json.RawMessage    `json:"output,omitempty"`
+	Summary   []ReasoningSummary `json:"summary,omitempty"`
+	Tools     []RespTool         `json:"tools,omitempty"`
 }
 
 // CCFunction is one Chat Completions tool function definition (decode and
@@ -1611,11 +1614,13 @@ type outputTextPart struct {
 // only when text is non-empty). Render materializes the array once, at
 // terminal time.
 type OutputAssembler struct {
-	messageID string          // identity carried by the message item
-	items     []any           // rendered items in insertion order
-	textSlot  int             // reserved message position, -1 until reserved
-	text      strings.Builder // aggregated message text
-	tools     *ResponseTools  // wire-to-original tool identities for restoration
+	messageID    string // identity carried by the message item
+	items        []any  // rendered items in insertion order
+	textSlot     int    // reserved message position, -1 until reserved
+	refusal      strings.Builder
+	refusalFirst bool
+	text         strings.Builder // aggregated message text
+	tools        *ResponseTools  // wire-to-original tool identities for restoration
 }
 
 // NewOutputAssembler binds an assembler to the response identity the
@@ -1666,8 +1671,24 @@ func (a *OutputAssembler) AppendFunctionCall(callID, name, args string) {
 // output array.
 func (a *OutputAssembler) Render() []any {
 	t := a.text.String()
-	if t != "" || a.textSlot >= 0 {
-		content, _ := json.Marshal([]outputTextPart{{Type: "output_text", Text: t}})
+	refusal := a.refusal.String()
+	if t != "" || refusal != "" || a.textSlot >= 0 {
+		parts := make([]any, 0, 2)
+		if t != "" || refusal == "" {
+			parts = append(parts, outputTextPart{Type: "output_text", Text: t})
+		}
+		if refusal != "" {
+			part := struct {
+				Type    string `json:"type"`
+				Refusal string `json:"refusal"`
+			}{Type: "refusal", Refusal: refusal}
+			if a.refusalFirst {
+				parts = append([]any{part}, parts...)
+			} else {
+				parts = append(parts, part)
+			}
+		}
+		content, _ := json.Marshal(parts)
 		msg := RespItem{Type: "message", ID: a.messageID, Role: "assistant", Content: content}
 		if a.textSlot >= 0 {
 			a.items[a.textSlot] = msg
