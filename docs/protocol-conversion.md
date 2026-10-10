@@ -2,7 +2,7 @@
 
 [简体中文](protocol-conversion.zh-CN.md) · [Back to README](../README.md)
 
-This guide records the plugin's current behavior. Response reasoning mappings follow the pinned **CPA v8.0.0** dependency; this does not imply parity with every official translator feature. The current changes cover responses. Request handling for historical reasoning remains unchanged. Response conversion remains implemented by the plugin; the official CPA translators are not imported.
+This guide records the plugin's current behavior. Response reasoning mappings follow the pinned **CPA v8.0.0** dependency; this does not imply parity with every official translator feature. Response conversion remains implemented by the plugin; the official CPA translators are not imported.
 
 ## Response reasoning
 
@@ -29,7 +29,7 @@ Official source references: [Chat Completions → Messages](https://github.com/r
 
 ## Other response fields
 
-These are existing behaviors; the current changes do not extend their support.
+The following table describes supported mappings and known losses.
 
 | Content | Default behavior / loss |
 | --- | --- |
@@ -38,7 +38,7 @@ These are existing behaviors; the current changes do not extend their support.
 | Multiple messages / text blocks | Chat Completions aggregates answer text. Synthesized Responses aggregates text into one assistant message at the first text position |
 | Chat Completions `message.refusal` and `refusal` parts in Responses messages | Preserved in regular and streaming responses. Chat Completions ↔ Responses retains a separate refusal field/part; Messages receives displayable text. Normally completed refusals map to content_filter/refusal, while tool and truncation signals retain precedence |
 | Citations, `annotations`, logprobs, audio, and provider extensions | Not copied across protocols; corresponding delta events are ignored by default |
-| Images and other output types | Chat Completions → Messages converts supported image blocks. Chat Completions → Responses rejects non-text output. Messages rejects unsupported output blocks. Responses message parts other than `output_text` are ignored. Unknown output items produce errors only when decoded `content/name/call_id/arguments` fields contain payload; items with only unmodeled fields such as `result/action` can be silently lost |
+| Images and other output types | Chat Completions → Messages converts supported image blocks. Chat Completions → Responses rejects non-text output. Messages rejects unsupported output blocks. Responses message parts other than `output_text` and `refusal` are ignored. Unknown output items produce errors only when decoded `content/name/call_id/arguments` fields contain payload; items with only unmodeled fields such as `result/action` can be silently lost |
 | Responses tool-specific events | Convert `function_call` and argument delta/done events. Output item and terminal snapshots fill missing argument suffixes; call_id/item_id share state to prevent duplicate tool calls. Real call_id and name are tracked separately from argument state. Argument delta/done events are buffered while identity is incomplete; a complete tool item triggers exactly one announcement. A terminal response with unresolved identity reports an error. Messages conversion queues subsequent text, reasoning, and tools behind an unfinished tool while continuing to stream its arguments. The block closes only after completion or terminal reconciliation and is never reopened for the same call. Search, image generation, and other specialized events remain ignored by default |
 | Responses text/refusal snapshots | output_text/refusal done, output item, and terminal snapshots fill missing suffixes. Deduplicate by item_id, content_index, and part type. Messages has no separate refusal field, so text follows arrival order. Synthesized Responses text/refusal part indexes match the terminal result |
 | Finish reasons | `stop` ↔ `end_turn`, `length` ↔ `max_tokens`, `tool_calls` ↔ `tool_use`, and `content_filter` ↔ `refusal`. Unknown reasons fall back to ordinary completion. The specific `stop_sequence` value is not copied |
@@ -63,6 +63,7 @@ These are existing behaviors; the current changes do not extend their support.
 | stop/stop_sequences | Preserve between Chat Completions and Messages; drop when converting to Responses |
 | temperature/top_p | Map across protocols. Other protocol-specific fields are dropped through struct selection, including `n`, `seed`, penalties, logprobs, `logit_bias`, `response_format`, `metadata`, `store`, `service_tier`, `stream_options`, `previous_response_id`, `include`, and tool strict/cache_control fields. Native paths generally preserve them |
 | Empty content and content types | Empty text blocks/messages without usable content are generally removed. Unknown cross-protocol input types, system images, and unrepresentable tool results produce explicit errors rather than being uniformly dropped |
+| Responses tool output images | `function_call_output` and `custom_tool_call_output` accept supported text/image parts. Conversion to Messages preserves them inside `tool_result`. Conversion to Chat Completions emits text-only tool replies together, then mixed results as a user message labeled with call IDs, preserving text/image order; empty messages do not split parallel tool replies. Image parts require an `image_url`; file-ID-only references are unsupported |
 | Tool choice / parallel calls | Convert auto/none/required/named-tool selections. Messages maps parallel control to disable_parallel_tool_use. Unrepresentable combinations produce errors |
 | Responses tool declarations | Merge `additional_tools` into tools. Flatten namespaces, using truncation plus a digest for long names, and restore original identities in responses. Convert ordinary custom tools to functions with JSON-wrapped input; restore custom calls in Responses output |
 | Incompatible Responses tools | Paths requiring tool normalization remove custom `apply_patch`, `tool_search`, and `image_generation`. Conversion to Chat Completions/Messages also removes hosted `web_search/web_search_preview`. Native GPT Responses passthrough skips this normalization. Chat Completions → Messages/Responses skips namespace declarations |
@@ -71,7 +72,6 @@ These are existing behaviors; the current changes do not extend their support.
 | Native Messages requests | Fold historical system turns into the top-level system field, omitting their thinking/redacted_thinking content. Without system turns, only model is rewritten |
 
 Implementation entry points: `internal/adapter/*/request.go`, `convert.go`, and `stream.go`. Shared tool normalization lives in `internal/adapter/shared/responses_tools.go`; reasoning control tables and model-name suffix parsing live in `internal/thinking`, and suffix application lives in `internal/plugin/reasoning_suffix.go`.
-
 
 ## Further compatibility work
 

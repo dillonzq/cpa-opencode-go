@@ -1,10 +1,30 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="OpenCode" width="104">
-</p>
-
 # cpa-opencode-go
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<p align="center">
+  <img src="assets/logo.svg" alt="OpenCode" width="200" height="200">
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <strong>简体中文</strong>
+</p>
+
+<p align="center">
+  <a href="#安装">安装</a> ·
+  <a href="#配置">配置</a> ·
+  <a href="docs/protocol-conversion.zh-CN.md">协议转换</a> ·
+  <a href="https://github.com/dillonzq/cpa-opencode-go/releases">发布版本</a> ·
+  <a href="CONTRIBUTING.md">贡献指南</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/dillonzq/cpa-opencode-go" alt="License: MIT"></a>
+  <a href="https://github.com/dillonzq/cpa-opencode-go"><img src="https://img.shields.io/github/stars/dillonzq/cpa-opencode-go?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/dillonzq/cpa-opencode-go/releases"><img src="https://img.shields.io/github/v/release/dillonzq/cpa-opencode-go" alt="Latest release"></a>
+  <a href="https://help.router-for.me/plugin/development"><img src="https://img.shields.io/badge/CLIProxyAPI-8.0.0%2B-555" alt="CLIProxyAPI 8.0.0+"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.26.7%2B-555" alt="Go 1.26.7+ for source builds"></a>
+</p>
+
+---
 
 用于 [CLIProxyAPI](https://help.router-for.me/plugin/development) 的 Go 原生动态库插件，将 OpenCode Go 的模型统一接入 `opencode-go` 服务商。
 
@@ -44,14 +64,14 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
   - Anthropic Messages（`/v1/messages`）
   - OpenAI Responses（`/v1/responses`）
 - **思考与推理支持**：同格式保留推理参数，跨格式仅做固定档位/预算转换；模型能力元数据不参与过滤或限幅，由上游校验。保留关闭和 Claude adaptive 档位；跨格式自动模式无对应字段时使用目标接口默认行为，无法转换的其他值明确报错。
-- **动态模型发现**：获取远程模型目录，支持本地回退和自定义路由覆盖。
+- **动态模型发现**：获取远程模型目录，可在上游不可用时保留上次成功的目录，支持显式模型声明和自定义路由覆盖。
 - **多密钥调度**：使用 CLIProxyAPI 原生调度器，在不同协议间共享密钥轮换、重试和错误冷却状态。
 - **原生额度查询**：通过 CLIProxyAPI 通用额度接口查询当前选中凭证的滚动、每周和每月额度，移除独立插件额度页面。
 
 ## 环境要求
 
 - **CLIProxyAPI**：`v8.0.0+`
-- **Go 工具链（仅源码构建）**：Go 1.26.7+，构建 C 共享库时需启用 CGO。
+- **仅源码构建**：Go 1.26.7+、启用 CGO，并安装面向 CPA 宿主平台的 C 编译器。使用预编译发布库无需 Go 工具链或编译器。
 
 ## 请求行为
 
@@ -60,7 +80,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 - 支持 CLIProxyAPI 的模型名思考后缀（`opencode-go/glm-5.2(high)`）：后缀只用于选择推理强度，不参与目录路由，并按 CPA 的后缀优先级取代请求体自带参数；数字值在 Messages 上保留精确 budget。无法识别的值只剥离后缀，与 CPA 行为一致。各协议字段映射与已知限制见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 每次上游 HTTP 调用独立持有宿主 operation 与请求 callback scope。客户端断开、scope 结束、`request-timeout` 和目录刷新停止会取消实际 HTTP；流式超时覆盖建立连接与消费流的总时长。
 - `plugin.quiesce` 拒绝新工作、取消活动任务并等待回调退出。Shutdown 等待所有回调结束后才允许卸载动态库，因此永不返回的宿主回调会一直延迟关闭。
-- 流在协议终止状态前 EOF 会报告错误，不会把部分文本或工具参数伪造成成功。已观察到 `finish_reason`/`stop_reason` 后仍兼容缺失 `[DONE]`/`message_stop`；EOF 时会处理没有末尾分隔符的最后一条 SSE 数据；终止事件缺少完整数据时报告错误。Messages 要求 `type: message_stop`；Responses 要求事件类型匹配，嵌套响应具备非空 `id`、`object: response`、匹配的终止 `status` 和 `output` 数组。
+- 流在协议终止状态前 EOF 会报告错误，不会把部分文本或工具参数伪造成成功。已观察到 `finish_reason`/`stop_reason` 后仍兼容缺失 `[DONE]`/`message_stop`；EOF 时会处理没有末尾分隔符的最后一条 SSE 数据；终止事件缺少完整数据时报告错误。收到 Messages `message_stop` 事件时，其 payload 必须包含 `type: message_stop`；Responses 要求事件类型匹配，嵌套响应具备非空 `id`、`object: response`、匹配的终止 `status` 和 `output` 数组。
 - 会话标识依次采用 `canonical_session_id`、显式会话 header、有效输入中的初始用户内容。已有文本、图片和工具结果的哈希保持兼容；文件、图像文件引用与未知原生内容采用稳定 JSON 哈希，不参与转换校验，也不记录内容。拦截器改变初始用户内容时，fallback 哈希随之改变；显式标识仍优先。
 
 ## 安装
@@ -129,6 +149,24 @@ go build -tags debug -buildmode=c-shared -o plugins/darwin/arm64/cpa-opencode-go
 
 在 CLIProxyAPI 的 `config.yaml` 中，通过 `plugins.configs.cpa-opencode-go` 配置插件。全局插件开关和此插件的开关都需设置为 `enabled: true`。
 
+### 最小配置
+
+```yaml
+plugins:
+  enabled: true
+  configs:
+    cpa-opencode-go:
+      enabled: true
+      api-keys:
+        - value: "${OPENCODE_GO_API_KEY}"
+```
+
+在 CPA 进程环境中设置 `OPENCODE_GO_API_KEY`，或将占位符替换为自己的 OpenCode Go API 密钥。安装动态库并更新配置后重启 CPA。访问 `/v1/models` 和推理接口时使用 CPA 客户端密钥；上游 OpenCode Go 密钥填在插件配置中。
+
+### 完整配置示例
+
+以下示例展示可选设置。请将示例密钥替换为自己的条目；未设置的环境变量会展开为空值，导致配置校验失败。
+
 ```yaml
 plugins:
   enabled: true
@@ -193,7 +231,11 @@ plugins:
 | `route-overrides` | `map` | `{}` | 按模型 ID 覆盖 `{ protocol: "...", endpoint: "..." }`。协议可选 `chat-completions`、`messages` 或 `responses`。 |
 | `request-timeout` | `duration` | `5m` | 上游连接建立及完整流的总超时；到期取消宿主 operation，必须大于零。 |
 | `max-response-bytes` | `int64` | `67108864`（64 MiB） | 非流式响应体的字节数上限。 |
-| `allow-http` | `bool` | `false` | 允许 `base-url` 和 `catalog-url` 使用 `http://`，用于本地测试。 |
+| `allow-http` | `bool` | `false` | 允许 `base-url`、`catalog-url` 和 `models-dev.url` 使用 `http://`，用于本地测试。 |
+| `models` | `[]object` | `[]` | 按上游 `name` 覆盖已有模型元数据或声明新增模型，详见[模型目录能力扩展](#模型目录能力扩展)。 |
+| `models-dev.enabled` | `bool` | `true` | 启用 models.dev 元数据兜底，本身不会新增目录模型。 |
+| `models-dev.url` | `string` | `https://models.dev/api.json` | 元数据来源地址，采用与 `base-url` 相同的 URL 校验规则。 |
+| `models-dev.refresh-interval` | `duration` | `24h` | 成功获取元数据后的缓存间隔，最短 `1m`；失败时在后续目录刷新中重试。 |
 
 ### 模型目录能力扩展
 
@@ -245,14 +287,14 @@ CPA v8.0.0 的普通 `/v1/models` 会过滤能力扩展。Codex 目录对部分�
 # 运行全部测试
 go test -tags debug ./...
 
-# 验证发布压缩包包含动态库和许可证
-go test ./.github/scripts
+# 验证发布打包与各版本发布说明
+go test ./.github/scripts/...
 
 # 查看测试覆盖率
 go test -tags debug ./... -cover
 
 # 运行静态检查
-go vet -tags debug ./... ./.github/scripts
+go vet -tags debug ./... ./.github/scripts/...
 ```
 
 本地开发的 debug 构建和验证要求见 [贡献指南](CONTRIBUTING.md)。

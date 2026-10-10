@@ -27,7 +27,7 @@ What actually happened, including HTTP status code and upstream/plugin error out
 ```
 
 ### Environment
-- **CLIProxyAPI Version:** (e.g. v7.2.138)
+- **CLIProxyAPI Version:** (v8.0.0 or later)
 - **Plugin Version / Commit:**
 - **OS:** (e.g. Windows / Linux / macOS)
 - **Go Version:** (if built from source)

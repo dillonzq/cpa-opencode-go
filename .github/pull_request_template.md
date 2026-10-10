@@ -11,12 +11,13 @@ Before submitting, read [CONTRIBUTING.md](../CONTRIBUTING.md), especially the Pu
 ## Validation
 
 - [ ] `go test -tags debug ./...`
-- [ ] `go test ./.github/scripts`
-- [ ] `go vet ./... ./.github/scripts`
+- [ ] `go test ./.github/scripts/...`
+- [ ] `go vet -tags debug ./... ./.github/scripts/...`
 - [ ] New or modified behavioral paths have unit tests.
 - [ ] Protocol changes include streaming and non-streaming tests.
 - [ ] `RELEASE_NOTES.md` is updated.
-- [ ] `README.md` is updated if user-facing configuration changed.
+- [ ] `README.md` and `README.zh-CN.md` are updated if user-facing behavior or configuration changed.
+- [ ] Both protocol conversion guides are updated if protocol mappings changed.
 
 ## Compatibility and Limitations
 

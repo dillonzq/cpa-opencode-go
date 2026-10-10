@@ -9,7 +9,7 @@ Submit issues and pull requests to [dillonzq/cpa-opencode-go](https://github.com
 ## Development Setup
 
 ### Prerequisites
-- Go 1.26.7+ (with CGO enabled for C-shared builds)
+- Go 1.26.7+, CGO enabled, and a C compiler targeting the CPA host platform
 - Git
 
 ### Build & Test Commands
@@ -47,7 +47,7 @@ go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-g
 2. **Debug-Mode Verification:** Verify all changes using `-tags debug`. Release packaging is handled separately by CI.
 3. **Test Coverage:** All new or modified behavioral paths require unit tests. Both streaming and non-streaming tests are required for protocol changes.
 4. **Offline Execution:** Unit tests must run locally and offline against mock host clients. Do not introduce dependencies on live external APIs.
-5. **Documentation:** `RELEASE_NOTES.md` is a changelog. Add or merge a section for your change, keeping the newest version first; the release body is generated from the tag's own section only, so older sections stay in the file. Update `README.md` if user-facing configuration changes.
+5. **Documentation:** `RELEASE_NOTES.md` is a changelog. Add or merge a section for your change. Keep the newest version first and use `# vX.Y.Z` headings. The release tag must match the first heading. CI generates the release body from that section only; older sections stay in the file. Update both `README.md` and `README.zh-CN.md` for user-facing behavior or configuration changes, and both protocol conversion guides when mappings change.
 6. **Code Style:** Format all code with standard `gofmt` and adhere to idiomatic Go conventions.
 
 ---

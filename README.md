@@ -1,10 +1,30 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="OpenCode" width="104">
-</p>
-
 # cpa-opencode-go
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<p align="center">
+  <img src="assets/logo.svg" alt="OpenCode" width="200" height="200">
+</p>
+
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="#install">install</a> ·
+  <a href="#configuration">configuration</a> ·
+  <a href="docs/protocol-conversion.md">protocol guide</a> ·
+  <a href="https://github.com/dillonzq/cpa-opencode-go/releases">releases</a> ·
+  <a href="CONTRIBUTING.md">contributing</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/dillonzq/cpa-opencode-go" alt="License: MIT"></a>
+  <a href="https://github.com/dillonzq/cpa-opencode-go"><img src="https://img.shields.io/github/stars/dillonzq/cpa-opencode-go?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/dillonzq/cpa-opencode-go/releases"><img src="https://img.shields.io/github/v/release/dillonzq/cpa-opencode-go" alt="Latest release"></a>
+  <a href="https://help.router-for.me/plugin/development"><img src="https://img.shields.io/badge/CLIProxyAPI-8.0.0%2B-555" alt="CLIProxyAPI 8.0.0+"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.26.7%2B-555" alt="Go 1.26.7+ for source builds"></a>
+</p>
+
+---
 
 A native dynamic Go plugin for [CLIProxyAPI](https://help.router-for.me/plugin/development) that exposes OpenCode Go as a single provider (`opencode-go`).
 
@@ -42,14 +62,14 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
   - Anthropic Messages (`/v1/messages`)
   - OpenAI Responses (`/v1/responses`)
 - **Thinking & Reasoning Support**: Preserves native reasoning controls and uses fixed effort/budget conversion across formats. Capability metadata does not filter or clamp requests; upstream validates controls. Preserves explicit off and Claude adaptive effort; cross-format auto uses target defaults where no wire equivalent exists. Controls that cannot be converted fail explicitly.
-- **Dynamic Catalog Discovery**: Fetches remote model catalogs with local fallback and custom route overrides.
+- **Dynamic Catalog Discovery**: Fetches remote model catalogs, optionally retains the last successful catalog during outages, and supports explicit model declarations and custom route overrides.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
 - **Native quotas**: Rolling, weekly, and monthly quotas use CLIProxyAPI's generic quota endpoints and the selected credential. The separate plugin page is removed.
 
 ## Requirements
 
 - **CLIProxyAPI**: `v8.0.0+`
-- **Go Toolchain (source builds only)**: Go 1.26.7+ (with CGO enabled for C-shared build mode)
+- **Source builds only**: Go 1.26.7+, CGO enabled, and a C compiler targeting the CPA host platform. Prebuilt release libraries do not require a Go toolchain or compiler.
 
 ## Request behavior
 
@@ -58,7 +78,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 - Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`): the suffix is stripped for catalog routing and its reasoning control replaces the body's own control with CPA's suffix priority — including a numeric value, which keeps its exact budget on Messages. Unrecognized values strip the suffix only, matching CPA. See the [protocol conversion guide](docs/protocol-conversion.md) for the per-protocol mapping and known limitations.
 - Each upstream HTTP call owns a host operation and its request callback scope. Client disconnection, scope closure, `request-timeout`, and stopped catalog refreshes cancel actual HTTP work. The timeout covers stream opening and consumption together.
 - `plugin.quiesce` rejects new work, cancels active tasks, and drains callbacks. Shutdown waits for every callback to exit before the shared library can unload; a host callback that never returns can therefore delay shutdown indefinitely.
-- EOF before a protocol terminal state reports a stream error instead of success, including partial tool arguments. A known `finish_reason`/`stop_reason` may still end without `[DONE]`/`message_stop`; final SSE data without a trailing separator is processed, and incomplete terminal payloads report an error. Messages requires `type: message_stop`; Responses requires the matching event type and a response with a nonempty `id`, `object: response`, matching terminal `status`, and an `output` array.
+- EOF before a protocol terminal state reports a stream error instead of success, including partial tool arguments. A known `finish_reason`/`stop_reason` may still end without `[DONE]`/`message_stop`; final SSE data without a trailing separator is processed, and incomplete terminal payloads report an error. When a Messages `message_stop` event is present, its payload must include `type: message_stop`; Responses requires the matching event type and a response with a nonempty `id`, `object: response`, matching terminal `status`, and an `output` array.
 - Session identity uses `canonical_session_id`, then explicit session headers, then the initial user content of the effective input. Existing text/image/tool-result hashes stay compatible. Files, image file references, and unknown native content use stable JSON hashing, without translation validation or content logging. An interceptor changing the initial user content also changes the fallback hash; explicit identity takes precedence.
 
 ## Install
@@ -123,7 +143,25 @@ If the old plugin was installed through Plugin Store, its configuration may cont
 
 ## Configuration
 
-Configure the plugin in your CLIProxyAPI `config.yaml` under `plugins.configs.cpa-opencode-go`:
+Configure the plugin in your CLIProxyAPI `config.yaml` under `plugins.configs.cpa-opencode-go`. Both the global plugin switch and this plugin's switch must be enabled.
+
+### Minimal configuration
+
+```yaml
+plugins:
+  enabled: true
+  configs:
+    cpa-opencode-go:
+      enabled: true
+      api-keys:
+        - value: "${OPENCODE_GO_API_KEY}"
+```
+
+Set `OPENCODE_GO_API_KEY` in the CPA process environment, or replace the placeholder with your OpenCode Go API key. Restart CPA after installing the library and updating the configuration. Use a CPA client key for requests to `/v1/models` and the inference endpoints; the upstream OpenCode Go key belongs in the plugin configuration.
+
+### Full configuration example
+
+The following example shows optional settings. Replace the sample keys with your own entries; an unset environment variable expands to an empty value and fails validation.
 
 ```yaml
 plugins:
@@ -189,7 +227,11 @@ plugins:
 | `route-overrides` | `map` | `{}` | Map of model ID to `{ protocol: "...", endpoint: "..." }` overriding built-in family routing. Valid protocols: `chat-completions`, `messages`, `responses`. |
 | `request-timeout` | `duration` | `5m` | Deadline for upstream HTTP opening and the entire stream; expiry cancels the host operation. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
-| `allow-http` | `bool` | `false` | When `true`, permits `http://` scheme in `base-url` / `catalog-url` for local testing. |
+| `allow-http` | `bool` | `false` | When `true`, permits `http://` in `base-url`, `catalog-url`, and `models-dev.url` for local testing. |
+| `models` | `[]object` | `[]` | Override discovered model metadata or declare additional models by upstream `name`; see [Catalog capability extensions](#catalog-capability-extensions). |
+| `models-dev.enabled` | `bool` | `true` | Enable fallback metadata from models.dev; does not add models to the catalog. |
+| `models-dev.url` | `string` | `https://models.dev/api.json` | Metadata source URL; follows the same URL validation rules as `base-url`. |
+| `models-dev.refresh-interval` | `duration` | `24h` | Successful metadata cache interval, minimum `1m`; failed fetches retry on subsequent catalog refreshes. |
 
 ### Catalog capability extensions
 
@@ -241,15 +283,17 @@ CPA v8.0.0's ordinary `/v1/models` response strips capability extensions. Its Co
 # Run all tests
 go test -tags debug ./...
 
-# Verify release archives include the library and license
-go test ./.github/scripts
+# Verify release packaging and version-specific release notes
+go test ./.github/scripts/...
 
 # Run tests with coverage
 go test -tags debug ./... -cover
 
 # Run linter / vetting
-go vet -tags debug ./... ./.github/scripts
+go vet -tags debug ./... ./.github/scripts/...
 ```
+
+Local debug build and verification requirements are covered in the [contribution guide](CONTRIBUTING.md).
 
 ## Account names and quotas
 
@@ -276,4 +320,4 @@ Discover support with `GET /v0/management/quota/providers`, then call
 These endpoints require the CLIProxyAPI management key. The normalized response contains
 `subscription.plan`, `groups[].buckets[].window`, `remainingFraction`, and `resetTime`.
 Missing windows are omitted. Invalid readings return an error, not an invented zero.
-Quota reset is unsupported. The old plugin quota route and resource page are removed.
+Quota reset is unsupported. The old plugin quota route and resource page are removed. The management dashboard must support the generic quota API to display plugin quota refresh controls.
