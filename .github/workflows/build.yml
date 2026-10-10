@@ -38,7 +38,11 @@ jobs:
             echo "Expected a stable release tag such as v0.1.0" >&2
             exit 1
           fi
-          test "$(head -n 1 RELEASE_NOTES.md)" = "# ${GITHUB_REF_NAME}"
+          go run ./.github/scripts/release-notes \
+            -notes RELEASE_NOTES.md \
+            -tag "${GITHUB_REF_NAME}" \
+            -out "${RUNNER_TEMP}/release-notes.md"
+          test "$(head -n 1 "${RUNNER_TEMP}/release-notes.md")" = "# ${GITHUB_REF_NAME}"
 
       - name: Cache host integration dependencies
         run: go mod download all
@@ -53,10 +57,10 @@ jobs:
         run: go test ./...
 
       - name: Test release packaging
-        run: go test ./.github/scripts
+        run: go test ./.github/scripts/...
 
       - name: Vet
-        run: go vet -tags debug ./... ./.github/scripts
+        run: go vet -tags debug ./... ./.github/scripts/...
 
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -298,7 +302,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -316,12 +326,18 @@ jobs:
           test "$(find dist -maxdepth 1 -name '*.sha256' | wc -l)" -eq 7
           sort dist/*.sha256 > dist/checksums.txt
           (cd dist && sha256sum --check checksums.txt)
+          # RELEASE_NOTES.md is a changelog; the release body is only the section
+          # for this tag, so older releases are not repeated here.
+          go run ./.github/scripts/release-notes \
+            -notes RELEASE_NOTES.md \
+            -tag "${GITHUB_REF_NAME}" \
+            -out "${RUNNER_TEMP}/release-notes.md"
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             if [[ "$(gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" != "true" ]]; then
               echo "Refusing to replace assets of a published release" >&2
               exit 1
             fi
-            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file RELEASE_NOTES.md
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/release-notes.md"
             gh release upload "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt --clobber --repo "${GITHUB_REPOSITORY}"
           else
             gh release create "${GITHUB_REF_NAME}" dist/*.zip dist/checksums.txt \
@@ -329,5 +345,5 @@ jobs:
               --verify-tag \
               --draft \
               --title "${GITHUB_REF_NAME}" \
-              --notes-file RELEASE_NOTES.md
+              --notes-file "${RUNNER_TEMP}/release-notes.md"
           fi

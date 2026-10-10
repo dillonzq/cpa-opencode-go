@@ -19,7 +19,7 @@ Submit issues and pull requests to [dillonzq/cpa-opencode-go](https://github.com
 Run the test suite:
 ```powershell
 go test -tags debug ./...
-go test ./.github/scripts
+go test ./.github/scripts/...
 ```
 
 Run the race detector:
@@ -31,7 +31,7 @@ On macOS/Linux with CGO, the debug suite also builds a temporary C-shared librar
 
 Run static analysis:
 ```powershell
-go vet -tags debug ./... ./.github/scripts
+go vet -tags debug ./... ./.github/scripts/...
 ```
 
 Build the native shared library for local testing:
@@ -47,7 +47,7 @@ go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-g
 2. **Debug-Mode Verification:** Verify all changes using `-tags debug`. Release packaging is handled separately by CI.
 3. **Test Coverage:** All new or modified behavioral paths require unit tests. Both streaming and non-streaming tests are required for protocol changes.
 4. **Offline Execution:** Unit tests must run locally and offline against mock host clients. Do not introduce dependencies on live external APIs.
-5. **Documentation:** Append or merge changes into `RELEASE_NOTES.md` and update `README.md` if user-facing configuration changes.
+5. **Documentation:** `RELEASE_NOTES.md` is a changelog. Add or merge a section for your change, keeping the newest version first; the release body is generated from the tag's own section only, so older sections stay in the file. Update `README.md` if user-facing configuration changes.
 6. **Code Style:** Format all code with standard `gofmt` and adhere to idiomatic Go conventions.
 
 ---
@@ -56,5 +56,5 @@ go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-g
 
 1. Fork the repository and create a feature branch from `main`.
 2. Implement your changes following the code style and testing guidelines above.
-3. Ensure `go test -tags debug ./...`, `go test ./.github/scripts`, and `go vet -tags debug ./... ./.github/scripts` pass cleanly.
+3. Ensure `go test -tags debug ./...`, `go test ./.github/scripts/...`, and `go vet -tags debug ./... ./.github/scripts/...` pass cleanly.
 4. Open a pull request against `main` with a clear description of the change and any related issue references.
