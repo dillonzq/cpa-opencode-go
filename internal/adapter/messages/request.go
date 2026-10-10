@@ -545,12 +545,18 @@ func fromResponses(upstreamModel string, body []byte, tools *shared.ResponseTool
 				"type": "tool_use", "id": item.CallID, "name": item.Name, "input": input,
 			})
 		case "function_call_output", "custom_tool_call_output":
-			text, eErr := shared.RespOutputText(item.Output, "tool messages carry text only")
+			blocks, eErr := contentParts(item.Output)
 			if eErr != nil {
 				return nil, eErr
 			}
+			// Anthropic supports images inside tool_result content. Keep
+			// mixed blocks in order while retaining the text-only wire shape.
+			var content any = shared.JoinTexts(blocks)
+			if hasImage(blocks) {
+				content = blocks
+			}
 			b.add("user:tool", "user", anthropicBlock{
-				"type": "tool_result", "tool_use_id": item.CallID, "content": text,
+				"type": "tool_result", "tool_use_id": item.CallID, "content": content,
 			})
 		case "reasoning":
 			// Best-effort: keep summary text as a thinking block;
