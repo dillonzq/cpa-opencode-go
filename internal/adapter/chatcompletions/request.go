@@ -6,6 +6,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -384,6 +385,18 @@ func responsesToChat(upstreamModel string, body []byte, tools *shared.ResponseTo
 		return nil, eErr
 	}
 	applyToolChoiceCC(out, kind, tcName)
+	// Chat Completions tool messages cannot carry images. Emit them as a
+	// user message after all consecutive tool replies, so parallel calls
+	// receive their results before any user message interrupts the turn.
+	// Keep each mixed result in order and label its call ID so images remain
+	// associated with their source tool and accompanying text.
+	var toolImages []ccContentPart
+	flushToolImages := func() {
+		if len(toolImages) > 0 {
+			out.Messages = append(out.Messages, ccMessage{Role: "user", Content: toolImages})
+			toolImages = nil
+		}
+	}
 	for _, item := range items {
 		switch item.Type {
 		case "message":
@@ -408,15 +421,20 @@ func responsesToChat(upstreamModel string, body []byte, tools *shared.ResponseTo
 					}
 					text = sb.String()
 				}
-				addSystem(text)
+				if text != "" {
+					flushToolImages()
+					addSystem(text)
+				}
 			case "user", "assistant":
 				if content != nil {
+					flushToolImages()
 					out.Messages = append(out.Messages, ccMessage{Role: item.Role, Content: content})
 				}
 			default:
 				return nil, shared.ValidateRole(item.Role, EndpointPath)
 			}
 		case "function_call", "custom_tool_call":
+			flushToolImages()
 			args := item.Arguments
 			if args == "" && item.Input != "" {
 				args = item.Input
@@ -437,12 +455,28 @@ func responsesToChat(upstreamModel string, body []byte, tools *shared.ResponseTo
 				Role: "assistant", ToolCalls: []shared.CCToolCall{tc},
 			})
 		case "function_call_output", "custom_tool_call_output":
-			text, eErr := shared.RespOutputText(item.Output, "tool messages carry text only")
+			parts, eErr := shared.DecodeStringOrParts(item.Output, EndpointPath)
 			if eErr != nil {
 				return nil, eErr
 			}
+			var text strings.Builder
+			var mixed []ccContentPart
+			imageCount := 0
+			for _, p := range parts {
+				if p.ImageURL != "" {
+					imageCount++
+					mixed = append(mixed, ccContentPart{Type: "image_url", ImageURL: &imageURLField{URL: p.ImageURL}})
+				} else {
+					text.WriteString(p.Text)
+					mixed = append(mixed, ccContentPart{Type: "text", Text: p.Text})
+				}
+			}
+			if imageCount > 0 {
+				toolImages = append(toolImages, ccContentPart{Type: "text", Text: fmt.Sprintf("Tool output for call_id %q (%d images):", item.CallID, imageCount)})
+				toolImages = append(toolImages, mixed...)
+			}
 			out.Messages = append(out.Messages, ccMessage{
-				Role: "tool", Content: text, ToolCallID: item.CallID,
+				Role: "tool", Content: text.String(), ToolCallID: item.CallID,
 			})
 		case "reasoning":
 			// omitted: no Chat Completions equivalent (FR-005 policy)
@@ -450,6 +484,7 @@ func responsesToChat(upstreamModel string, body []byte, tools *shared.ResponseTo
 			return nil, shared.UnsupportedInputItemType(item.Type)
 		}
 	}
+	flushToolImages()
 
 	for _, t := range src.Tools {
 		if eErr := shared.FunctionTool(t.Type, EndpointPath); eErr != nil {

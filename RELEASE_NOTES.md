@@ -21,6 +21,12 @@ the plugin library.
 
 ## Request handling
 
+- Accept images in Responses function and custom tool outputs when converting
+  to Chat Completions or Messages. Preserve image data, keep parallel Chat
+  Completions tool replies together before emitting mixed results as a user
+  message labeled with their call IDs, preserving image/text order and ignoring
+  empty messages when determining tool-reply boundaries,
+  and retain mixed content inside Messages tool results.
 - Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`):
   strip the suffix for catalog routing and apply its reasoning control with CPA's
   suffix priority over the body's own control, dropping the superseded control
