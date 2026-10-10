@@ -96,9 +96,9 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 | Windows | amd64 / arm64 | `windows_amd64.zip` / `windows_arm64.zip` | `cpa-opencode-go.dll` |
 | FreeBSD | amd64 | `freebsd_amd64.zip` | `cpa-opencode-go.so` |
 
-完整文件名例如 `cpa-opencode-go_0.1.1_linux_amd64.zip`。每个 ZIP 包含动态库和 `LICENSE`，使用预编译库无需安装 Go 工具链。
+完整文件名例如 `cpa-opencode-go_0.1.2_linux_amd64.zip`。每个 ZIP 包含动态库和 `LICENSE`，使用预编译库无需安装 Go 工具链。
 
-1. 校验下载文件。在 Linux 上运行 `sha256sum cpa-opencode-go_0.1.1_linux_amd64.zip`；macOS 使用 `shasum -a 256 <ZIP文件名>`；Windows PowerShell 使用 `Get-FileHash <ZIP文件名> -Algorithm SHA256`。将输出与 `checksums.txt` 中对应文件的 SHA256 比较。
+1. 校验下载文件。在 Linux 上运行 `sha256sum cpa-opencode-go_0.1.2_linux_amd64.zip`；macOS 使用 `shasum -a 256 <ZIP文件名>`；Windows PowerShell 使用 `Get-FileHash <ZIP文件名> -Algorithm SHA256`。将输出与 `checksums.txt` 中对应文件的 SHA256 比较。
 2. 停止 CPA；升级前备份 `config.yaml`、实际 `auth-dir` 指向的凭证目录和现有插件动态库。
 3. 解压 ZIP，将动态库放入 `<cliproxyapi_root>/plugins/<os>/<arch>/`，例如 `plugins/linux/amd64/`；保留压缩包中的许可证。
 4. 按下方[配置](#配置)设置 `plugins.enabled: true`、`plugins.configs.cpa-opencode-go.enabled: true` 及 API 密钥。旧插件用户先按[迁移说明](#从-opencode-go-cliproxyapi-迁移)调整配置。

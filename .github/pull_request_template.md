@@ -15,7 +15,7 @@ Before submitting, read [CONTRIBUTING.md](../CONTRIBUTING.md), especially the Pu
 - [ ] `go vet -tags debug ./... ./.github/scripts/...`
 - [ ] New or modified behavioral paths have unit tests.
 - [ ] Protocol changes include streaming and non-streaming tests.
-- [ ] `RELEASE_NOTES.md` is updated.
+- [ ] `RELEASE_NOTES.md` records user-facing fixes or features; maintenance-only changes are omitted.
 - [ ] `README.md` and `README.zh-CN.md` are updated if user-facing behavior or configuration changed.
 - [ ] Both protocol conversion guides are updated if protocol mappings changed.
 

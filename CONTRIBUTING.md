@@ -47,7 +47,7 @@ go build -tags debug -buildmode=c-shared -o plugins/windows/amd64/cpa-opencode-g
 2. **Debug-Mode Verification:** Verify all changes using `-tags debug`. Release packaging is handled separately by CI.
 3. **Test Coverage:** All new or modified behavioral paths require unit tests. Both streaming and non-streaming tests are required for protocol changes.
 4. **Offline Execution:** Unit tests must run locally and offline against mock host clients. Do not introduce dependencies on live external APIs.
-5. **Documentation:** `RELEASE_NOTES.md` is a changelog. Add or merge a section for your change. Keep the newest version first and use `# vX.Y.Z` headings. The release tag must match the first heading. CI generates the release body from that section only; older sections stay in the file. Update both `README.md` and `README.zh-CN.md` for user-facing behavior or configuration changes, and both protocol conversion guides when mappings change.
+5. **Documentation:** `RELEASE_NOTES.md` is a changelog. Record user-facing fixes and features; omit maintenance-only changes such as documentation cleanup, test additions, and release workflow updates. Add or merge a version section for changes that qualify. Keep the newest version first and use `# vX.Y.Z` headings. The release tag must match the first heading. CI generates the release body from that section only; older sections stay in the file. Update both `README.md` and `README.zh-CN.md` for user-facing behavior or configuration changes, and both protocol conversion guides when mappings change.
 6. **Code Style:** Format all code with standard `gofmt` and adhere to idiomatic Go conventions.
 
 ---

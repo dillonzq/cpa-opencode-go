@@ -94,9 +94,9 @@ Choose the **CPA host's operating system and architecture**, using the environme
 | Windows | amd64 / arm64 | `windows_amd64.zip` / `windows_arm64.zip` | `cpa-opencode-go.dll` |
 | FreeBSD | amd64 | `freebsd_amd64.zip` | `cpa-opencode-go.so` |
 
-For example: `cpa-opencode-go_0.1.1_linux_amd64.zip`. Each ZIP contains the shared library and `LICENSE`. Prebuilt libraries do not require the Go toolchain.
+For example: `cpa-opencode-go_0.1.2_linux_amd64.zip`. Each ZIP contains the shared library and `LICENSE`. Prebuilt libraries do not require the Go toolchain.
 
-1. Verify the download: use `sha256sum cpa-opencode-go_0.1.1_linux_amd64.zip` on Linux, `shasum -a 256 <archive>` on macOS, or `Get-FileHash <archive> -Algorithm SHA256` in Windows PowerShell. Compare the hash with the matching entry in `checksums.txt`.
+1. Verify the download: use `sha256sum cpa-opencode-go_0.1.2_linux_amd64.zip` on Linux, `shasum -a 256 <archive>` on macOS, or `Get-FileHash <archive> -Algorithm SHA256` in Windows PowerShell. Compare the hash with the matching entry in `checksums.txt`.
 2. Stop CPA. Before upgrading, back up `config.yaml`, the credential directory specified by `auth-dir`, and the existing plugin libraries.
 3. Extract the ZIP and place the library in `<cliproxyapi_root>/plugins/<os>/<arch>/`, such as `plugins/linux/amd64/`. Retain the included license.
 4. Follow [Configuration](#configuration) to enable both `plugins.enabled` and `plugins.configs.cpa-opencode-go.enabled` and set an API key. Existing users should first follow [Migration](#migrating-from-opencode-go-cliproxyapi).
