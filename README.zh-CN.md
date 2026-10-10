@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="OpenCode" width="104">
+</p>
+
 # cpa-opencode-go
 
 [English](README.md) | [简体中文](README.zh-CN.md)
@@ -9,6 +13,9 @@
 本项目由 [dillonzq](https://github.com/dillonzq) 独立维护，基于 [massiveits/opencode-go-cliproxyapi](https://github.com/massiveits/opencode-go-cliproxyapi)，保留原项目的 MIT 许可证和版权声明。
 
 插件 ID 为 `cpa-opencode-go`。服务商 ID、凭证类型和默认模型前缀仍为 `opencode-go`。
+
+`assets/logo.svg` 中的 OpenCode 标识用作插件图标。在 CLIProxyAPI 插件商店中登记时使用位图资源
+`https://raw.githubusercontent.com/dillonzq/cpa-opencode-go/main/assets/logo.png`；来源与商标说明见 [`assets/README.md`](assets/README.md)。
 
 ## 解决的问题
 

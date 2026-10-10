@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="OpenCode" width="104">
+</p>
+
 # cpa-opencode-go
 
 [English](README.md) | [简体中文](README.zh-CN.md)
@@ -9,6 +13,9 @@ The plugin unifies model discovery, protocol translation, and execution across O
 Independently maintained by [dillonzq](https://github.com/dillonzq), based on [massiveits/opencode-go-cliproxyapi](https://github.com/massiveits/opencode-go-cliproxyapi). The original MIT license and copyright notice are preserved.
 
 The plugin ID is `cpa-opencode-go`. The provider ID, credential type, and default model prefix remain `opencode-go`.
+
+The OpenCode mark in `assets/logo.svg` is the plugin icon. Register it in the CLIProxyAPI plugin store with the raster asset at
+`https://raw.githubusercontent.com/dillonzq/cpa-opencode-go/main/assets/logo.png`; see [`assets/README.md`](assets/README.md) for provenance and trademark notes.
 
 ## The Problem
 
