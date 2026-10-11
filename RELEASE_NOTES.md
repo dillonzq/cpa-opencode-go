@@ -1,21 +1,64 @@
-# v0.1.3
+# v0.2.0
 
-Unreleased.
+Minor release for **cpa-opencode-go**, based on v0.1.2 and requiring
+**CLIProxyAPI v8.0.0 or later**. Requests, regular responses, and SSE across
+Chat Completions, Messages, and Responses now use **api-translator v0.2.0**.
+Configuration keys, credential records, and existing `opencode-go/<model>` IDs
+are unchanged. Existing v0.1.2 installations can upgrade by replacing the plugin
+library. Native OpenCode Go request cleaning, model suffix precedence, sessions,
+authentication, and CPA transport lifecycle are preserved.
 
-- Use api-translator v0.2.0 for requests, regular responses, and SSE across all
-  three protocols. Preserve native OpenCode Go request cleaning, model suffix
-  precedence, sessions, authentication, and CPA transport lifecycle.
+## Protocol conversion
+
 - Support representable structured output, tool strict, URL citations, hosted
   search between Responses and Messages, and cross-protocol custom apply_patch.
   Actual target-model support remains upstream-dependent.
-- Restore native non-GPT Responses namespace/custom identities through shared
-  request state; reject identity collisions. Adapt complete library SSE frames
-  to CPA's bare Chat payload contract without duplicate DONE.
+
+## Fixes
+
+- Restore namespace/custom tool identities in native non-GPT Responses replies;
+  reject identity collisions. Keep Chat streams compatible with CPA's framing
+  contract without duplicate DONE markers.
 - Handle multi-line SSE and preserve completed events returned alongside a
   conversion error. Unrepresentable output and failed/non-terminal Responses
   responses fail explicitly rather than being treated as successful conversion.
 - Keep stream errors with empty or whitespace-only upstream messages as errors;
   supply a fallback message so CPA does not mistake error closure for success.
+
+## Installation and upgrade
+
+Download the ZIP matching the **CPA host's operating system and architecture**
+and `checksums.txt` from this release. Verify its SHA256, stop CPA, and back up
+its configuration, credential directory, and existing plugin library. Extract
+`cpa-opencode-go_0.2.0_<os>_<arch>.zip` into
+`<cliproxyapi_root>/plugins/<os>/<arch>/`, retaining the included `LICENSE`.
+
+| OS | Architectures | Library |
+| --- | --- | --- |
+| Linux | amd64, arm64 | `cpa-opencode-go.so` |
+| macOS (`darwin`) | amd64, arm64 | `cpa-opencode-go.dylib` |
+| Windows | amd64, arm64 | `cpa-opencode-go.dll` |
+| FreeBSD | amd64 | `cpa-opencode-go.so` |
+
+Both `plugins.enabled` and `plugins.configs.cpa-opencode-go.enabled` must be
+`true`. Restart CPA, verify `/v1/models` with a CPA client key, and make a request.
+For a new installation or migration from `opencode-go-cliproxyapi`, follow the
+[English installation guide](https://github.com/dillonzq/cpa-opencode-go/blob/v0.2.0/README.md#install)
+or [中文安装指南](https://github.com/dillonzq/cpa-opencode-go/blob/v0.2.0/README.zh-CN.md#安装).
+
+## Known limitations and rollback
+
+The [protocol conversion guide](https://github.com/dillonzq/cpa-opencode-go/blob/v0.2.0/docs/protocol-conversion.md)
+records supported mappings and remaining compatibility gaps. Target models may
+reject structured output or hosted tools even when their protocol can represent
+them. Cross-protocol opaque reasoning, audio, and image-generation output remain
+limited. Quota reset remains unsupported, and the dashboard must support CPA's
+generic quota API. Offline ABI tests and platform builds do not replace
+validation with a running CPA host and real upstream credentials.
+
+To roll back, stop CPA and restore the backed-up plugin library, configuration,
+and credential directory together. Restart CPA and verify model discovery and a
+request. Keep only one plugin registering the `opencode-go` provider installed.
 
 # v0.1.2
 
