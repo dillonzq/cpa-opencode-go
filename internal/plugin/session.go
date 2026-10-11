@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/dillonzq/cpa-opencode-go/internal/adapter/shared"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 )
 
@@ -69,7 +68,7 @@ func deriveOpenCodeSessionID(format string, body []byte) (string, *errclass.Erro
 			return sessionDigest(content.String()), nil
 		}
 	} else if format != "openai" && format != "claude" {
-		return "", shared.UnsupportedFormat(format, "OpenCode Go session derivation")
+		return "", &errclass.Error{Class: errclass.ClassUnsupported, Message: "unsupported protocol format for OpenCode Go session derivation: " + format}
 	}
 	// Non-message input shapes are left to the adapter/upstream to validate.
 	_ = json.Unmarshal(doc[field], &items)
@@ -100,7 +99,7 @@ func sessionDigest(content string) string {
 func sessionString(raw json.RawMessage) string { var s string; _ = json.Unmarshal(raw, &s); return s }
 
 func appendSessionContent(out *strings.Builder, raw json.RawMessage, format string) {
-	if !shared.HasContent(raw) {
+	if !hasContent(raw) {
 		return
 	}
 	var s string

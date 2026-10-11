@@ -16,14 +16,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
-	"github.com/dillonzq/cpa-opencode-go/internal/adapter/chatcompletions"
-	"github.com/dillonzq/cpa-opencode-go/internal/adapter/messages"
-	"github.com/dillonzq/cpa-opencode-go/internal/adapter/responses"
-	"github.com/dillonzq/cpa-opencode-go/internal/adapter/shared"
+	translator "github.com/dillonzq/api-translator"
+	"github.com/dillonzq/api-translator/thinking"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/config"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
-	"github.com/dillonzq/cpa-opencode-go/internal/thinking"
+	"github.com/dillonzq/cpa-opencode-go/internal/protocol"
 )
 
 // executorRequest mirrors rpcExecutorRequest: the SDK embeds
@@ -46,7 +44,7 @@ type resolvedExecution struct {
 	rec    catalog.ModelRecord
 	key    string
 	suffix thinking.Suffix
-	tools  shared.ResponseTools
+	state  *translator.RequestState
 }
 
 // resolveExecution resolves the requested model against the snapshot and
@@ -92,7 +90,7 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 		})
 	}
 	debugTrace("executor resolved model lookup=%s suffix_raw=%q suffix_effort=%q", lookupID, suffix.Raw, suffix.Effort)
-	return &resolvedExecution{cfg: cfg, rec: rec, key: key, suffix: suffix, tools: *shared.NewResponseTools()}, nil
+	return &resolvedExecution{cfg: cfg, rec: rec, key: key, suffix: suffix, state: translator.NewRequestState()}, nil
 }
 
 // handleExecute implements executor.execute (non-stream). Stream-flagged
@@ -120,6 +118,9 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 
+	if _, eErr := protocol.Format(req.outputFormat()); eErr != nil {
+		return classEnvelope(eErr), nil
+	}
 	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
 	debugTrace("executor resolved public_model=%s upstream_model=%s route=%s url=%s key_count=%d", req.Model, res.rec.UpstreamID, res.rec.Protocol, url, len(res.cfg.APIKeys))
 	debugTrace("executor sending non-stream url=%s body_len=%d", url, len(upstreamBody))
@@ -137,57 +138,50 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	}
 	debugTrace("executor received non-stream status=%d body_len=%d", resp.StatusCode, len(resp.Body))
 	if resp.StatusCode >= 400 {
-		return classEnvelope(shared.UpstreamStatusError(resp.StatusCode, resp.Body)), nil
+		return classEnvelope(errclass.UpstreamStatusError(resp.StatusCode, resp.Body)), nil
 	}
 	// Parse/envelope guard only; true OOM prevention belongs to the host transport's byte cap.
 	if int64(len(resp.Body)) > res.cfg.MaxResponseBytes {
 		return classEnvelope(errclass.Translation("response exceeds max-response-bytes")), nil
 	}
-	converted, eErr := convertNonStream(res.rec.Protocol, req.outputFormat(), resp.StatusCode, resp.Body, &res.tools)
+	converted, eErr := convertNonStream(res.rec.Protocol, req.outputFormat(), resp.StatusCode, resp.Body, res.state)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: converted, Headers: resp.Headers}), nil
 }
 
-func buildUpstreamRequest(route catalog.Route, upstreamModel, sourceFormat string, sourceBody []byte, ts *pluginapi.ThinkingSupport, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
-	switch route {
-	case catalog.RouteChatCompletions:
-		return chatcompletions.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
-	case catalog.RouteMessages:
-		return messages.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
-	case catalog.RouteResponses:
-		return responses.BuildRequest(upstreamModel, sourceFormat, sourceBody, ts, tools...)
+// buildUpstreamRequest applies provider-specific native policy before translation.
+func buildUpstreamRequest(route catalog.Route, model, source string, body []byte, _ *pluginapi.ThinkingSupport, states ...*translator.RequestState) ([]byte, *errclass.Error) {
+	state := requestState(states)
+	body, err := normalizeNativeRequest(route, model, source, body, state)
+	if err != nil {
+		return nil, err
 	}
-	return nil, errclass.Translation("unsupported route")
+	return protocol.ConvertRequest(route, model, source, body, state)
+}
+
+func requestState(states []*translator.RequestState) *translator.RequestState {
+	if len(states) > 0 && states[0] != nil {
+		return states[0]
+	}
+	return translator.NewRequestState()
 }
 
 func upstreamAuthHeaders(route catalog.Route, key, sessionID string) http.Header {
-	var h http.Header
+	h := make(http.Header)
 	if route == catalog.RouteMessages {
-		h = messages.AuthHeaders(key)
+		h.Set("x-api-key", key)
+		h.Set("anthropic-version", "2023-06-01")
 	} else {
-		// Chat Completions and Responses endpoints are OpenAI-style bearer.
-		h = chatcompletions.AuthHeaders(key)
+		h.Set("Authorization", "Bearer "+key)
 	}
 	h.Set("x-opencode-session", sessionID)
 	return h
 }
 
-// convertNonStream routes one upstream response to its adapter's uniform
-// translator: every adapter owns status classification (>=400 → §7
-// classified errors), native passthrough, and cross-format conversion for
-// all client formats.
-func convertNonStream(route catalog.Route, sourceFormat string, status int, body []byte, tools ...*shared.ResponseTools) ([]byte, *errclass.Error) {
-	switch route {
-	case catalog.RouteChatCompletions:
-		return chatcompletions.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
-	case catalog.RouteMessages:
-		return messages.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
-	case catalog.RouteResponses:
-		return responses.ConvertNonStreamResponse(sourceFormat, status, body, tools...)
-	}
-	return nil, errclass.Translation("unsupported route")
+func convertNonStream(route catalog.Route, output string, status int, body []byte, states ...*translator.RequestState) ([]byte, *errclass.Error) {
+	return protocol.ConvertResponse(route, output, status, body, requestState(states))
 }
 
 // classEnvelope renders a classified failure as the wire error envelope;
@@ -198,28 +192,10 @@ func classEnvelope(e *errclass.Error) []byte {
 	return out
 }
 
-// streamConverter is the common shape of the three adapters' stream
-// converters: feed one upstream SSE chunk, get translated client events.
-type streamConverter interface {
-	Feed(chunk []byte) (events [][]byte, done bool, eErr *errclass.Error)
-	Finish() ([][]byte, *errclass.Error)
-}
+type streamConverter = protocol.StreamConverter
 
-// Compile-time proof the close-without-terminal Flush seam (F5) picks up
-// both converters that can hold a deferred terminal.
-var (
-	_ interface{ Flush() [][]byte } = (*chatcompletions.StreamConverter)(nil)
-	_ interface{ Flush() [][]byte } = (*messages.StreamConverter)(nil)
-)
-
-func newStreamConverter(route catalog.Route, sourceFormat string, tools ...*shared.ResponseTools) streamConverter {
-	switch route {
-	case catalog.RouteMessages:
-		return messages.NewStreamConverter(sourceFormat, tools...)
-	case catalog.RouteResponses:
-		return responses.NewStreamConverter(sourceFormat, tools...)
-	}
-	return chatcompletions.NewStreamConverter(sourceFormat, tools...)
+func newStreamConverter(route catalog.Route, output string, state *translator.RequestState) (streamConverter, *errclass.Error) {
+	return protocol.NewStreamConverter(route, output, state)
 }
 
 // handleExecuteStream implements executor.execute_stream (FR-006, §7).
@@ -255,6 +231,10 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 
+	conv, eErr := newStreamConverter(res.rec.Protocol, req.outputFormat(), res.state)
+	if eErr != nil {
+		return classEnvelope(eErr), nil
+	}
 	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
 	debugTrace("executor sending stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(withHostCallbackScope(m.workContext(), req.HostCallbackID), res.cfg.RequestTimeout)
@@ -293,7 +273,7 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 			close(watchDone)
 			<-watchExited
 		}
-		return classEnvelope(shared.UpstreamStatusError(st, body)), nil
+		return classEnvelope(errclass.UpstreamStatusError(st, body)), nil
 	}
 
 	downID := req.StreamID
@@ -308,12 +288,12 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		if m.bridge != nil {
 			defer m.bridge.inFlight.Done()
 		}
-		m.pumpStreamContext(ctx, downID, id, res, req.outputFormat())
+		m.pumpStreamContext(ctx, downID, id, res, conv)
 	}()
 	return okEnvelope(struct{}{}), nil
 }
 
-func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID string, res *resolvedExecution, sourceFormat string) {
+func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID string, res *resolvedExecution, conv streamConverter) {
 	var closeOnce sync.Once
 	closeStreams := func(downErrMsg string) {
 		closeOnce.Do(func() {
@@ -335,7 +315,6 @@ func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID stri
 	}()
 	defer func() { close(watchDone); <-watchExited }()
 
-	conv := newStreamConverter(res.rec.Protocol, sourceFormat, &res.tools)
 	var (
 		total          int64
 		upstreamClosed bool
@@ -363,12 +342,12 @@ func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID stri
 			return
 		}
 		events, done, convErr := conv.Feed(payload)
-		if convErr != nil {
-			closeStreams(errclass.Redact(convErr.Message))
-			return
-		}
 		if emitErr := m.emitAll(downID, events); emitErr != nil {
 			closeStreams(errclass.Redact(emitErr.Error()))
+			return
+		}
+		if convErr != nil {
+			closeStreams(errclass.Redact(convErr.Message))
 			return
 		}
 		convDone = done
@@ -379,12 +358,13 @@ func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID stri
 	debugTrace("executor stream loop end convDone=%t upstreamClosed=%t", convDone, upstreamClosed)
 	if !convDone && upstreamClosed {
 		events, finishErr := conv.Finish()
+		if emitErr := m.emitAll(downID, events); emitErr != nil {
+			closeStreams(errclass.Redact(emitErr.Error()))
+			return
+		}
 		if finishErr != nil {
 			closeStreams(errclass.Redact(finishErr.Message))
 			return
-		}
-		if emitErr := m.emitAll(downID, events); emitErr != nil {
-			closeStreams(errclass.Redact(emitErr.Error()))
 		}
 	}
 }

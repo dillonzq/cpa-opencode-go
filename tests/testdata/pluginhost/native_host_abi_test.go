@@ -18,11 +18,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -827,6 +832,183 @@ func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 						})
 					}
 				}
+			}
+		}
+	}
+}
+
+// Exercise the actual HTTP handlers after loading the native plugin. Chat
+// handlers add their own SSE framing; Messages/Responses accept complete frames.
+func TestOpenCodeNativeHTTPStreams(t *testing.T) {
+	var upstreamRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" {
+			io.WriteString(w, `{"data":[{"id":"glm-5.3"},{"id":"minimax-m3"},{"id":"gpt-5.6-luna"}]}`)
+			return
+		}
+
+		upstreamRequests.Add(1)
+		requestBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "invalid test request", 400)
+			return
+		}
+		mode := "ok"
+		for _, failureMode := range []string{"stream-error", "stream-eof", "stream-empty-error"} {
+			if strings.Contains(string(requestBody), failureMode) {
+				mode = failureMode
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		frame := func(name, data string) {
+			if name != "" {
+				io.WriteString(w, "event: "+name+"\n")
+			}
+			io.WriteString(w, "data: "+data+"\n\n")
+		}
+		afterText := func() bool {
+			w.(http.Flusher).Flush()
+			if mode == "stream-eof" {
+				return true
+			}
+			if mode == "ok" {
+				return false
+			}
+			message := "offline stream failure"
+			if mode == "stream-empty-error" {
+				message = ""
+			}
+			name := "error"
+			payload := map[string]any{"type": "error"}
+			if r.URL.Path == "/responses" {
+				payload["message"], payload["status_code"] = message, 500
+			} else {
+				payload["error"] = map[string]any{"type": "api_error", "message": message, "code": 500}
+				if r.URL.Path == "/chat/completions" {
+					name = ""
+					delete(payload, "type")
+				}
+			}
+			data, _ := json.Marshal(payload)
+			frame(name, string(data))
+			return true
+		}
+		switch r.URL.Path {
+		case "/chat/completions":
+			frame("", `{"id":"r","model":"glm-5.3","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}`)
+			if afterText() {
+				return
+			}
+			frame("", `{"id":"r","model":"glm-5.3","choices":[{"delta":{},"finish_reason":"stop"}]}`)
+			frame("", "[DONE]")
+		case "/messages":
+			frame("message_start", `{"type":"message_start","message":{"id":"r","model":"minimax-m3"}}`)
+			frame("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
+			frame("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)
+			if afterText() {
+				return
+			}
+			frame("content_block_stop", `{"type":"content_block_stop","index":0}`)
+			frame("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`)
+			frame("message_stop", `{"type":"message_stop"}`)
+		case "/responses":
+			frame("response.created", `{"type":"response.created","response":{"id":"r","model":"gpt-5.6-luna"}}`)
+			frame("response.output_item.added", `{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg","role":"assistant","content":[]}}`)
+			frame("response.output_text.delta", `{"type":"response.output_text.delta","item_id":"msg","output_index":0,"content_index":0,"delta":"hello"}`)
+			if afterText() {
+				return
+			}
+			frame("response.completed", `{"type":"response.completed","response":{"id":"r","model":"gpt-5.6-luna","object":"response","status":"completed","output":[{"type":"message","id":"msg","role":"assistant","content":[{"type":"output_text","text":"hello"}]}]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	host := New()
+	host.runtimeConfig = &config.Config{AuthDir: t.TempDir()}
+	file := pluginFile{ID: "cpa-opencode-go", Path: os.Getenv("CPA_NATIVE_PLUGIN")}
+	native, err := defaultPluginLoader().Open(file, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newGuardedPluginClient(native)
+	defer client.Shutdown()
+	plug, err := registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginRegister, []byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nmodels-dev:\n  enabled: false\n", upstream.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := []capabilityRecord{{id: file.ID, path: file.Path, version: plug.Metadata.Version, meta: plug.Metadata, plugin: plug}}
+	host.mu.Lock()
+	host.rebuildActivePluginMapsLocked(records)
+	host.snapshot.Store(&Snapshot{enabled: true, records: records, quotaSupportedProviders: make(map[string][]string)})
+	host.mu.Unlock()
+	manager := coreauth.NewManager(nil, nil, nil)
+	host.RegisterModels(context.Background(), registry.GetGlobalRegistry())
+	host.RegisterExecutors(manager, registry.GetGlobalRegistry())
+	auth, err := manager.Register(context.Background(), &coreauth.Auth{ID: "offline-http", Provider: "opencode-go", Attributes: map[string]string{"api_key": "offline-test-key"}, Metadata: map[string]any{"disable_cooling": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := []*registry.ModelInfo{}
+	for _, model := range []string{"glm-5.3", "minimax-m3", "gpt-5.6-luna"} {
+		models = append(models, &registry.ModelInfo{ID: "opencode-go/" + model, Object: "model", OwnedBy: "opencode-go"})
+	}
+	registry.GetGlobalRegistry().RegisterClient(auth.ID, "opencode-go", models)
+	defer registry.GetGlobalRegistry().UnregisterClient(auth.ID)
+	// Enable safe pre-first-byte retries; these cases must still call upstream once.
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{Streaming: sdkconfig.StreamingConfig{BootstrapRetries: 1}}, manager)
+	base.SetModelRouterHost(host)
+	router := gin.New()
+	router.POST("/v1/chat/completions", openai.NewOpenAIAPIHandler(base).ChatCompletions)
+	router.POST("/v1/messages", claude.NewClaudeCodeAPIHandler(base).ClaudeMessages)
+	router.POST("/v1/responses", openai.NewOpenAIResponsesAPIHandler(base).Responses)
+
+	for _, model := range []string{"glm-5.3", "minimax-m3", "gpt-5.6-luna"} {
+		for _, endpoint := range []string{"chat/completions", "messages", "responses"} {
+			for _, mode := range []string{"ok", "stream-error", "stream-eof", "stream-empty-error"} {
+				t.Run(model+"/"+endpoint+"/"+mode, func(t *testing.T) {
+					before := upstreamRequests.Load()
+					body := fmt.Sprintf(`{"model":"opencode-go/%s","stream":true,"max_tokens":16,"messages":[{"role":"user","content":%q}]}`, model, mode)
+					if endpoint == "responses" {
+						body = fmt.Sprintf(`{"model":"opencode-go/%s","stream":true,"input":%q}`, model, mode)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					req := httptest.NewRequest("POST", "/v1/"+endpoint, strings.NewReader(body)).WithContext(ctx)
+					req.Header.Set("Content-Type", "application/json")
+					recorder := httptest.NewRecorder()
+					router.ServeHTTP(recorder, req)
+					wire := recorder.Body.String()
+					if recorder.Code != 200 || !strings.Contains(wire, "hello") || strings.Contains(wire, "data: data:") {
+						t.Fatalf("HTTP %d: %s", recorder.Code, wire)
+					}
+					if upstreamRequests.Load()-before != 1 {
+						t.Fatalf("stream retried after output: %s", wire)
+					}
+					if mode != "ok" {
+						if strings.Contains(wire, "[DONE]") || strings.Contains(wire, `"finish_reason":"`) || strings.Contains(wire, "event: message_stop") || strings.Contains(wire, "event: response.completed") || strings.Contains(wire, "event: response.incomplete") {
+							t.Fatalf("failed stream reported successful termination: %s", wire)
+						}
+						errorPos := strings.Index(wire, `"error"`)
+						if errorPos < strings.Index(wire, "hello") {
+							t.Fatalf("body not followed by an error: %s", wire)
+						}
+						if mode == "stream-error" && !strings.Contains(wire, "offline stream failure") {
+							t.Fatalf("upstream error lost: %s", wire)
+						}
+						return
+					}
+					terminal := "event: response.completed"
+					if endpoint == "chat/completions" {
+						terminal = "data: [DONE]"
+					} else if endpoint == "messages" {
+						terminal = "event: message_stop"
+					}
+					if strings.Count(wire, terminal) != 1 {
+						t.Fatalf("terminal count: %s", wire)
+					}
+				})
 			}
 		}
 	}

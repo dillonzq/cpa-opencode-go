@@ -15,7 +15,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
-	"github.com/dillonzq/cpa-opencode-go/internal/adapter/shared"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 )
@@ -1369,11 +1368,11 @@ func TestExecuteTransportErrorClassified(t *testing.T) {
 // White-box coverage for seams unreachable through full executes.
 func TestConvertNonStreamSeamBranches(t *testing.T) {
 	if _, eErr := convertNonStream(catalog.Route("weird"), "openai", http.StatusOK, nil); eErr == nil ||
-		eErr.Class != errclass.ClassTranslation {
+		eErr.Class != errclass.ClassUnsupported {
 		t.Fatalf("unknown route = %v", eErr)
 	}
 	if _, eErr := buildUpstreamRequest(catalog.Route("weird"), "m", "openai", nil, nil); eErr == nil ||
-		eErr.Class != errclass.ClassTranslation {
+		eErr.Class != errclass.ClassUnsupported {
 		t.Fatalf("unknown route build = %v", eErr)
 	}
 	if got := catalog.JoinUpstreamURL("https://gw.test/", "/v1/responses"); got != "https://gw.test/responses" {
@@ -1402,10 +1401,10 @@ func TestConvertNonStreamSeamBranches(t *testing.T) {
 		t.Fatalf("malformed passthrough = %v", eErr)
 	}
 	long := strings.Repeat("x", 300)
-	if got := shared.RedactedSnippet(long); got != long[:256]+"..." {
+	if got := errclass.RedactedSnippet(long); got != long[:256]+"..." {
 		t.Fatalf("snippet truncation = %d chars", len(got))
 	}
-	if got := shared.RedactedSnippet("short"); got != "short" {
+	if got := errclass.RedactedSnippet("short"); got != "short" {
 		t.Fatalf("short snippet = %q", got)
 	}
 }
