@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dillonzq/cpa-opencode-go/internal/adapter/responses"
+	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -213,7 +213,7 @@ func TestNativeImageFileIDParticipatesInSessionHash(t *testing.T) {
 	bodyA := []byte(`{"input":[{"role":"user","content":[{"type":"input_image","file_id":"image_file_a"}]}]}`)
 	bodyB := []byte(`{"input":[{"role":"user","content":[{"type":"input_image","file_id":"image_file_b"}]}]}`)
 	for _, body := range [][]byte{bodyA, bodyB} {
-		if _, eErr := responses.BuildRequest("gpt-5.6-luna", "openai-response", body, nil); eErr != nil {
+		if _, eErr := buildUpstreamRequest(catalog.RouteResponses, "gpt-5.6-luna", "openai-response", body, nil); eErr != nil {
 			t.Fatal("native adapter rejected image file reference")
 		}
 	}

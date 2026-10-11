@@ -1,3 +1,22 @@
+# v0.1.3
+
+Unreleased.
+
+- Use api-translator v0.2.0 for requests, regular responses, and SSE across all
+  three protocols. Preserve native OpenCode Go request cleaning, model suffix
+  precedence, sessions, authentication, and CPA transport lifecycle.
+- Support representable structured output, tool strict, URL citations, hosted
+  search between Responses and Messages, and cross-protocol custom apply_patch.
+  Actual target-model support remains upstream-dependent.
+- Restore native non-GPT Responses namespace/custom identities through shared
+  request state; reject identity collisions. Adapt complete library SSE frames
+  to CPA's bare Chat payload contract without duplicate DONE.
+- Handle multi-line SSE and preserve completed events returned alongside a
+  conversion error. Unrepresentable output and failed/non-terminal Responses
+  responses fail explicitly rather than being treated as successful conversion.
+- Keep stream errors with empty or whitespace-only upstream messages as errors;
+  supply a fallback message so CPA does not mistake error closure for success.
+
 # v0.1.2
 
 Patch release for **cpa-opencode-go**, based on v0.1.1 and requiring

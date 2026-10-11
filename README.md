@@ -63,6 +63,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
   - OpenAI Responses (`/v1/responses`)
 - **Thinking & Reasoning Support**: Preserves native reasoning controls and uses fixed effort/budget conversion across formats. Capability metadata does not filter or clamp requests; upstream validates controls. Preserves explicit off and Claude adaptive effort; cross-format auto uses target defaults where no wire equivalent exists. Controls that cannot be converted fail explicitly.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs, optionally retains the last successful catalog during outages, and supports explicit model declarations and custom route overrides.
+- **Translation library**: pinned [api-translator v0.2.0](https://github.com/dillonzq/api-translator/tree/v0.2.0), with structured output, tool strict, representable URL citations, and Responses ↔ Messages hosted search. Target model support remains upstream-dependent. Native upstream cleaning and CPA streaming framing stay in the plugin.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
 - **Native quotas**: Rolling, weekly, and monthly quotas use CLIProxyAPI's generic quota endpoints and the selected credential. The separate plugin page is removed.
 

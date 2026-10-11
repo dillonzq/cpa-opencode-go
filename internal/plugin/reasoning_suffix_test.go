@@ -11,9 +11,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
+	"github.com/dillonzq/api-translator/thinking"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
-	"github.com/dillonzq/cpa-opencode-go/internal/thinking"
 )
 
 // upstreamRequestBody decodes the JSON body of the last bridged upstream call.
