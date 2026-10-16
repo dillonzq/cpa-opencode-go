@@ -238,8 +238,16 @@ func normalizeNativeResponses(body []byte, state *translator.RequestState) ([]by
 					return nil, errclass.Translation("input must contain objects")
 				}
 				switch sessionString(item["type"]) {
-				case "reasoning", "compaction":
+				case "compaction":
 					continue
+				case "reasoning":
+					// Native reasoning is model history, not disposable metadata.
+					// Remove only foreign encrypted state; preserve original content
+					// and summaries independently, without promoting one to the other.
+					delete(item, "encrypted_content")
+					if !hasContent(item["content"]) && !hasContent(item["summary"]) {
+						continue
+					}
 				case "additional_tools":
 					if !hasContent(item["tools"]) {
 						return nil, errclass.Translation("additional_tools requires a tools array")

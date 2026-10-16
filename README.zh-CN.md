@@ -76,6 +76,8 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 ## 请求行为
 
+- 未发布变更：非 GPT 原生 Responses 请求分别保留原始 reasoning content 和 summary，仍清理外来加密状态及 compaction；summary 无法补回缺失的原始思考。
+
 - 跨协议普通和流式响应保留可读推理，映射为 `reasoning_content`、`thinking` 或 Responses reasoning summary；其他字段的映射与丢弃详见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 按 `SourceFormat` 执行 CLIProxyAPI 的有效 `Payload`，保留拦截器修改。只有缺省或 null Payload 的旧调用才回退到 `OriginalRequest`；显式空 Payload 按空输入校验；`Format` 决定输出协议。
 - 支持 CLIProxyAPI 的模型名思考后缀（`opencode-go/glm-5.2(high)`）：后缀只用于选择推理强度，不参与目录路由，并按 CPA 的后缀优先级取代请求体自带参数；数字值在 Messages 上保留精确 budget。无法识别的值只剥离后缀，与 CPA 行为一致。各协议字段映射与已知限制见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
