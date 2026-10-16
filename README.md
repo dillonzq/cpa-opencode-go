@@ -74,6 +74,8 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 
 ## Request behavior
 
+- Unreleased: native non-GPT Responses requests preserve original reasoning content and summaries independently. Foreign encrypted state and compaction are still removed; summaries cannot reconstruct missing original reasoning.
+
 - Cross-protocol regular and streaming responses preserve visible reasoning as `reasoning_content`, `thinking`, or Responses reasoning summaries. See the [protocol conversion guide](docs/protocol-conversion.md) for mappings and fields that are omitted.
 - Execute CLIProxyAPI's effective `Payload` in `SourceFormat`, including interceptor changes. Only omitted/null payloads fall back to `OriginalRequest`; an explicit empty payload is validated as empty input; `Format` selects the output protocol.
 - Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`): the suffix is stripped for catalog routing and its reasoning control replaces the body's own control with CPA's suffix priority — including a numeric value, which keeps its exact budget on Messages. Unrecognized values strip the suffix only, matching CPA. See the [protocol conversion guide](docs/protocol-conversion.md) for the per-protocol mapping and known limitations.
