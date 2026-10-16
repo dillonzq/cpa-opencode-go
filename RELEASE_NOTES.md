@@ -1,3 +1,17 @@
+# v0.2.1
+
+Unreleased patch for **cpa-opencode-go**.
+
+## Fixes
+
+- Preserve original reasoning content and summaries in native non-GPT Responses
+  request history, including DeepSeek tool-call continuations. Cleanup now removes
+  foreign encrypted state and compaction without deleting readable reasoning.
+  Summary-only history is preserved without inventing missing original content.
+
+The api-translator dependency remains v0.2.0; cross-protocol reasoning replay
+requires the separate translator fix and a subsequent dependency upgrade.
+
 # v0.2.0
 
 Minor release for **cpa-opencode-go**, based on v0.1.2 and requiring
