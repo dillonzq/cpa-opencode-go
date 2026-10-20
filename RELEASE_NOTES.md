@@ -1,3 +1,13 @@
+# v0.2.2
+
+## Fixes
+
+- Normalize DeepSeek image `detail: "original"` to the equivalent `"high"`
+  before sending Chat Completions or Responses requests through OpenCode Go.
+  Covers historical messages and tool output images in regular and streaming
+  requests, preventing repeated gateway validation errors after viewing images.
+  Other models, detail values, tool schemas, and argument strings are unchanged.
+
 # v0.2.1
 
 Patch release for **cpa-opencode-go**, based on v0.2.0 and requiring

@@ -25,6 +25,8 @@ The library's same-protocol request conversion only rewrites model. Before that,
 
 The GPT branch retains the case-insensitive `gpt` upstream ID prefix check. Custom input uses a string parameter wrapper; non-string historical custom input fails. Duplicate declarations of the same identity keep the first; flattened identity collisions fail. Upstream acceptance of native hosted tools remains model-dependent.
 
+After request conversion, upstream IDs with a case-insensitive `deepseek` prefix receive an additional OpenCode Go compatibility pass: image `detail: "original"` becomes `"high"` in Chat `messages[].content[].image_url` and Responses message content and tool output `input_image` parts. All history is covered, including `function_call_output` and `custom_tool_call_output` images. Tool schemas, argument strings, other detail values, and other models are unchanged. [DeepSeek documents `high` and `original` as equivalent](https://api-docs.deepseek.com/zh-cn/guides/vision/); this works around gateway validation rather than a direct DeepSeek API restriction. Cross-protocol media conversion still follows the library's mappings and may omit image detail.
+
 ## Cross-protocol behavior
 
 | Content | Behavior and limits |
