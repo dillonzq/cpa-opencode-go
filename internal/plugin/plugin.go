@@ -209,6 +209,8 @@ type registrationResult struct {
 	Capabilities  capabilities       `json:"capabilities"`
 }
 
+// pluginConfigFields describes settings that management clients can discover
+// through the registration metadata.
 func pluginConfigFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
 		{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Model declarations and metadata overrides using CPA provider fields: name, display-name, max-context-length, input-modalities, output-modalities, thinking; plus description and max-tokens. New IDs use family routing or route-overrides."},
@@ -232,6 +234,11 @@ func pluginConfigFields() []pluginapi.ConfigField {
 			Name:        "model-prefix",
 			Type:        pluginapi.ConfigFieldTypeObject,
 			Description: "Client-facing model ID prefix configuration (`enabled: bool`, `value: string`).",
+		},
+		{
+			Name:        "excluded-models",
+			Type:        pluginapi.ConfigFieldTypeArray,
+			Description: "Upstream model IDs to exclude without the public prefix; supports case-insensitive exact and * wildcard patterns.",
 		},
 		{
 			Name:        "catalog",

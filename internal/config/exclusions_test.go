@@ -5,6 +5,8 @@ import (
 	"testing"
 )
 
+// TestLoadExcludedModels verifies pattern loading and the default that leaves
+// all models eligible when no exclusions are configured.
 func TestLoadExcludedModels(t *testing.T) {
 	c, err := Load([]byte(withKey + "excluded-models: [glm-5.2, 'gpt-*', '*preview*']\n"))
 	if err != nil {
@@ -21,6 +23,8 @@ func TestLoadExcludedModels(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsEmptyExcludedModel ensures blank patterns and invalid YAML
+// structures produce configuration errors.
 func TestLoadRejectsEmptyExcludedModel(t *testing.T) {
 	for _, yaml := range []string{"excluded-models: ['']\n", "excluded-models: ['  ']\n"} {
 		_, err := Load([]byte(withKey + yaml))
