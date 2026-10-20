@@ -1,6 +1,6 @@
 # v0.2.1
 
-Unreleased patch for **cpa-opencode-go**.
+Unreleased changes for **cpa-opencode-go**, using **api-translator v0.3.0**.
 
 ## Fixes
 
@@ -8,9 +8,37 @@ Unreleased patch for **cpa-opencode-go**.
   request history, including DeepSeek tool-call continuations. Cleanup now removes
   foreign encrypted state and compaction without deleting readable reasoning.
   Summary-only history is preserved without inventing missing original content.
+  Reasoning with absent, null, or empty content and summary arrays is removed.
+- Preserve original reasoning across protocol requests with assistant text,
+  parallel tool calls, and separate tool rounds. Synthesized ordinary Responses
+  output, streamed completed items, and final output retain replayable
+  `reasoning_text` content alongside display summaries.
+- Keep completed stream events emitted before a conversion error, then fail the
+  stream without a successful completion. Stricter malformed-JSON validation
+  rejects shapes that previously lost fields silently.
 
-The api-translator dependency remains v0.2.0; cross-protocol reasoning replay
-requires the separate translator fix and a subsequent dependency upgrade.
+## Protocol capabilities
+
+- Map representable file inputs across Chat Completions, Responses, and Messages;
+  audio/video inputs map between Chat and Responses. Messages supports PDF,
+  UTF-8 plain text, and URL documents; unsupported media fails explicitly.
+- Adapt Responses local shell declarations, choice, history, and results to
+  function tools. Non-GPT native Responses normalization enables the same path;
+  ordinary and streaming Responses output restores shell calls using the
+  execution's shared state. The plugin does not execute commands.
+- Retain representable message, block, and tool `cache_control` hints when
+  converting Chat/Responses to Messages, including TTL and extension fields.
+  No cache breakpoints are added automatically.
+
+## Compatibility
+
+Original reasoning cannot be recovered from summaries. Chat/Responses requests
+converted to Messages omit unsigned thinking history by default; native Messages
+history and response display are preserved. The plugin keeps the library's
+`AllowUnsignedThinking` option disabled. Summary-only, opaque, or unsigned
+reasoning losses are collected under the existing allow loss policy.
+Configuration and CLIProxyAPI/Go requirements are unchanged. See the protocol
+guides for direction-specific media, shell, cache, and reasoning limits.
 
 # v0.2.0
 

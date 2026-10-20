@@ -59,7 +59,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 ## 功能
 
 - **统一服务商命名空间**：默认使用 `opencode-go` 模型前缀，例如 `opencode-go/glm-5.2`、`opencode-go/qwen3.7-max` 和 `opencode-go/gpt-5.6-luna`。
-- **转换实现**：固定使用 [api-translator v0.2.0](https://github.com/dillonzq/api-translator/tree/v0.2.0)，支持结构化输出、工具 strict、可表示的 URL 引用和 Responses ↔ Messages 托管搜索；目标模型支持范围仍由上游验证。插件保留原生上游清洗和 CPA 流式包装适配。
+- **转换实现**：固定使用 [api-translator v0.3.0](https://github.com/dillonzq/api-translator/tree/v0.3.0)，支持推理历史回放、媒体输入、本地 shell 适配、缓存提示、结构化输出、工具 strict、可表示的 URL 引用和 Responses ↔ Messages 托管搜索；目标模型支持范围仍由上游验证。插件保留原生上游清洗和 CPA 流式包装适配。
 - **多协议转换**：转换以下客户端协议与上游协议之间的请求及流式响应：
   - OpenAI Chat Completions（`/v1/chat/completions`）
   - Anthropic Messages（`/v1/messages`）
@@ -76,9 +76,9 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 ## 请求行为
 
-- 未发布变更：非 GPT 原生 Responses 请求分别保留原始 reasoning content 和 summary，仍清理外来加密状态及 compaction；summary 无法补回缺失的原始思考。
-
-- 跨协议普通和流式响应保留可读推理，映射为 `reasoning_content`、`thinking` 或 Responses reasoning summary；其他字段的映射与丢弃详见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
+- 未发布变更：非 GPT 原生 Responses 请求分别保留原始 reasoning content 和 summary，清理外来加密状态、content 和 summary 均缺省/null/空数组的 reasoning 项及 compaction；summary 无法补回缺失的原始思考。
+- 跨协议请求保留原始 reasoning 与 assistant 正文、工具调用的关联。合成的 Responses 普通与流式完成项包含可回传的 `content`（`reasoning_text`）及展示 summary。转入 Messages 默认省略无签名 thinking 历史；原生 Messages 历史保持保留。
+- 跨协议普通和流式响应保留可读推理，映射为 `reasoning_content`、`thinking` 或 Responses reasoning content 与展示 summary；其他字段的映射与丢弃详见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 按 `SourceFormat` 执行 CLIProxyAPI 的有效 `Payload`，保留拦截器修改。只有缺省或 null Payload 的旧调用才回退到 `OriginalRequest`；显式空 Payload 按空输入校验；`Format` 决定输出协议。
 - 支持 CLIProxyAPI 的模型名思考后缀（`opencode-go/glm-5.2(high)`）：后缀只用于选择推理强度，不参与目录路由，并按 CPA 的后缀优先级取代请求体自带参数；数字值在 Messages 上保留精确 budget。无法识别的值只剥离后缀，与 CPA 行为一致。各协议字段映射与已知限制见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 每次上游 HTTP 调用独立持有宿主 operation 与请求 callback scope。客户端断开、scope 结束、`request-timeout` 和目录刷新停止会取消实际 HTTP；流式超时覆盖建立连接与消费流的总时长。

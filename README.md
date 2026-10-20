@@ -63,7 +63,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
   - OpenAI Responses (`/v1/responses`)
 - **Thinking & Reasoning Support**: Preserves native reasoning controls and uses fixed effort/budget conversion across formats. Capability metadata does not filter or clamp requests; upstream validates controls. Preserves explicit off and Claude adaptive effort; cross-format auto uses target defaults where no wire equivalent exists. Controls that cannot be converted fail explicitly.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs, optionally retains the last successful catalog during outages, and supports explicit model declarations and custom route overrides.
-- **Translation library**: pinned [api-translator v0.2.0](https://github.com/dillonzq/api-translator/tree/v0.2.0), with structured output, tool strict, representable URL citations, and Responses ↔ Messages hosted search. Target model support remains upstream-dependent. Native upstream cleaning and CPA streaming framing stay in the plugin.
+- **Translation library**: pinned [api-translator v0.3.0](https://github.com/dillonzq/api-translator/tree/v0.3.0), with reasoning history replay, media input, local shell adaptation, cache hints, structured output, tool strict, representable URL citations, and Responses ↔ Messages hosted search. Target model support remains upstream-dependent. Native upstream cleaning and CPA streaming framing stay in the plugin.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
 - **Native quotas**: Rolling, weekly, and monthly quotas use CLIProxyAPI's generic quota endpoints and the selected credential. The separate plugin page is removed.
 
@@ -74,9 +74,9 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 
 ## Request behavior
 
-- Unreleased: native non-GPT Responses requests preserve original reasoning content and summaries independently. Foreign encrypted state and compaction are still removed; summaries cannot reconstruct missing original reasoning.
-
-- Cross-protocol regular and streaming responses preserve visible reasoning as `reasoning_content`, `thinking`, or Responses reasoning summaries. See the [protocol conversion guide](docs/protocol-conversion.md) for mappings and fields that are omitted.
+- Unreleased: native non-GPT Responses requests preserve original reasoning content and summaries independently. Foreign encrypted state, reasoning items with absent/null/empty content and summary arrays, and compaction are removed; summaries cannot reconstruct missing original reasoning.
+- Cross-protocol requests retain original reasoning with its assistant text and tool calls. Synthesized Responses regular and streaming completion items carry replayable `content` (`reasoning_text`) alongside display summaries. Conversion to Messages omits unsigned thinking history by default; native Messages history is preserved.
+- Cross-protocol regular and streaming responses preserve visible reasoning as `reasoning_content`, `thinking`, or Responses reasoning content and display summaries. See the [protocol conversion guide](docs/protocol-conversion.md) for mappings and fields that are omitted.
 - Execute CLIProxyAPI's effective `Payload` in `SourceFormat`, including interceptor changes. Only omitted/null payloads fall back to `OriginalRequest`; an explicit empty payload is validated as empty input; `Format` selects the output protocol.
 - Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`): the suffix is stripped for catalog routing and its reasoning control replaces the body's own control with CPA's suffix priority — including a numeric value, which keeps its exact budget on Messages. Unrecognized values strip the suffix only, matching CPA. See the [protocol conversion guide](docs/protocol-conversion.md) for the per-protocol mapping and known limitations.
 - Each upstream HTTP call owns a host operation and its request callback scope. Client disconnection, scope closure, `request-timeout`, and stopped catalog refreshes cancel actual HTTP work. The timeout covers stream opening and consumption together.
