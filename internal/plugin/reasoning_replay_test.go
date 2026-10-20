@@ -45,8 +45,8 @@ func TestNativeResponsesReasoningReplay(t *testing.T) {
 	}
 }
 
-// TestNativeResponsesEmptyReasoning drops empty history after encrypted state
-// is removed, while retaining nonempty parts and the GPT passthrough policy.
+// TestNativeResponsesEmptyReasoning drops history without meaningful typed
+// reasoning, while preserving retained items and the GPT passthrough policy.
 func TestNativeResponsesEmptyReasoning(t *testing.T) {
 	for _, tc := range []struct {
 		name, fields string
@@ -59,8 +59,24 @@ func TestNativeResponsesEmptyReasoning(t *testing.T) {
 		{"empty both", `,"content": [ ],"summary":[]`, false},
 		{"null content empty summary", `,"content":null,"summary":[]`, false},
 		{"empty content null summary", `,"content":[],"summary":null`, false},
+		{"null parts", `,"content":[null],"summary":[null]`, false},
+		{"scalar parts", `,"content":[""],"summary":[42,false]`, false},
+		{"object fields", `,"content":{"type":"reasoning_text","text":"raw"},"summary":{}`, false},
+		{"scalar fields", `,"content":"raw","summary":true`, false},
+		{"missing type", `,"content":[{"text":"raw"}],"summary":[{"text":"display"}]`, false},
+		{"wrong types", `,"content":[{"type":"summary_text","text":"display"}],"summary":[{"type":"reasoning_text","text":"raw"}]`, false},
+		{"unknown type", `,"content":[{"type":"future","text":"unknown"}]`, false},
+		{"missing text", `,"content":[{"type":"reasoning_text"}],"summary":[{"type":"summary_text"}]`, false},
+		{"null text", `,"content":[{"type":"reasoning_text","text":null}],"summary":[{"type":"summary_text","text":null}]`, false},
+		{"invalid text", `,"content":[{"type":"reasoning_text","text":42}],"summary":[{"type":"summary_text","text":false}]`, false},
+		{"empty text", `,"content":[{"type":"reasoning_text","text":""}],"summary":[{"type":"summary_text","text":""}]`, false},
+		{"whitespace text", `,"content":[{"type":"reasoning_text","text":" \t\n"}],"summary":[{"type":"summary_text","text":"\u3000\u00a0"}]`, false},
 		{"content only", `,"content":[{"type":"reasoning_text","text":" raw "}],"summary":[]`, true},
 		{"summary only", `,"content":[],"summary":[{"type":"summary_text","text":"display"}]`, true},
+		{"unicode content", `,"content":[{"type":"reasoning_text","text":" \t思考🙂\n","extension":9007199254740993}]`, true},
+		{"later readable part", `,"content":[{"type":"reasoning_text","text":" "},{"type":"reasoning_text","text":"raw"}]`, true},
+		{"readable content blank summary", `,"content":[{"type":"reasoning_text","text":"raw"}],"summary":[{"type":"summary_text","text":" "}]`, true},
+		{"blank content readable summary", `,"content":[{"type":"reasoning_text","text":" "}],"summary":[{"type":"summary_text","text":"display"}]`, true},
 	} {
 		for _, model := range []string{"deepseek-v4.1-flash", "GPT-6"} {
 			t.Run(tc.name+"/"+model, func(t *testing.T) {

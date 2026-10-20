@@ -217,11 +217,22 @@ func normalizeNativeChat(body []byte) ([]byte, *errclass.Error) {
 	return out, nil
 }
 
-// hasReasoningParts excludes absent, null, and empty reasoning arrays without
-// decoding or rewriting the individual parts.
-func hasReasoningParts(raw json.RawMessage) bool {
-	var parts []json.RawMessage
-	return json.Unmarshal(raw, &parts) == nil && len(parts) > 0
+// hasReasoningParts requires non-whitespace text of the expected part type.
+// It only probes the parts; retained history keeps its original JSON fields.
+func hasReasoningParts(raw json.RawMessage, wantType string) bool {
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return false
+	}
+	for _, part := range parts {
+		if part.Type == wantType && strings.TrimSpace(part.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeNativeResponses cleans foreign state while preserving readable
@@ -254,7 +265,7 @@ func normalizeNativeResponses(body []byte, state *translator.RequestState) ([]by
 					// Remove only foreign encrypted state; preserve original content
 					// and summaries independently, without promoting one to the other.
 					delete(item, "encrypted_content")
-					if !hasReasoningParts(item["content"]) && !hasReasoningParts(item["summary"]) {
+					if !hasReasoningParts(item["content"], "reasoning_text") && !hasReasoningParts(item["summary"], "summary_text") {
 						continue
 					}
 				case "additional_tools":
