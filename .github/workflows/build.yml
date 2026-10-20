@@ -208,11 +208,16 @@ jobs:
     name: Build freebsd/${{ matrix.goarch }}
     needs: test
     runs-on: ubuntu-24.04
+    env:
+      FREEBSD_VERSION: '14.4'
     strategy:
       fail-fast: false
       matrix:
         include:
           - goarch: amd64
+            cc_arch: x86_64
+            # From the release's amd64/amd64/14.4-RELEASE/MANIFEST.
+            base_sha256: 769f60a6eea2938ad6b7943cfbcc17dfaf7d1f7ba59a32b869a00349302df853
     defaults:
       run:
         shell: bash
@@ -239,38 +244,42 @@ jobs:
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
           echo "ARCHIVE_NAME=${PLUGIN_ID}_${VERSION}_freebsd_${{ matrix.goarch }}.zip" >> "${GITHUB_ENV}"
 
-      - name: Install FreeBSD cross-build dependencies
+      - name: Prepare FreeBSD cross-build sysroot
+        timeout-minutes: 15
+        env:
+          FREEBSD_ARCH: ${{ matrix.goarch }}
+          FREEBSD_BASE_SHA256: ${{ matrix.base_sha256 }}
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y clang lld wget
-          cat << 'EOF' | sudo tee /usr/local/bin/wget >/dev/null
-          #!/bin/bash
-          args=()
-          for a in "$@"; do
-            if [[ "$a" == *"download.freebsd.org/releases/"*"/14.3-RELEASE/base.txz"* ]]; then
-              args+=("${a/download.freebsd.org\/releases/archive.freebsd.org\/old-releases}")
-            else
-              args+=("$a")
-            fi
-          done
-          exec /usr/bin/wget "${args[@]}"
-          EOF
-          sudo chmod +x /usr/local/bin/wget
+          sudo apt-get install -y clang lld
+          base_archive="${RUNNER_TEMP}/freebsd-base.txz"
+          sysroot="${RUNNER_TEMP}/freebsd-sysroot"
+          curl --fail --location --retry 3 --retry-all-errors \
+            --connect-timeout 20 --max-time 180 \
+            --output "${base_archive}" \
+            "https://download.freebsd.org/releases/${FREEBSD_ARCH}/${FREEBSD_ARCH}/${FREEBSD_VERSION}-RELEASE/base.txz"
+          printf '%s  %s\n' "${FREEBSD_BASE_SHA256}" "${base_archive}" | sha256sum --check
+          mkdir -p "${sysroot}"
+          tar --extract --xz --file "${base_archive}" --directory "${sysroot}" \
+            --no-same-owner ./usr/include ./usr/lib ./lib
+          echo "FREEBSD_SYSROOT=${sysroot}" >> "${GITHUB_ENV}"
 
       - name: Build FreeBSD shared library
         timeout-minutes: 45
-        uses: go-cross/cgo-actions@v1
         env:
-          GOFLAGS: -trimpath -buildmode=c-shared
-        with:
-          dir: .
-          packages: .
-          targets: freebsd-${{ matrix.goarch }}
-          out-dir: dist/freebsd-${{ matrix.goarch }}
-          output: ${{ env.PLUGIN_ID }}.so
-          flags: -ldflags=-s -w
-          x-flags: github.com/dillonzq/cpa-opencode-go/internal/plugin.pluginVersion=${{ steps.release_metadata.outputs.version }}
+          CGO_ENABLED: '1'
+          GOOS: freebsd
+          GOARCH: ${{ matrix.goarch }}
+          FREEBSD_CC_ARCH: ${{ matrix.cc_arch }}
+          CGO_LDFLAGS: -fuse-ld=lld
+        run: |
+          set -euo pipefail
+          export CC="clang --target=${FREEBSD_CC_ARCH}-unknown-freebsd${FREEBSD_VERSION} --sysroot=${FREEBSD_SYSROOT}"
+          mkdir -p "dist/freebsd-${GOARCH}"
+          go build -trimpath -buildmode=c-shared \
+            -ldflags "-s -w -X github.com/dillonzq/cpa-opencode-go/internal/plugin.pluginVersion=${VERSION}" \
+            -o "dist/freebsd-${GOARCH}/${PLUGIN_ID}.so" .
 
       - name: Package plugin
         run: |
