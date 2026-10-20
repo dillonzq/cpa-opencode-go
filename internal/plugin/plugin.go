@@ -339,12 +339,13 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	// fetched the old URL with the new config's keys forever (F5). The NEW
 	// manager is adopted unconditionally; when a previous snapshot exists
 	// AND the NEW config keeps stale-while-unavailable enabled, it is
-	// seeded into the new one, so serving is unchanged until the next
-	// successful tick refreshes against the NEW config. Under fail-closed
+	// seeded into the new one and rebuilt with the NEW config. Carry raw
+	// entries even when exclusions currently hide every model, so removing
+	// an exclusion during an outage can restore those entries. Under fail-closed
 	// (stale-while-unavailable:false) no seed happens — same as the ticker
 	// failure path — so a reconfigure during an outage serves nothing until
 	// a refresh succeeds, honoring the operator's policy on BOTH paths.
-	if refreshErr != nil && cfg.Catalog.StaleWhileUnavailable && m.mgr != nil && len(m.mgr.Models()) > 0 {
+	if refreshErr != nil && cfg.Catalog.StaleWhileUnavailable && m.mgr != nil {
 		mgr.SeedFrom(m.mgr)
 	}
 	m.mgr = mgr
