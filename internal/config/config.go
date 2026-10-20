@@ -52,6 +52,7 @@ type RouteOverride struct {
 
 type Config struct {
 	Models           []ModelOverride
+	ExcludedModels   []string
 	ModelsDev        ModelsDev
 	BaseURL          string
 	CatalogURL       string
@@ -80,8 +81,9 @@ type ModelsDev struct {
 // (apply default) from explicitly-set values including "" (validate as-is).
 // Unknown fields are ignored (host may pass extra keys).
 type rawConfig struct {
-	Models    []ModelOverride `yaml:"models"`
-	ModelsDev struct {
+	Models         []ModelOverride `yaml:"models"`
+	ExcludedModels []string        `yaml:"excluded-models"`
+	ModelsDev      struct {
 		Enabled         *bool   `yaml:"enabled"`
 		URL             *string `yaml:"url"`
 		RefreshInterval *string `yaml:"refresh-interval"`
@@ -151,9 +153,10 @@ func Load(yamlBytes []byte) (Config, error) {
 		return Config{}, fmt.Errorf("request-timeout: must be positive")
 	}
 	c := Config{
-		Models:    raw.Models,
-		ModelsDev: ModelsDev{Enabled: orDefault(raw.ModelsDev.Enabled, true), URL: orDefault(raw.ModelsDev.URL, "https://models.dev/api.json")},
-		BaseURL:   orDefault(raw.BaseURL, DefaultBaseURL),
+		Models:         raw.Models,
+		ExcludedModels: raw.ExcludedModels,
+		ModelsDev:      ModelsDev{Enabled: orDefault(raw.ModelsDev.Enabled, true), URL: orDefault(raw.ModelsDev.URL, "https://models.dev/api.json")},
+		BaseURL:        orDefault(raw.BaseURL, DefaultBaseURL),
 		ModelPrefix: ModelPrefix{
 			Enabled: orDefault(raw.ModelPrefix.Enabled, true),
 			Value:   orDefault(raw.ModelPrefix.Value, DefaultModelPrefix),
@@ -199,6 +202,11 @@ func PublicID(c Config, upstreamID string) string {
 }
 
 func (c Config) validate() error {
+	for i, pattern := range c.ExcludedModels {
+		if strings.TrimSpace(pattern) == "" {
+			return fmt.Errorf("excluded-models[%d]: must not be empty", i)
+		}
+	}
 	if err := validateURL("models-dev.url", c.ModelsDev.URL, c.AllowHTTP); err != nil {
 		return err
 	}

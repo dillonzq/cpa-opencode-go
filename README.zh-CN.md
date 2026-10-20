@@ -187,6 +187,12 @@ plugins:
         enabled: true           # true："opencode-go/<model>"；false："<model>"（默认：true）
         value: "opencode-go"    # 前缀名称（默认："opencode-go"）
 
+      # 可选模型黑名单，匹配上游原始 ID，不加客户端模型前缀
+      excluded-models:
+        - "glm-5.2"             # 精确模型 ID
+        - "gpt-*"               # 所有以 gpt- 开头的模型
+        - "*-preview*"          # 包含 -preview 的模型
+
       # OpenCode Go API 密钥，至少需要一个；支持 ${ENV_VAR} 环境变量展开
       api-keys:
         - value: "sk-opencode-key-1"
@@ -226,6 +232,7 @@ plugins:
 | `catalog-url` | `string` | `{base-url}/models` | 模型目录的完整 URL，默认使用 `{base-url}/models`。 |
 | `model-prefix.enabled` | `bool` | `true` | 为 `true` 时，客户端模型名称使用 `<prefix>/<model>`；为 `false` 时，仅使用模型 ID。 |
 | `model-prefix.value` | `string` | `opencode-go` | 启用模型前缀时使用的前缀名称。 |
+| `excluded-models` | `[]string` | `[]` | 模型黑名单，按上游原始 ID 匹配，支持精确名称与 `*` 通配符，同时作用于自动发现和手动声明的模型。 |
 | `catalog.refresh-interval` | `duration` | `15m` | 模型目录刷新间隔，例如 `15m`、`1h`，最短为 `1m`。 |
 | `catalog.stale-while-unavailable` | `bool` | `true` | 刷新失败时，继续使用上次成功获取的模型目录。 |
 | `protocols.chat-completions` | `bool` | `true` | Chat Completions 协议开关。 |
@@ -239,6 +246,12 @@ plugins:
 | `models-dev.enabled` | `bool` | `true` | 启用 models.dev 元数据兜底，本身不会新增目录模型。 |
 | `models-dev.url` | `string` | `https://models.dev/api.json` | 元数据来源地址，采用与 `base-url` 相同的 URL 校验规则。 |
 | `models-dev.refresh-interval` | `duration` | `24h` | 成功获取元数据后的缓存间隔，最短 `1m`；失败时在后续目录刷新中重试。 |
+
+### 模型黑名单
+
+在插件配置中设置 `excluded-models`，即可从模型列表中隐藏匹配的模型并拒绝其执行。规则匹配完整的上游原始模型 ID，不加配置的客户端前缀，忽略大小写和规则首尾空白。`*` 匹配零个或多个任意字符（包括 `/`），一条规则可以包含多个 `*`；其他字符（包括 `?` 和方括号）均按字面匹配。YAML 中请为通配符规则加引号；空字符串或纯空白条目会校验失败。默认空列表不屏蔽任何模型，`["*"]` 屏蔽全部模型。
+
+黑名单优先于 `models` 声明和 `route-overrides`。被屏蔽模型无法通过原始 ID、带前缀 ID 或附加推理后缀调用，屏蔽原因保留在目录诊断中。重新配置会立即对保留的目录快照应用新规则，上游不可用时同样生效；启用旧目录保留时，移除规则可恢复符合条件的缓存模型。
 
 ### 模型目录能力扩展
 

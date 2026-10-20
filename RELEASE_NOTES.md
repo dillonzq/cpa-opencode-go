@@ -2,6 +2,13 @@
 
 Unreleased changes for **cpa-opencode-go**, using **api-translator v0.3.0**.
 
+## Model configuration
+
+- Add `excluded-models` for exact and case-insensitive `*` wildcard exclusions
+  against upstream model IDs. The blacklist filters discovered and declared
+  models from listing and execution, takes priority over route overrides, and
+  reapplies to cached catalogs during reconfiguration and upstream outages.
+
 ## Fixes
 
 - Preserve original reasoning content and summaries in native non-GPT Responses
@@ -39,7 +46,7 @@ converted to Messages omit unsigned thinking history by default; native Messages
 history and response display are preserved. The plugin keeps the library's
 `AllowUnsignedThinking` option disabled. Summary-only, opaque, or unsigned
 reasoning losses are collected under the existing allow loss policy.
-Configuration and CLIProxyAPI/Go requirements are unchanged. See the protocol
+Existing configuration remains compatible; CLIProxyAPI/Go requirements are unchanged. See the protocol
 guides for direction-specific media, shell, cache, and reasoning limits.
 
 # v0.2.0
