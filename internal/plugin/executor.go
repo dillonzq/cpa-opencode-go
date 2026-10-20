@@ -151,14 +151,19 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: converted, Headers: resp.Headers}), nil
 }
 
-// buildUpstreamRequest applies provider-specific native policy before translation.
+// buildUpstreamRequest applies native policy before translation and image
+// compatibility to the translated upstream payload.
 func buildUpstreamRequest(route catalog.Route, model, source string, body []byte, _ *pluginapi.ThinkingSupport, states ...*translator.RequestState) ([]byte, *errclass.Error) {
 	state := requestState(states)
 	body, err := normalizeNativeRequest(route, model, source, body, state)
 	if err != nil {
 		return nil, err
 	}
-	return protocol.ConvertRequest(route, model, source, body, state)
+	body, err = protocol.ConvertRequest(route, model, source, body, state)
+	if err != nil {
+		return nil, err
+	}
+	return normalizeUpstreamImageDetail(route, model, body), nil
 }
 
 func requestState(states []*translator.RequestState) *translator.RequestState {

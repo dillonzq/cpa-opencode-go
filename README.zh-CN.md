@@ -76,6 +76,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 ## 请求行为
 
+- 经 OpenCode Go 发送的 DeepSeek Chat Completions 和 Responses 请求会将图片的 `detail: "original"` 转为 `"high"`，覆盖历史消息及工具返回图片，避免网关参数校验失败。DeepSeek 官方文档说明两者等价；其他模型及 detail 值保持不变。
 - 非 GPT 原生 Responses 请求分别保留原始 reasoning content 和 summary，清理外来加密状态、没有非空白 reasoning_text 原文或 summary_text 摘要的 reasoning 项及 compaction；summary 无法补回缺失的原始思考。
 - 跨协议请求保留原始 reasoning 与 assistant 正文、工具调用的关联。合成的 Responses 普通与流式完成项包含可回传的 `content`（`reasoning_text`）及展示 summary。转入 Messages 默认省略无签名 thinking 历史；原生 Messages 历史保持保留。
 - 跨协议普通和流式响应保留可读推理，映射为 `reasoning_content`、`thinking` 或 Responses reasoning content 与展示 summary；其他字段的映射与丢弃详见[协议转换说明](docs/protocol-conversion.zh-CN.md)。

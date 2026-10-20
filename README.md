@@ -74,6 +74,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 
 ## Request behavior
 
+- DeepSeek requests sent through OpenCode Go map image `detail: "original"` to `"high"` in Chat Completions and Responses, including historical messages and tool output images. This avoids gateway validation errors; DeepSeek documents the two values as equivalent. Other models and detail values are unchanged.
 - Native non-GPT Responses requests preserve original reasoning content and summaries independently. Foreign encrypted state, reasoning items without non-whitespace reasoning_text content or summary_text summaries, and compaction are removed; summaries cannot reconstruct missing original reasoning.
 - Cross-protocol requests retain original reasoning with its assistant text and tool calls. Synthesized Responses regular and streaming completion items carry replayable `content` (`reasoning_text`) alongside display summaries. Conversion to Messages omits unsigned thinking history by default; native Messages history is preserved.
 - Cross-protocol regular and streaming responses preserve visible reasoning as `reasoning_content`, `thinking`, or Responses reasoning content and display summaries. See the [protocol conversion guide](docs/protocol-conversion.md) for mappings and fields that are omitted.

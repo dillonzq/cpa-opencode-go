@@ -25,6 +25,8 @@ HTTP、鉴权、目录路由、session、超时、取消、最大响应字节和
 
 GPT 分支沿用 upstream ID 不区分大小写的 `gpt` 前缀判断。通用 custom 工具的 input 包装为字符串参数；非字符串历史 custom input 会报错。同一身份重复声明保留首次声明，展平后的身份冲突报错。Hosted 工具并非全部可转换，上游是否接受原生工具仍由其自身验证。
 
+请求转换后，对 upstream ID 以 `deepseek` 开头（不区分大小写）的模型额外执行 OpenCode Go 兼容处理：Chat `messages[].content[].image_url` 及 Responses 消息 content、工具 output 中的 `input_image` 图片块，将 `detail: "original"` 改为 `"high"`。覆盖全部历史，包括 `function_call_output` 和 `custom_tool_call_output` 图片；工具 schema、参数字符串、其他 detail 值和其他模型保持不变。[DeepSeek 官方文档说明 `high` 与 `original` 等价](https://api-docs.deepseek.com/zh-cn/guides/vision/)，此处理兼容网关校验，并非 DeepSeek 直连接口不支持。跨协议媒体转换仍沿用库的映射，可能省略图片 detail。
+
 ## 跨协议能力
 
 | 内容 | 行为与限制 |
