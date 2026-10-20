@@ -8,6 +8,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
+// TestExcludedModelPatterns covers whole-ID matching, wildcard boundaries,
+// normalization, and characters that must remain literal.
 func TestExcludedModelPatterns(t *testing.T) {
 	for _, tc := range []struct {
 		pattern string
@@ -46,6 +48,8 @@ func TestExcludedModelPatterns(t *testing.T) {
 	}
 }
 
+// TestExcludedModelsFilterAllSources checks that exclusions take precedence
+// over both model sources and routing, including when serving stale entries.
 func TestExcludedModelsFilterAllSources(t *testing.T) {
 	for _, prefix := range []bool{true, false} {
 		cfg := testCfg()
@@ -83,6 +87,8 @@ func TestExcludedModelsFilterAllSources(t *testing.T) {
 	}
 }
 
+// TestExcludedModelsReconfigureStaleSnapshot verifies that raw catalog entries
+// survive filtering and can be restored when an exclusion is removed.
 func TestExcludedModelsReconfigureStaleSnapshot(t *testing.T) {
 	cfg := testCfg()
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-5.2"}]}`)}}

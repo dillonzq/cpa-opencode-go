@@ -7,6 +7,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
+// TestExcludedModelsDiscoveryAndExecution checks both discovery methods and
+// rejects excluded execution IDs before dispatch while keeping allowed models usable.
 func TestExcludedModelsDiscoveryAndExecution(t *testing.T) {
 	for _, prefix := range []bool{true, false} {
 		t.Run(map[bool]string{true: "prefixed", false: "bare"}[prefix], func(t *testing.T) {
@@ -54,6 +56,8 @@ func TestExcludedModelsDiscoveryAndExecution(t *testing.T) {
 	}
 }
 
+// TestExcludedModelsReconfigureDuringOutage exercises blocking every cached
+// model and restoring them through lifecycle reconfiguration while upstream is offline.
 func TestExcludedModelsReconfigureDuringOutage(t *testing.T) {
 	m, _, st, yamlText := newIntegrationManager(t)
 	st.setCatalogBody("{invalid")

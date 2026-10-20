@@ -425,6 +425,8 @@ func TestBridgeAuthListDecodesEntries(t *testing.T) {
 
 // ---- dispatcher: registration ------------------------------------------
 
+// TestRegisterSuccessPublishesModels verifies registration metadata, discovery,
+// and the catalog request sent through the host bridge.
 func TestRegisterSuccessPublishesModels(t *testing.T) {
 	m, f := newTestManager(catalogResponder(true, testCatalogJSON))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
@@ -440,7 +442,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	}
 	if reg.Metadata.Name != "cpa-opencode-go" || reg.Metadata.Version != pluginVersion ||
 		reg.Metadata.Author != "dillonzq" || reg.Metadata.GitHubRepository != "https://github.com/dillonzq/cpa-opencode-go" ||
-		len(reg.Metadata.ConfigFields) != 12 {
+		len(reg.Metadata.ConfigFields) != 13 {
 		t.Fatalf("metadata wrong: %+v", reg.Metadata)
 	}
 	if !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider {
@@ -486,6 +488,8 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	}
 }
 
+// TestRegistrationConfigFields checks the field names and types exposed to
+// management clients in the serialized registration response.
 func TestRegistrationConfigFields(t *testing.T) {
 	m, _ := newTestManager(catalogResponder(true, testCatalogJSON))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
@@ -507,6 +511,7 @@ func TestRegistrationConfigFields(t *testing.T) {
 		{"base-url", pluginapi.ConfigFieldTypeString},
 		{"catalog-url", pluginapi.ConfigFieldTypeString},
 		{"model-prefix", pluginapi.ConfigFieldTypeObject},
+		{"excluded-models", pluginapi.ConfigFieldTypeArray},
 		{"catalog", pluginapi.ConfigFieldTypeObject},
 		{"protocols", pluginapi.ConfigFieldTypeObject},
 		{"route-overrides", pluginapi.ConfigFieldTypeObject},
