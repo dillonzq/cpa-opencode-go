@@ -21,7 +21,7 @@ HTTP、鉴权、目录路由、session、超时、取消、最大响应字节和
 | Chat → Chat | developer 改为 system；删除缺少有效字符串 type 的顶层 thinking |
 | Messages → Messages | 历史 system turn 折叠到顶层 system；其 thinking/redacted_thinking 省略；图片或未知 system 块明确报错；没有 system turn 时只改 model |
 | Responses → GPT Responses | 仅改 model，保留原生工具、reasoning、compaction 和其他字段 |
-| Responses → 非 GPT Responses | 保留 reasoning 原始 content 和 summary，不用 summary 冒充原文；删除外来 encrypted_content、content 和 summary 均缺省/null/空数组的 reasoning 和 compaction；过滤 custom apply_patch、tool_search、image_generation；web_search 声明仅保留 type；然后调用 NormalizeResponsesRequest 合并 additional_tools、展平 namespace、custom 和本地 shell 转 function，并登记工具身份供响应恢复 |
+| Responses → 非 GPT Responses | 保留 reasoning 原始 content 和 summary，不用 summary 冒充原文；删除外来 encrypted_content、没有非空白 reasoning_text 原文或 summary_text 摘要的 reasoning（包括缺省/null/空数组或无效数组） 和 compaction；过滤 custom apply_patch、tool_search、image_generation；web_search 声明仅保留 type；然后调用 NormalizeResponsesRequest 合并 additional_tools、展平 namespace、custom 和本地 shell 转 function，并登记工具身份供响应恢复 |
 
 GPT 分支沿用 upstream ID 不区分大小写的 `gpt` 前缀判断。通用 custom 工具的 input 包装为字符串参数；非字符串历史 custom input 会报错。同一身份重复声明保留首次声明，展平后的身份冲突报错。Hosted 工具并非全部可转换，上游是否接受原生工具仍由其自身验证。
 

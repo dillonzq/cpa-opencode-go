@@ -8,7 +8,9 @@ Unreleased changes for **cpa-opencode-go**, using **api-translator v0.3.0**.
   request history, including DeepSeek tool-call continuations. Cleanup now removes
   foreign encrypted state and compaction without deleting readable reasoning.
   Summary-only history is preserved without inventing missing original content.
-  Reasoning with absent, null, or empty content and summary arrays is removed.
+  Reasoning without non-whitespace `reasoning_text` content or `summary_text`
+  summaries is removed, including null/scalar parts, wrong part types, and empty
+  or whitespace-only text. Retained items preserve their original fields.
 - Preserve original reasoning across protocol requests with assistant text,
   parallel tool calls, and separate tool rounds. Synthesized ordinary Responses
   output, streamed completed items, and final output retain replayable

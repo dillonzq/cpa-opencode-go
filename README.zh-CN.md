@@ -76,7 +76,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 ## 请求行为
 
-- 未发布变更：非 GPT 原生 Responses 请求分别保留原始 reasoning content 和 summary，清理外来加密状态、content 和 summary 均缺省/null/空数组的 reasoning 项及 compaction；summary 无法补回缺失的原始思考。
+- 未发布变更：非 GPT 原生 Responses 请求分别保留原始 reasoning content 和 summary，清理外来加密状态、没有非空白 reasoning_text 原文或 summary_text 摘要的 reasoning 项及 compaction；summary 无法补回缺失的原始思考。
 - 跨协议请求保留原始 reasoning 与 assistant 正文、工具调用的关联。合成的 Responses 普通与流式完成项包含可回传的 `content`（`reasoning_text`）及展示 summary。转入 Messages 默认省略无签名 thinking 历史；原生 Messages 历史保持保留。
 - 跨协议普通和流式响应保留可读推理，映射为 `reasoning_content`、`thinking` 或 Responses reasoning content 与展示 summary；其他字段的映射与丢弃详见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 按 `SourceFormat` 执行 CLIProxyAPI 的有效 `Payload`，保留拦截器修改。只有缺省或 null Payload 的旧调用才回退到 `OriginalRequest`；显式空 Payload 按空输入校验；`Format` 决定输出协议。
