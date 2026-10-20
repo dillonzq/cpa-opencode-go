@@ -2,7 +2,7 @@
 
 [简体中文](protocol-conversion.zh-CN.md) · [Back to README](../README.md)
 
-Requests, regular responses, and streaming responses use pinned [api-translator v0.2.0](https://github.com/dillonzq/api-translator/tree/v0.2.0). All six cross-protocol directions and same-protocol processing are supported for Chat Completions, Messages, and Responses. See the library's [protocol guide](https://github.com/dillonzq/api-translator/blob/v0.2.0/docs/protocol-conversion.md) for field mappings and limits. This document describes the plugin's host and upstream policies.
+Requests, regular responses, and streaming responses use pinned [api-translator v0.3.0](https://github.com/dillonzq/api-translator/tree/v0.3.0). All six cross-protocol directions and same-protocol processing are supported for Chat Completions, Messages, and Responses. See the library's [protocol guide](https://github.com/dillonzq/api-translator/blob/v0.3.0/docs/protocol-conversion.md) for field mappings and limits. This document describes the plugin's host and upstream policies.
 
 ## Integration
 
@@ -21,7 +21,7 @@ The library's same-protocol request conversion only rewrites model. Before that,
 | Chat → Chat | Rewrite developer to system; remove top-level thinking without a valid string type |
 | Messages → Messages | Fold historical system turns into top-level system; omit their thinking/redacted_thinking; reject images and unknown system blocks; without system turns, only rewrite model |
 | Responses → GPT Responses | Only rewrite model; preserve native tools, reasoning, compaction, and other fields |
-| Responses → non-GPT Responses | Preserve reasoning content and summaries without promoting summaries to original content; remove foreign encrypted_content, reasoning items without content/summary, and compaction; filter custom apply_patch, tool_search, image_generation; reduce web_search declarations to type; then call NormalizeResponsesRequest to merge additional_tools, flatten namespace/custom tools, and register identities for response restoration |
+| Responses → non-GPT Responses | Preserve reasoning content and summaries without promoting summaries to original content; remove foreign encrypted_content, reasoning items whose content and summary arrays are both absent/null/empty, and compaction; filter custom apply_patch, tool_search, image_generation; reduce web_search declarations to type; then call NormalizeResponsesRequest to merge additional_tools, flatten namespace/custom tools, adapt local shell to a function, and register identities for response restoration |
 
 The GPT branch retains the case-insensitive `gpt` upstream ID prefix check. Custom input uses a string parameter wrapper; non-string historical custom input fails. Duplicate declarations of the same identity keep the first; flattened identity collisions fail. Upstream acceptance of native hosted tools remains model-dependent.
 
@@ -29,10 +29,13 @@ The GPT branch retains the case-insensitive `gpt` upstream ID prefix check. Cust
 
 | Content | Behavior and limits |
 | --- | --- |
-| Text, input images, and tools | Preserve representable content and function calls; reject unknown/unrepresentable input. Cross-protocol custom apply_patch can convert like other custom tools. Responses output restores namespace/custom identities |
-| Visible reasoning | Map to reasoning_content, thinking, or reasoning summaries, preserving Unicode and whitespace separately from the answer |
-| Signatures and opaque data | Omit Anthropic signatures/redacted_thinking.data and Responses encrypted_content across protocols. Unsigned thinking is not guaranteed replayable to models requiring valid signatures |
+| Text, input images, and tools | Preserve representable content and function calls; reject unknown/unrepresentable input. Cross-protocol custom apply_patch can convert like other custom tools. Responses output restores namespace/custom/shell identities |
+| Visible reasoning | Map to reasoning_content, thinking, or Responses original content plus display summaries, preserving Unicode and whitespace separately from the answer; synthesized ordinary and streaming completion items retain replay content |
+| Signatures and opaque data | Omit Anthropic signatures/redacted_thinking.data and Responses encrypted_content across protocols. Chat/Responses → Messages omits unsigned thinking history by default; native Messages history and response display are preserved |
 | Refusal and usage | Preserve representable refusals, basic tokens, cache read/write, and reasoning tokens; distinguish missing details from explicit zero; recompute Chat/Responses totals |
+| Media input | Map representable files across all protocols; audio/video input maps between Chat and Responses. Messages accepts supported PDF, UTF-8 text, and URL documents; unsupported MIME types, file-ID-only documents, audio, and video fail. Mixed input order is retained; the plugin does not fetch or upload media |
+| Local shell | Responses local shell declarations, choice, history, and results map to function tools for Chat/Messages, and non-GPT native Responses via normalization. Ordinary and streaming Responses output restores shell actions and stable item IDs with the same RequestState. GPT native requests pass through; hosted shell stays native-only; legacy local_shell is unsupported across protocols. No commands are executed by the plugin |
+| Cache hints | Chat/Responses → Messages retains representable message/block/tool cache_control, TTL, and extension fields. Existing block hints take precedence; no cache breakpoints are added. Unrepresentable hints follow the loss policy |
 | Structured output | Convert JSON Schema between response_format.json_schema, text.format, and output_config.format; preserve tool strict. Messages rejects json_object without a schema |
 | Hosted search and citations | Responses ↔ Messages converts representable search and URL citations; Chat cannot represent hosted search execution. Target model support is checked by upstream; encrypted search data and unrepresentable offsets may be lost |
 | Tool output images | Responses → Messages retains text/image order inside tool_result. Responses → Chat keeps tool replies contiguous, then adds user content labeled by call ID; requires image_url, not file-ID-only references |
@@ -40,7 +43,7 @@ The GPT branch retains the case-insensitive `gpt` upstream ID prefix check. Cust
 | Candidates and boundaries | Cross-protocol conversion handles only the first choice; Chat aggregates text; original message/block ordering and extension fields are not guaranteed preserved |
 | Status | Responses failed/cancelled/protocol errors return classified failures; non-terminal regular cross-protocol responses fail; incomplete maps to truncation |
 
-Historical reasoning, compaction, and signatures remain upstream-dependent. CPA usage reasoning labels still come from the effective input payload, so suffix-only controls and suffix overrides require host changes to correct labels; token totals are unaffected.
+Historical reasoning retains original text and its association with assistant text, parallel tool calls, and tool rounds. Request replay never substitutes summaries for original content. Summary-only history and unavailable signatures produce semantic loss diagnostics under the default allow policy. The plugin leaves AllowUnsignedThinking disabled and exposes no override. Missing original text cannot be recovered; compaction and signatures remain upstream-dependent. CPA usage reasoning labels still come from the effective input payload, so suffix-only controls and suffix overrides require host changes to correct labels; token totals are unaffected.
 
 ## Thinking suffixes
 
@@ -56,4 +59,4 @@ Library output is complete SSE frames. For Chat output, the plugin uses SSEDecod
 
 When Feed/Finish returns both events and an error, completed events are emitted before closing with the error, without successful completion. On EOF before done, Finish checks terminal validity. Cancellation, timeout, and network errors close directly as failures. Chat finish_reason/DONE and Messages stop_reason/message_stop can establish termination; Responses requires a valid terminal event. Failed conversion cannot recover or resend upstream requests. Empty or whitespace-only library error messages receive a fallback message so CPA does not interpret error closure as success.
 
-Implementation: internal/protocol wraps public library APIs; internal/plugin/upstream_policy.go holds native cleaning; reasoning_suffix.go uses library thinking; executor.go owns transport. Tests cover 27 baseline scenarios, native policies, request state isolation, and real CPA HTTP streaming. Offline tests do not replace real upstream validation.
+Implementation: internal/protocol wraps public library APIs; internal/plugin/upstream_policy.go holds native cleaning; reasoning_suffix.go uses library thinking; executor.go owns transport. Tests cover 27 baseline scenarios, native policies, multi-round reasoning replay, media/cache mappings, shell state restoration, request state isolation, and real CPA HTTP streaming. Offline tests do not replace real upstream validation.
