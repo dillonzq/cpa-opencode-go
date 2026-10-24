@@ -231,6 +231,9 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	if res == nil {
 		return failEnv, nil
 	}
+	// This path always streams, whatever the request's Stream flag says, so
+	// a converted Gemini source must ask the upstream for a stream too.
+	res.state.Stream = true
 	sessionID, eErr := resolveOpenCodeSessionID(req)
 	if eErr != nil {
 		return classEnvelope(eErr), nil

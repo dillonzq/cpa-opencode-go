@@ -241,6 +241,24 @@ func TestExecuteGeminiClient(t *testing.T) {
 			t.Fatalf("Gemini events = %s", joined)
 		}
 	})
+	t.Run("execute_stream without the Stream flag", func(t *testing.T) {
+		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3"}]}`, streamResponder(streamScript{upstreamID: "up-chat", frames: chatSSEFrames}))
+		var req executorRequest
+		if err := json.Unmarshal(execStreamReqBody("opencode-go/glm-5.3", "gemini", []byte(geminiRequestBody), "down-chat"), &req); err != nil {
+			t.Fatal(err)
+		}
+		req.Stream = false
+		call, _ := json.Marshal(req)
+		raw, err := m.HandleCall(pluginabi.MethodExecutorExecuteStream, call)
+		if err != nil || !decodeEnv(t, raw).OK {
+			t.Fatalf("execute_stream: %v %s", err, raw)
+		}
+		if !m.bridge.WaitForInFlight(5 * time.Second) {
+			t.Fatal("stream did not drain")
+		}
+		assertCleanStreamClose(t, f)
+		assertField(t, upstreamRequestBody(t, f, pluginabi.MethodHostHTTPDoStream), "stream", true)
+	})
 	t.Run("non-stream to a Chat model", func(t *testing.T) {
 		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3"}]}`, upstreamRouter(t, map[string]string{"/v1/chat/completions": ccResponseBody}))
 		env := mustExecute(t, m, "opencode-go/glm-5.3", "gemini", []byte(geminiRequestBody))
