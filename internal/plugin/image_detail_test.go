@@ -78,10 +78,10 @@ func TestExecuteDeepSeekOriginalImageDetail(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/%s/stream=%t", route, source, stream), func(t *testing.T) {
 					frames, path, response := chatSSEFrames, "/chat/completions", ccResponseBody
 					// Pin one protocol: DeepSeek otherwise serves each source natively.
-					yaml := testValidYAML + "\nmodels:\n  - name: deepseek-v4.1-flash\n    protocols:\n      - protocol: chat-completions\n"
+					yaml := testValidYAML + "\nmodels:\n  - name: deepseek-v4.1-flash\n    protocols: {responses: {enabled: false}, messages: {enabled: false}}\n"
 					if route == "responses" {
 						frames, path, response = responsesSSEFrames, "/responses", responsesPassthrough
-						yaml = testValidYAML + "\nmodels:\n  - name: deepseek-v4.1-flash\n    protocols:\n      - protocol: responses\n        endpoint: /v1/responses\n"
+						yaml = testValidYAML + "\nmodels:\n  - name: deepseek-v4.1-flash\n    protocols:\n      chat-completions:\n        enabled: false\n      messages:\n        enabled: false\n      responses:\n        endpoint: /v1/responses\n"
 					}
 					responder := upstreamRouter(t, map[string]string{path: response})
 					if stream {

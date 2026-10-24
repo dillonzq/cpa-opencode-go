@@ -62,7 +62,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
   - Anthropic Messages (`/v1/messages`)
   - OpenAI Responses (`/v1/responses`)
   - Gemini GenerateContent (`/google/v1beta/models/{model}:generateContent`), also accepted natively from Gemini clients
-- **Per-request protocol selection**: Each model declares the protocols it serves. A request uses the client's own protocol when the model serves it, otherwise the protocol with the least semantic loss; see [Protocol selection](#protocol-selection).
+- **Per-request protocol selection**: Each model has a switch per protocol. A request uses the client's own protocol when the model serves it, otherwise the protocol with the least semantic loss; see [Protocol selection](#protocol-selection).
 - **Thinking & Reasoning Support**: Preserves native reasoning controls and uses fixed effort/budget conversion across formats. Capability metadata does not filter or clamp requests; upstream validates controls. Preserves explicit off and Claude adaptive effort; cross-format auto uses target defaults where no wire equivalent exists. Controls that cannot be converted fail explicitly.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs, optionally retains the last successful catalog during outages, and supports explicit model declarations with their own protocols and endpoints.
 - **Translation library**: pinned [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0), with reasoning history replay, media input, local shell adaptation, cache hints, structured output, tool strict, representable URL citations, and Responses ↔ Messages hosted search. Target model support remains upstream-dependent. Native upstream cleaning and CPA streaming framing stay in the plugin.
@@ -76,17 +76,18 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 
 ## Protocol selection
 
-Each model serves a set of upstream protocols. The built-in set follows the [OpenCode Go endpoint table](https://opencode.ai/docs/go/#endpoints), matched by model family prefix:
+Each model has a switch per upstream protocol. The default switches follow the [OpenCode Go endpoint table](https://opencode.ai/docs/go/#endpoints), matched by model family prefix:
 
-| Protocols | Model families |
-|---|---|
-| Responses | `gpt-*`, `grok-*`, `muse-spark-*` |
-| Messages | `claude-*`, `minimax-*` (except `minimax-m3.1-flash*`), `qwen*` |
-| Chat Completions | `glm-*`, `kimi-*`, `longcat-*`, `mimo-*`, `minimax-m3.1-flash*`, `hy*`, `step-*`, `beam-*` |
-| Gemini GenerateContent | `gemini-*` |
-| Chat Completions, Responses, Messages | `deepseek-*` |
+| Model family | Chat Completions | Messages | Responses | Gemini GenerateContent |
+|---|:-:|:-:|:-:|:-:|
+| `gpt-*`, `grok-*`, `muse-spark-*` | – | – | ✓ | – |
+| `claude-*`, `minimax-*` (except `minimax-m3.1-flash*`), `qwen*` | – | ✓ | – | – |
+| `glm-*`, `kimi-*`, `longcat-*`, `mimo-*`, `minimax-m3.1-flash*`, `hy*`, `step-*`, `beam-*` | ✓ | – | – | – |
+| `gemini-*` | – | – | – | ✓ |
+| `deepseek-*` | ✓ | ✓ | ✓ | – |
+| Any other ID | – | – | – | – |
 
-DeepSeek is documented on Chat Completions only, but the gateway also serves it through Responses and Messages.
+✓ is on and – is off. DeepSeek is documented on Chat Completions only, but the gateway also serves it through Responses and Messages. A model with every protocol off is not published; switch protocols on for other IDs under [`models[].protocols`](#protocol-configuration).
 
 For each request, the plugin selects the first protocol the model serves in the client format's order:
 
@@ -106,28 +107,34 @@ The client's own protocol comes first and needs no conversion. The rest are orde
 
 For example, `opencode-go/deepseek-v4-pro` reaches `/v1/messages` from Claude Code and `/v1/responses` from Codex without conversion.
 
-Replace a model's protocol set, or set an endpoint path, with `models[].protocols`:
+### Protocol configuration
+
+`models[].protocols` switches one model's protocols on or off and overrides their endpoints; protocols it does not list keep their default switches. The top-level `protocols` only sets endpoint paths for every model. Both are keyed by `chat-completions`, `messages`, `responses`, or `gemini`.
 
 ```yaml
+protocols:                       # every model; endpoints only
+  responses:
+    endpoint: /v1/responses
 models:
   - name: deepseek-v4-pro
-    protocols:                   # only Chat Completions and Messages
-      - protocol: chat-completions
-      - protocol: messages
+    protocols:                   # Chat Completions and Messages only
+      responses:
+        enabled: false
   - name: custom-model           # a new ID outside the known families
     protocols:
-      - protocol: responses
-        endpoint: /v1/custom-responses   # optional; empty uses the default path
+      messages:
+        enabled: true
+      responses:
+        endpoint: /v1/custom-responses   # overrides the top-level path
 ```
 
 | Field | Rule |
 |---|---|
-| `protocol` | One of `chat-completions`, `messages`, `responses`, or `gemini`. Each protocol may appear once per model. |
+| `models[].protocols.<protocol>` | An object with optional `enabled` and `endpoint`; a bare `true` or `false` is rejected. A listed protocol is on unless `enabled` is `false`, so an object with only `endpoint` also switches it on. |
+| `protocols.<protocol>` | An object with only `endpoint`. Switches are rejected here; set them per model. |
 | `endpoint` | Optional path joined to `base-url`. It must start with `/`. A `gemini` endpoint must contain `{model}`, which is replaced with the upstream model ID; the plugin appends `:generateContent`, or `:streamGenerateContent?alt=sse` for streams. |
 
-Default paths are `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, and `/google/v1beta/models/{model}`. Gemini requests authenticate with `x-goog-api-key`.
-
-Protocol switches remove only their own protocol from each model. A model is excluded when none of its protocols remain.
+A request uses the model's endpoint, then the top-level endpoint, then the default path: `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, or `/google/v1beta/models/{model}`. Gemini requests authenticate with `x-goog-api-key`.
 
 ## Request behavior
 
@@ -253,19 +260,21 @@ plugins:
         refresh-interval: "15m"          # discovery refresh cadence, min "1m" (default: "15m")
         stale-while-unavailable: true    # retain last good catalog snapshot on refresh failure (default: true)
 
-      # Protocol enable/disable switches (all default to true)
+      # Endpoint paths for every model, keyed by protocol; switches are per model
       protocols:
-        chat-completions: true   # enables routes to /v1/chat/completions
-        messages: true           # enables routes to /v1/messages
-        responses: true          # enables routes to /v1/responses
-        gemini: true             # enables routes to /google/v1beta/models/{model}
+        responses:
+          endpoint: "/v1/responses"      # must start with / (default shown)
 
-      # Model declarations; protocols replaces the built-in protocol set
+      # Model declarations; protocols switches protocols on or off and overrides endpoints
       models:
         - name: "custom-model"
           protocols:
-            - protocol: "messages"       # "chat-completions" | "messages" | "responses" | "gemini"
+            messages:                    # "chat-completions" | "messages" | "responses" | "gemini"
               endpoint: "/v1/messages"   # optional; must start with /
+        - name: "deepseek-v4-pro"
+          protocols:
+            responses:
+              enabled: false             # switches off a default protocol
 
       # Execution settings
       request-timeout: "5m"              # upstream request timeout (default: "5m")
@@ -284,14 +293,11 @@ plugins:
 | `model-prefix.value` | `string` | `opencode-go` | Provider prefix string when prefixing is enabled. |
 | `catalog.refresh-interval` | `duration` | `15m` | Interval between catalog polling refreshes (e.g. `15m`, `1h`). Minimum is `1m`. |
 | `catalog.stale-while-unavailable` | `bool` | `true` | When `true`, serves the last valid catalog snapshot if an update fails. |
-| `protocols.chat-completions` | `bool` | `true` | Protocol switch for Chat Completions endpoints. |
-| `protocols.messages` | `bool` | `true` | Protocol switch for Messages endpoints. |
-| `protocols.responses` | `bool` | `true` | Protocol switch for Responses endpoints. |
-| `protocols.gemini` | `bool` | `true` | Protocol switch for Gemini GenerateContent endpoints. |
+| `protocols.<protocol>.endpoint` | `string` | Protocol default | Endpoint path for every model on that protocol; see [Protocol configuration](#protocol-configuration). |
 | `request-timeout` | `duration` | `5m` | Deadline for upstream HTTP opening and the entire stream; expiry cancels the host operation. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` in `base-url`, `catalog-url`, and `models-dev.url` for local testing. |
-| `models` | `[]object` | `[]` | Override discovered model metadata or declare additional models by upstream `name`; see [Catalog capability extensions](#catalog-capability-extensions). `protocols` replaces a model's protocol set; see [Protocol selection](#protocol-selection). |
+| `models` | `[]object` | `[]` | Override discovered model metadata or declare additional models by upstream `name`; see [Catalog capability extensions](#catalog-capability-extensions). `protocols` switches the model's protocols and overrides endpoints; see [Protocol configuration](#protocol-configuration). |
 | `models-dev.enabled` | `bool` | `true` | Enable fallback metadata from models.dev; does not add models to the catalog. |
 | `models-dev.url` | `string` | `https://models.dev/api.json` | Metadata source URL; follows the same URL validation rules as `base-url`. |
 | `models-dev.refresh-interval` | `duration` | `24h` | Successful metadata cache interval, minimum `1m`; failed fetches retry on subsequent catalog refreshes. |
@@ -300,7 +306,7 @@ plugins:
 
 `catalog-url` accepts an OpenAI-style `{"data":[{"id":"..."}]}` list. Optional metadata fields are `display_name`, `description`, `context_window`, `max_tokens`, `input_modalities`, `output_modalities`, and `supported_reasoning_levels` (objects with `effort` and optional `description`). Reasoning efforts are published as host `Thinking.Levels`; `none` also enables `ZeroAllowed`. Missing reasoning metadata stays unknown; an empty array explicitly publishes no reasoning levels. Legacy `context_length`, `max_output_tokens`, `input_modes`, `output_modes`, and `thinking` catalog extensions are ignored. This remains a `data`/`id` catalog, not a full Codex `models`/`slug` response.
 
-Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. `models[].name` is the exact upstream ID: entries already in the catalog override metadata; entries missing from the catalog declare additional models. New models use the existing family routes or their own `protocols`. Protocol switches, endpoint checks, and ID collision checks apply to both sources. Explicit declarations remain available when the catalog is empty or unavailable, including under `stale-while-unavailable: false`; removing a declaration removes it unless the upstream catalog still lists it. Models.dev alone never adds models. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
+Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. `models[].name` is the exact upstream ID: entries already in the catalog override metadata; entries missing from the catalog declare additional models. New models use their family's default switches plus their own `protocols`. Protocol switches, endpoint checks, and ID collision checks apply to both sources. Explicit declarations remain available when the catalog is empty or unavailable, including under `stale-while-unavailable: false`; removing a declaration removes it unless the upstream catalog still lists it. Models.dev alone never adds models. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
 
 Add these settings under the plugin configuration:
 
@@ -329,7 +335,8 @@ models:
     display-name: Custom model
     max-context-length: 200000
     protocols:
-      - protocol: responses
+      responses:
+        enabled: true
 ```
 
 Declared models are published with host `UserDefined: true` when absent from the upstream catalog, using the usual configured public ID prefix. Execution sends the original `name` to the configured upstream; the declaration does not change upstream availability or add aliases.

@@ -611,7 +611,9 @@ func TestStaleCatalogSurvivesOutage(t *testing.T) {
 func TestStaleCatalogCarriesUnroutedEntries(t *testing.T) {
 	m, _, st, yamlText := newIntegrationManager(t)
 	st.setCatalogDown(true)
-	disabled := "protocols:\n  chat-completions: false\n  messages: false\n  responses: false\n"
+	disabled := "models:\n  - name: glm-5.2\n    protocols: {chat-completions: {enabled: false}}\n" +
+		"  - name: gpt-5.6-luna\n    protocols: {responses: {enabled: false}}\n" +
+		"  - name: qwen3.7-max\n    protocols: {messages: {enabled: false}}\n"
 	for _, tc := range []struct {
 		yaml string
 		want int
@@ -1231,7 +1233,7 @@ func TestHTTPSDefaultEnforced(t *testing.T) {
 func TestRouteOverrideEndpointReachesUpstream(t *testing.T) {
 	m, _, st, yamlText := newIntegrationManager(t)
 	st.setCatalogBody(`{"data":[{"id":"totally-new-x"}]}`)
-	yamlText += "models:\n  - name: totally-new-x\n    protocols:\n      - protocol: messages\n        endpoint: /v1/messages-override\n"
+	yamlText += "models:\n  - name: totally-new-x\n    protocols:\n      messages:\n        endpoint: /v1/messages-override\n"
 	resp := mustHandle(t, m, "plugin.reconfigure", lifecycleRequestBody(yamlText))
 	if env := decodeEnv(t, resp); !env.OK {
 		t.Fatalf("reconfigure: %s", resp)

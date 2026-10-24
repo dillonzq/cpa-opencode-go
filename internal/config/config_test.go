@@ -85,7 +85,7 @@ func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	if !c.Catalog.StaleWhileUnavailable {
 		t.Errorf("StaleWhileUnavailable = false")
 	}
-	if !c.Protocols.ChatCompletions || !c.Protocols.Messages || !c.Protocols.Responses || !c.Protocols.Gemini {
+	if c.Protocols != nil {
 		t.Errorf("Protocols = %+v", c.Protocols)
 	}
 	if c.AllowHTTP {
@@ -115,16 +115,20 @@ catalog:
   refresh-interval: 1h
   stale-while-unavailable: false
 protocols:
-  chat-completions: false
-  messages: false
-  responses: false
-  gemini: false
+  responses:
+    endpoint: /v1/global-responses
+  gemini: {}
 models:
   - name: gpt-5.6-luna
     protocols:
-      - protocol: responses
+      responses:
         endpoint: /v1/responses
-      - protocol: messages
+      messages:
+        enabled: true
+      chat-completions:
+        enabled: false
+      gemini:
+        enabled: false
 allow-http: true
 request-timeout: 5m
 max-response-bytes: 1024
@@ -151,10 +155,17 @@ max-response-bytes: 1024
 	if c.Catalog.StaleWhileUnavailable {
 		t.Errorf("StaleWhileUnavailable = true")
 	}
-	if c.Protocols.ChatCompletions || c.Protocols.Messages || c.Protocols.Responses || c.Protocols.Gemini {
+	wantGlobal := map[string]ProtocolOverride{"responses": {Endpoint: "/v1/global-responses"}, "gemini": {}}
+	if !reflect.DeepEqual(c.Protocols, wantGlobal) {
 		t.Errorf("Protocols = %+v", c.Protocols)
 	}
-	want := []ModelProtocol{{Protocol: "responses", Endpoint: "/v1/responses"}, {Protocol: "messages"}}
+	on, off := true, false
+	want := map[string]ProtocolOverride{
+		"responses":        {Endpoint: "/v1/responses"},
+		"messages":         {Enabled: &on},
+		"chat-completions": {Enabled: &off},
+		"gemini":           {Enabled: &off},
+	}
 	if len(c.Models) != 1 || !reflect.DeepEqual(c.Models[0].Protocols, want) {
 		t.Errorf("Models = %+v", c.Models)
 	}
@@ -166,6 +177,21 @@ max-response-bytes: 1024
 	}
 	if c.MaxResponseBytes != 1024 {
 		t.Errorf("MaxResponseBytes = %d", c.MaxResponseBytes)
+	}
+}
+
+func TestProtocolEntryForms(t *testing.T) {
+	doc := withKey + "models:\n  - name: m\n    protocols:\n      responses:\n      messages: {}\n      gemini: {enabled: true}\n      chat-completions: {enabled: false}\n"
+	c, err := Load([]byte(doc))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	got := c.Models[0].Protocols
+	for name, want := range map[string]bool{"responses": true, "messages": true, "gemini": true, "chat-completions": false} {
+		p, ok := got[name]
+		if !ok || p.IsEnabled() != want {
+			t.Errorf("%s: entry = %+v (present %v), want enabled %v", name, p, ok, want)
+		}
 	}
 }
 
@@ -279,9 +305,44 @@ func TestLoadRejections(t *testing.T) {
 		{"keyless config rejected", "", "api-keys: at least one key is required"},
 		{"request-timeout zero rejected", "request-timeout: 0s\n" + withKey, "request-timeout: must be positive"},
 		{
-			"duplicate protocol switch keys",
-			"protocols:\n  gemini: true\n  gemini: false\n",
+			"duplicate protocol keys",
+			"protocols:\n  gemini: {}\n  gemini: {}\n",
 			"decode config: invalid YAML structure near line",
+		},
+		{
+			"protocol entry not a mapping",
+			"models:\n  - name: bad-model\n    protocols:\n      responses: /v1/x\n" + withKey,
+			"decode config: invalid YAML structure near line",
+		},
+		{
+			"model protocol bool shorthand",
+			"models:\n  - name: bad-model\n    protocols:\n      responses: false\n" + withKey,
+			"decode config: invalid YAML structure near line",
+		},
+		{
+			"global protocol unsupported",
+			"protocols:\n  grpc: {}\n" + withKey,
+			`protocols: unsupported protocol "grpc"`,
+		},
+		{
+			"global protocol bool shorthand",
+			"protocols:\n  gemini: false\n" + withKey,
+			"decode config: invalid YAML structure near line",
+		},
+		{
+			"global protocol enabled field",
+			"protocols:\n  responses:\n    enabled: true\n" + withKey,
+			"protocols.responses: only endpoint is allowed; switch protocols under models[].protocols",
+		},
+		{
+			"global endpoint without leading slash",
+			"protocols:\n  responses:\n    endpoint: v1/x\n" + withKey,
+			"protocols.responses.endpoint: must start with /",
+		},
+		{
+			"global gemini endpoint without model placeholder",
+			"protocols:\n  gemini:\n    endpoint: /google/v1beta/models\n" + withKey,
+			"protocols.gemini.endpoint: gemini endpoint must contain {model}",
 		},
 		{
 			"key expands to empty",
@@ -314,34 +375,24 @@ func TestLoadRejections(t *testing.T) {
 		{"max-response-bytes zero rejected", "max-response-bytes: 0\n" + withKey, "max-response-bytes: must be positive"},
 		{"max-response-bytes negative rejected", "max-response-bytes: -5\n" + withKey, "max-response-bytes: must be positive"},
 		{
-			"model protocols explicitly empty",
-			"models:\n  - name: bad-model\n    protocols: []\n" + withKey,
-			"models[0].protocols: must list at least one protocol",
+			"model protocols in list form",
+			"models:\n  - name: bad-model\n    protocols:\n      - protocol: responses\n" + withKey,
+			"decode config: invalid YAML structure near line",
 		},
 		{
 			"model protocol unsupported",
-			"models:\n  - name: bad-model\n    protocols:\n      - protocol: grpc\n" + withKey,
-			`models[0].protocols[0].protocol: unsupported protocol "grpc"`,
-		},
-		{
-			"model protocol missing",
-			"models:\n  - name: bad-model\n    protocols:\n      - endpoint: /v1/x\n" + withKey,
-			`models[0].protocols[0].protocol: unsupported protocol ""`,
-		},
-		{
-			"model protocol duplicated",
-			"models:\n  - name: bad-model\n    protocols:\n      - protocol: responses\n      - protocol: responses\n        endpoint: /v1/x\n" + withKey,
-			`models[0].protocols[1].protocol: duplicate protocol "responses"`,
+			"models:\n  - name: bad-model\n    protocols:\n      grpc: {}\n" + withKey,
+			`models[0].protocols: unsupported protocol "grpc"`,
 		},
 		{
 			"model endpoint without leading slash",
-			"models:\n  - name: bad-model\n    protocols:\n      - protocol: responses\n        endpoint: v1/x\n" + withKey,
-			"models[0].protocols[0].endpoint: must start with /",
+			"models:\n  - name: bad-model\n    protocols:\n      responses:\n        endpoint: v1/x\n" + withKey,
+			"models[0].protocols.responses.endpoint: must start with /",
 		},
 		{
 			"gemini endpoint without model placeholder",
-			"models:\n  - name: bad-model\n    protocols:\n      - protocol: gemini\n        endpoint: /google/v1beta/models\n" + withKey,
-			"models[0].protocols[0].endpoint: gemini endpoint must contain {model}",
+			"models:\n  - name: bad-model\n    protocols:\n      gemini:\n        endpoint: /google/v1beta/models\n" + withKey,
+			"models[0].protocols.gemini.endpoint: gemini endpoint must contain {model}",
 		},
 		{"prefix enabled empty value", "model-prefix:\n  enabled: true\n  value: \"\"\n" + withKey, "model-prefix.value: invalid provider-ID characters"},
 		{"prefix with space", "model-prefix:\n  value: has space\n" + withKey, "model-prefix.value: invalid provider-ID characters"},

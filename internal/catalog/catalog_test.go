@@ -44,17 +44,32 @@ func testCfg() config.Config {
 		ModelPrefix:      config.ModelPrefix{Enabled: true, Value: "opencode-go"},
 		MaxResponseBytes: 1 << 20,
 		Catalog:          config.Catalog{StaleWhileUnavailable: true},
-		Protocols:        config.Protocols{ChatCompletions: true, Messages: true, Responses: true, Gemini: true},
 	}
 }
 
-// declare adds a models[] entry carrying only a protocol declaration.
-func declare(cfg *config.Config, name string, protocols ...config.ModelProtocol) {
-	cfg.Models = append(cfg.Models, config.ModelOverride{Name: name, Protocols: protocols})
+type protoEntry struct {
+	name string
+	config.ProtocolOverride
 }
 
-func proto(protocol, endpoint string) config.ModelProtocol {
-	return config.ModelProtocol{Protocol: protocol, Endpoint: endpoint}
+// declare adds a models[] entry carrying only protocol settings.
+func declare(cfg *config.Config, name string, protocols ...protoEntry) {
+	set := make(map[string]config.ProtocolOverride, len(protocols))
+	for _, p := range protocols {
+		set[p.name] = p.ProtocolOverride
+	}
+	cfg.Models = append(cfg.Models, config.ModelOverride{Name: name, Protocols: set})
+}
+
+// proto switches a protocol on; an empty endpoint keeps the inherited path.
+func proto(protocol, endpoint string) protoEntry {
+	return protoEntry{protocol, config.ProtocolOverride{Endpoint: endpoint}}
+}
+
+// off switches a protocol off.
+func off(protocol string) protoEntry {
+	disabled := false
+	return protoEntry{protocol, config.ProtocolOverride{Enabled: &disabled}}
 }
 
 // routesOf lists a record's protocols in order.
@@ -205,7 +220,10 @@ func TestRefreshSuccess(t *testing.T) {
 func TestRoutePriorityMatrix(t *testing.T) {
 	cfg := testCfg()
 	declare(&cfg, "totally-new-x", proto("messages", "/v1/messages-override"), proto("gemini", ""))
-	declare(&cfg, "grok-4.5", proto("chat-completions", ""))
+	declare(&cfg, "grok-4.5", proto("chat-completions", ""), off("responses"))
+	declare(&cfg, "glm-5.1", proto("messages", ""))
+	// Switching off a protocol the model never had adds nothing.
+	declare(&cfg, "mystery-model", off("responses"))
 	body := `{"data":[
 		{"id":"glm-5.2"},
 		{"id":"totally-new-x"},
@@ -226,14 +244,14 @@ func TestRoutePriorityMatrix(t *testing.T) {
 	if !reflect.DeepEqual(ovr.Routes, []Target{{RouteMessages, "/v1/messages-override"}, {RouteGemini, "/google/v1beta/models/{model}"}}) {
 		t.Errorf("declaration not applied: %+v", ovr)
 	}
-	if got := primary(findModel(t, models, "glm-5.1")); got != RouteChatCompletions {
-		t.Errorf("compat route wrong: got %q", got)
+	if got := routesOf(findModel(t, models, "glm-5.1")); !reflect.DeepEqual(got, []Route{RouteChatCompletions, RouteMessages}) {
+		t.Errorf("declaration should add to compat after its protocols: got %q", got)
 	}
 	if got := primary(findModel(t, models, "qwen3.8-max")); got != RouteMessages {
 		t.Errorf("compat route wrong: got %q", got)
 	}
 	if got := findModel(t, models, "grok-4.5").Routes; !reflect.DeepEqual(got, []Target{{RouteChatCompletions, "/v1/chat/completions"}}) {
-		t.Errorf("declaration should replace compat: got %+v", got)
+		t.Errorf("declaration should switch compat protocols: got %+v", got)
 	}
 	unsup := m.Unsupported()
 	if len(unsup) != 1 || unsup[0].UpstreamID != "mystery-model" || unsup[0].Reason != "no route determined" {
@@ -740,7 +758,7 @@ func TestConcurrentRefreshAndReads(t *testing.T) {
 	readerWG.Wait()
 }
 
-func TestProtocolFlagsExcludeRoutes(t *testing.T) {
+func TestProtocolSwitchesExcludeRoutes(t *testing.T) {
 	catalogBody := `{"data":[
 		{"id":"glm-5.2"},
 		{"id":"qwen3.7-max"},
@@ -748,26 +766,18 @@ func TestProtocolFlagsExcludeRoutes(t *testing.T) {
 	]}`
 	routes := []struct {
 		protocol  string
-		field     func(p config.Protocols) bool
 		excluded  string
 		routableA string
 		routableB string
 	}{
-		{"chat-completions", func(p config.Protocols) bool { return p.ChatCompletions }, "glm-5.2", "qwen3.7-max", "gpt-5.6-luna"},
-		{"messages", func(p config.Protocols) bool { return p.Messages }, "qwen3.7-max", "glm-5.2", "gpt-5.6-luna"},
-		{"responses", func(p config.Protocols) bool { return p.Responses }, "gpt-5.6-luna", "glm-5.2", "qwen3.7-max"},
+		{"chat-completions", "glm-5.2", "qwen3.7-max", "gpt-5.6-luna"},
+		{"messages", "qwen3.7-max", "glm-5.2", "gpt-5.6-luna"},
+		{"responses", "gpt-5.6-luna", "glm-5.2", "qwen3.7-max"},
 	}
 	for _, tc := range routes {
 		t.Run(tc.protocol, func(t *testing.T) {
 			cfg := testCfg()
-			switch tc.protocol {
-			case "chat-completions":
-				cfg.Protocols.ChatCompletions = false
-			case "messages":
-				cfg.Protocols.Messages = false
-			case "responses":
-				cfg.Protocols.Responses = false
-			}
+			declare(&cfg, tc.excluded, off(tc.protocol))
 			fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(catalogBody)}}
 			m := newManager(cfg, fc)
 			mustRefresh(t, m)
@@ -783,11 +793,7 @@ func TestProtocolFlagsExcludeRoutes(t *testing.T) {
 
 			unsup := m.Unsupported()
 			if len(unsup) != 1 || unsup[0].UpstreamID != tc.excluded ||
-				unsup[0].Reason != fmt.Sprintf("protocol %s disabled by config", map[string]Route{
-					"chat-completions": RouteChatCompletions,
-					"messages":         RouteMessages,
-					"responses":        RouteResponses,
-				}[tc.protocol]) {
+				unsup[0].Reason != "protocol "+tc.protocol+" disabled by config" {
 				t.Fatalf("unsupported = %+v, want %q excluded with disabled-reason", unsup, tc.excluded)
 			}
 		})
@@ -796,11 +802,11 @@ func TestProtocolFlagsExcludeRoutes(t *testing.T) {
 
 // A switch removes only its own protocol from a multi-protocol model; the
 // model stays routable until every protocol it serves is disabled.
-func TestProtocolFlagsFilterMultiProtocolModels(t *testing.T) {
+func TestProtocolSwitchesFilterMultiProtocolModels(t *testing.T) {
 	body := `{"data":[{"id":"deepseek-v4-pro"},{"id":"gemini-4-argon-contributor"}]}`
 	cfg := testCfg()
-	cfg.Protocols.ChatCompletions = false
-	cfg.Protocols.Gemini = false
+	declare(&cfg, "deepseek-v4-pro", off("chat-completions"))
+	declare(&cfg, "gemini-4-argon-contributor", off("gemini"))
 	m := newManager(cfg, &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}})
 	mustRefresh(t, m)
 	deepseek := findModel(t, m.Models(), "deepseek-v4-pro")
@@ -812,7 +818,9 @@ func TestProtocolFlagsFilterMultiProtocolModels(t *testing.T) {
 		t.Fatalf("unsupported = %+v", unsup)
 	}
 
-	cfg.Protocols.Responses, cfg.Protocols.Messages = false, false
+	cfg = testCfg()
+	declare(&cfg, "deepseek-v4-pro", off("chat-completions"), off("responses"), off("messages"))
+	declare(&cfg, "gemini-4-argon-contributor", off("gemini"))
 	m = newManager(cfg, &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}})
 	mustRefresh(t, m)
 	if len(m.Models()) != 0 {
@@ -823,24 +831,47 @@ func TestProtocolFlagsFilterMultiProtocolModels(t *testing.T) {
 	}
 }
 
-func TestProtocolFlagsAllOnKeepsEverything(t *testing.T) {
+// Global protocols set the path for every model serving the protocol; a
+// model's own endpoint takes precedence.
+func TestGlobalProtocolEndpoints(t *testing.T) {
+	body := `{"data":[{"id":"glm-5.2"},{"id":"glm-5.1"},{"id":"deepseek-v4-pro"},{"id":"gemini-4-argon-contributor"}]}`
+	cfg := testCfg()
+	cfg.Protocols = map[string]config.ProtocolOverride{
+		"chat-completions": {Endpoint: "/v1/global-chat"},
+		"gemini":           {Endpoint: "/gemini/models/{model}"},
+	}
+	declare(&cfg, "glm-5.1", proto("chat-completions", "/v1/own-chat"))
+	m := newManager(cfg, &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}})
+	mustRefresh(t, m)
+	models := m.Models()
+	cases := map[string][]Target{
+		"glm-5.2": {{RouteChatCompletions, "/v1/global-chat"}},
+		"glm-5.1": {{RouteChatCompletions, "/v1/own-chat"}},
+		"deepseek-v4-pro": {
+			{RouteChatCompletions, "/v1/global-chat"},
+			{RouteResponses, "/v1/responses"},
+			{RouteMessages, "/v1/messages"},
+		},
+		"gemini-4-argon-contributor": {{RouteGemini, "/gemini/models/{model}"}},
+	}
+	for id, want := range cases {
+		if got := findModel(t, models, id).Routes; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s routes = %+v, want %+v", id, got, want)
+		}
+	}
+}
+
+func TestDefaultProtocolsKeepEverything(t *testing.T) {
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[
 		{"id":"glm-5.2"},{"id":"qwen3.7-max"},{"id":"gpt-5.6-luna"}
 	]}`)}}
 	m := newManager(testCfg(), fc)
 	mustRefresh(t, m)
 	if got := len(m.Models()); got != 3 {
-		t.Fatalf("models = %d, want all three routable with default flags", got)
+		t.Fatalf("models = %d, want all three routable with default protocols", got)
 	}
 	if len(m.Unsupported()) != 0 {
 		t.Fatalf("unexpected unsupported entries: %+v", m.Unsupported())
-	}
-}
-
-func TestProtocolEnabledUnknownRouteDefaultsTrue(t *testing.T) {
-	m := newManager(testCfg(), &fakeClient{})
-	if !m.protocolEnabled(Route("bogus")) {
-		t.Fatal("unknown routes must default to enabled")
 	}
 }
 
@@ -1112,11 +1143,10 @@ func TestSeedFromRevalidatesEndpointsAgainstNewBase(t *testing.T) {
 
 // TestSeedFromAppliesProtocolKillSwitch pins the seed-revalidation fix: a
 // protocol disabled between snapshots must demote its routed records at
-// seed time. Otherwise an operator flipping protocols.messages=false during
-// a catalog outage keeps serving messages-routed models off the stale
-// snapshot until a refresh succeeds — the kill-switch is inert exactly when
-// it needs to bite.
-func TestSeedFromAppliesProtocolKillSwitch(t *testing.T) {
+// seed time. Otherwise an operator switching a model's messages protocol off
+// during a catalog outage keeps serving it off the stale snapshot until a
+// refresh succeeds — the switch is inert exactly when it needs to bite.
+func TestSeedFromAppliesProtocolSwitch(t *testing.T) {
 	body := `{"data":[{"id":"minimax-m3"},{"id":"glm-5.2"}]}`
 	prev := newManager(testCfg(), &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
@@ -1126,7 +1156,7 @@ func TestSeedFromAppliesProtocolKillSwitch(t *testing.T) {
 	findModel(t, prev.Models(), "minimax-m3") // precondition: routable pre-seed
 
 	cfg := testCfg()
-	cfg.Protocols.Messages = false
+	declare(&cfg, "minimax-m3", off("messages"))
 	m := newManager(cfg, &fakeClient{})
 	m.SeedFrom(prev)
 

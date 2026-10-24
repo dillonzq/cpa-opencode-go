@@ -4,8 +4,8 @@ Minor release for **cpa-opencode-go**, based on v0.2.2 and requiring
 **CLIProxyAPI v8.0.0 or later**. Translation now uses **apix v0.1.0**, replacing
 api-translator v0.3.0. Credential records and existing `opencode-go/<model>`
 IDs remain compatible. Configuration keys also remain compatible except for the
-removed `excluded-models` and `route-overrides` settings and the new `base-url`
-default; see below.
+removed `excluded-models` and `route-overrides` settings, the reworked
+`protocols` settings, and the new `base-url` default; see below.
 
 ## Translation library
 
@@ -26,13 +26,15 @@ default; see below.
 - DeepSeek models serve Chat Completions, Responses, and Messages, so Claude Code
   and Codex requests reach them without conversion.
 - Add Gemini GenerateContent as an upstream protocol for `gemini-*` models and as
-  a native client format. Gemini requests use `x-goog-api-key`, and
-  `protocols.gemini` switches the protocol off.
+  a native client format. Gemini requests use `x-goog-api-key`.
 - The built-in protocol table follows the current OpenCode Go endpoint table:
   `claude-*`, `step-*`, and `beam-*` models are now routable, and
   `minimax-m3.1-flash*` uses Chat Completions instead of Messages.
-- `models[].protocols` replaces a model's protocol set and optionally sets each
-  protocol's endpoint path.
+- Each model has a switch per protocol, with defaults from the built-in table.
+  `models[].protocols` switches one model's protocols on or off and overrides
+  their endpoints; the top-level `protocols` sets endpoint paths for every
+  model. See
+  [protocol configuration](https://github.com/dillonzq/cpa-opencode-go/blob/v0.3.0/README.md#protocol-configuration).
 
 ## Behavior changes
 
@@ -56,14 +58,21 @@ default; see below.
   version segment: endpoint paths carry `/v1` or `/v1beta`. A trailing `/v1` is
   dropped, so a `base-url` written for v0.2.2 keeps working. The default catalog
   is `{base-url}/v1/models`. Gemini models need the inference address.
+- Move protocol switches from the top level to each model. The top-level
+  `protocols` now accepts only endpoints, so a leftover switch such as
+  `protocols.gemini: false` fails configuration loading. Set
+  `gemini: {enabled: false}` under `models[].protocols` for each model instead;
+  model entries take an object, not a bare boolean.
 - Remove `route-overrides` in favor of `models[].protocols`. A leftover key is
-  ignored, so move each entry into the model's declaration:
+  ignored, so move each entry into the model's declaration. A declaration now
+  adds to the model's default protocols instead of replacing them; switch the
+  others off to keep only one:
 
   ```yaml
   models:
     - name: custom-model
       protocols:
-        - protocol: responses
+        responses:
           endpoint: /v1/responses   # optional
   ```
 

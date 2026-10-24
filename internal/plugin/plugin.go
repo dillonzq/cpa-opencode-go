@@ -213,7 +213,7 @@ type registrationResult struct {
 // through the registration metadata.
 func pluginConfigFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
-		{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Model declarations and metadata overrides using CPA provider fields: name, display-name, max-context-length, input-modalities, output-modalities, thinking; plus description, max-tokens, and protocols (`- protocol: chat-completions|messages|responses|gemini`, optional `endpoint`), which replaces the built-in protocol set. New IDs use family routing or protocols."},
+		{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Model declarations and metadata overrides using CPA provider fields: name, display-name, max-context-length, input-modalities, output-modalities, thinking; plus description, max-tokens, and protocols (`chat-completions|messages|responses|gemini: {enabled, endpoint}`), which switches protocols on or off on top of the built-in set and overrides endpoints. New IDs use family routing or protocols."},
 		{Name: "models-dev", Type: pluginapi.ConfigFieldTypeObject, Description: "Fallback metadata source (enabled, url, refresh-interval); priority: models > catalog > models.dev."},
 		{
 			Name:        "api-keys",
@@ -243,7 +243,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{
 			Name:        "protocols",
 			Type:        pluginapi.ConfigFieldTypeObject,
-			Description: "Protocol enable/disable switches (`chat-completions: bool`, `messages: bool`, `responses: bool`, `gemini: bool`).",
+			Description: "Endpoint paths for every model, keyed by protocol (`chat-completions|messages|responses|gemini: {endpoint: /path}`). Switch protocols per model under models[].protocols.",
 		},
 		{
 			Name:        "request-timeout",

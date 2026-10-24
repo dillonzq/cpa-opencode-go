@@ -65,7 +65,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
   - Anthropic Messages（`/v1/messages`）
   - OpenAI Responses（`/v1/responses`）
   - Gemini GenerateContent（`/google/v1beta/models/{model}:generateContent`），也接受 Gemini 客户端的原生请求
-- **按请求选择协议**：每个模型声明自己支持的协议。请求优先使用与客户端相同的协议，否则选择语义损失最小的协议，详见[协议选择](#协议选择)。
+- **按请求选择协议**：每个模型对每种协议各有一个开关。请求优先使用与客户端相同的协议，否则选择语义损失最小的协议，详见[协议选择](#协议选择)。
 - **思考与推理支持**：同格式保留推理参数，跨格式仅做固定档位/预算转换；模型能力元数据不参与过滤或限幅，由上游校验。保留关闭和 Claude adaptive 档位；跨格式自动模式无对应字段时使用目标接口默认行为，无法转换的其他值明确报错。
 - **动态模型发现**：获取远程模型目录，可在上游不可用时保留上次成功的目录，支持显式声明模型及其协议和端点。
 - **多密钥调度**：使用 CLIProxyAPI 原生调度器，在不同协议间共享密钥轮换、重试和错误冷却状态。
@@ -78,17 +78,18 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 ## 协议选择
 
-每个模型支持一组上游协议。内置集合依据 [OpenCode Go 端点表](https://opencode.ai/docs/go/#endpoints)，按模型家族前缀匹配：
+每个模型对每种上游协议各有一个开关。默认开关依据 [OpenCode Go 端点表](https://opencode.ai/docs/go/#endpoints)，按模型家族前缀匹配：
 
-| 协议 | 模型家族 |
-|---|---|
-| Responses | `gpt-*`、`grok-*`、`muse-spark-*` |
-| Messages | `claude-*`、`minimax-*`（`minimax-m3.1-flash*` 除外）、`qwen*` |
-| Chat Completions | `glm-*`、`kimi-*`、`longcat-*`、`mimo-*`、`minimax-m3.1-flash*`、`hy*`、`step-*`、`beam-*` |
-| Gemini GenerateContent | `gemini-*` |
-| Chat Completions、Responses、Messages | `deepseek-*` |
+| 模型家族 | Chat Completions | Messages | Responses | Gemini GenerateContent |
+|---|:-:|:-:|:-:|:-:|
+| `gpt-*`、`grok-*`、`muse-spark-*` | – | – | ✓ | – |
+| `claude-*`、`minimax-*`（`minimax-m3.1-flash*` 除外）、`qwen*` | – | ✓ | – | – |
+| `glm-*`、`kimi-*`、`longcat-*`、`mimo-*`、`minimax-m3.1-flash*`、`hy*`、`step-*`、`beam-*` | ✓ | – | – | – |
+| `gemini-*` | – | – | – | ✓ |
+| `deepseek-*` | ✓ | ✓ | ✓ | – |
+| 其他 ID | – | – | – | – |
 
-文档中 DeepSeek 只列出了 Chat Completions，但网关同样通过 Responses 和 Messages 提供服务。
+✓ 表示开启，– 表示关闭。文档中 DeepSeek 只列出了 Chat Completions，但网关同样通过 Responses 和 Messages 提供服务。所有协议都关闭的模型不会发布；其他 ID 需在 [`models[].protocols`](#协议配置) 中开启协议。
 
 每个请求按客户端格式对应的顺序，选择模型支持的第一个协议：
 
@@ -108,28 +109,34 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 例如，`opencode-go/deepseek-v4-pro` 收到 Claude Code 的请求时直接走 `/v1/messages`，收到 Codex 的请求时直接走 `/v1/responses`，都无需转换。
 
-通过 `models[].protocols` 替换模型的协议集合，或指定端点路径：
+### 协议配置
+
+`models[].protocols` 开启或关闭单个模型的协议，并覆盖其端点；未列出的协议保持默认开关。顶层 `protocols` 只为所有模型设置端点路径。两者都以 `chat-completions`、`messages`、`responses` 或 `gemini` 为键。
 
 ```yaml
+protocols:                       # 作用于所有模型，只能设置端点
+  responses:
+    endpoint: /v1/responses
 models:
   - name: deepseek-v4-pro
     protocols:                   # 只使用 Chat Completions 和 Messages
-      - protocol: chat-completions
-      - protocol: messages
+      responses:
+        enabled: false
   - name: custom-model           # 未知家族的新 ID
     protocols:
-      - protocol: responses
-        endpoint: /v1/custom-responses   # 可选；留空使用默认路径
+      messages:
+        enabled: true
+      responses:
+        endpoint: /v1/custom-responses   # 覆盖顶层路径
 ```
 
 | 字段 | 规则 |
 |---|---|
-| `protocol` | 可选 `chat-completions`、`messages`、`responses` 或 `gemini`；同一模型内每个协议只能出现一次。 |
+| `models[].protocols.<协议>` | 包含可选 `enabled` 和 `endpoint` 的对象，不接受直接写 `true` 或 `false`。列出的协议默认开启，除非 `enabled` 为 `false`；因此只写 `endpoint` 也会开启该协议。 |
+| `protocols.<协议>` | 只能包含 `endpoint` 的对象。这里不接受开关，开关需按模型设置。 |
 | `endpoint` | 可选，拼接在 `base-url` 之后，必须以 `/` 开头。`gemini` 的端点必须包含 `{model}`，执行时替换为上游模型 ID，并追加 `:generateContent`；流式请求追加 `:streamGenerateContent?alt=sse`。 |
 
-各协议的默认路径依次为 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 和 `/google/v1beta/models/{model}`。Gemini 请求使用 `x-goog-api-key` 认证。
-
-关闭某个协议开关，只会从各模型中移除该协议；模型的协议全部被移除后才会被排除。
+请求依次使用模型的端点、顶层端点和默认路径。各协议的默认路径依次为 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 和 `/google/v1beta/models/{model}`。Gemini 请求使用 `x-goog-api-key` 认证。
 
 ## 请求行为
 
@@ -257,19 +264,21 @@ plugins:
         refresh-interval: "15m"          # 刷新间隔，最短 "1m"（默认："15m"）
         stale-while-unavailable: true    # 刷新失败时保留上次成功的目录（默认：true）
 
-      # 协议开关，默认全部启用
+      # 按协议为所有模型设置端点路径；开关按模型设置
       protocols:
-        chat-completions: true   # 启用至 /v1/chat/completions 的路由
-        messages: true           # 启用至 /v1/messages 的路由
-        responses: true          # 启用至 /v1/responses 的路由
-        gemini: true             # 启用至 /google/v1beta/models/{model} 的路由
+        responses:
+          endpoint: "/v1/responses"      # 必须以 / 开头（示例为默认值）
 
-      # 模型声明；protocols 替换内置的协议集合
+      # 模型声明；protocols 开启或关闭协议并覆盖端点
       models:
         - name: "custom-model"
           protocols:
-            - protocol: "messages"       # "chat-completions" | "messages" | "responses" | "gemini"
+            messages:                    # "chat-completions" | "messages" | "responses" | "gemini"
               endpoint: "/v1/messages"   # 可选，必须以 / 开头
+        - name: "deepseek-v4-pro"
+          protocols:
+            responses:
+              enabled: false             # 关闭一个默认开启的协议
 
       # 请求执行设置
       request-timeout: "5m"              # 上游请求超时（默认："5m"）
@@ -288,14 +297,11 @@ plugins:
 | `model-prefix.value` | `string` | `opencode-go` | 启用模型前缀时使用的前缀名称。 |
 | `catalog.refresh-interval` | `duration` | `15m` | 模型目录刷新间隔，例如 `15m`、`1h`，最短为 `1m`。 |
 | `catalog.stale-while-unavailable` | `bool` | `true` | 刷新失败时，继续使用上次成功获取的模型目录。 |
-| `protocols.chat-completions` | `bool` | `true` | Chat Completions 协议开关。 |
-| `protocols.messages` | `bool` | `true` | Messages 协议开关。 |
-| `protocols.responses` | `bool` | `true` | Responses 协议开关。 |
-| `protocols.gemini` | `bool` | `true` | Gemini GenerateContent 协议开关。 |
+| `protocols.<协议>.endpoint` | `string` | 协议默认路径 | 所有模型在该协议上的端点路径，详见[协议配置](#协议配置)。 |
 | `request-timeout` | `duration` | `5m` | 上游连接建立及完整流的总超时；到期取消宿主 operation，必须大于零。 |
 | `max-response-bytes` | `int64` | `67108864`（64 MiB） | 非流式响应体的字节数上限。 |
 | `allow-http` | `bool` | `false` | 允许 `base-url`、`catalog-url` 和 `models-dev.url` 使用 `http://`，用于本地测试。 |
-| `models` | `[]object` | `[]` | 按上游 `name` 覆盖已有模型元数据或声明新增模型，详见[模型目录能力扩展](#模型目录能力扩展)。`protocols` 替换模型的协议集合，详见[协议选择](#协议选择)。 |
+| `models` | `[]object` | `[]` | 按上游 `name` 覆盖已有模型元数据或声明新增模型，详见[模型目录能力扩展](#模型目录能力扩展)。`protocols` 开启或关闭模型的协议并覆盖端点，详见[协议配置](#协议配置)。 |
 | `models-dev.enabled` | `bool` | `true` | 启用 models.dev 元数据兜底，本身不会新增目录模型。 |
 | `models-dev.url` | `string` | `https://models.dev/api.json` | 元数据来源地址，采用与 `base-url` 相同的 URL 校验规则。 |
 | `models-dev.refresh-interval` | `duration` | `24h` | 成功获取元数据后的缓存间隔，最短 `1m`；失败时在后续目录刷新中重试。 |
@@ -304,7 +310,7 @@ plugins:
 
 `catalog-url` 接受 OpenAI 风格的 `{"data":[{"id":"..."}]}` 列表。可选元数据字段包括 `display_name`、`description`、`context_window`、`max_tokens`、`input_modalities`、`output_modalities` 和 `supported_reasoning_levels`（包含 `effort` 和可选 `description` 的对象数组）。推理档位映射为宿主的 `Thinking.Levels`，`none` 同时启用 `ZeroAllowed`。缺失推理字段表示未知，空数组明确表示没有推理档位。旧扩展 `context_length`、`max_output_tokens`、`input_modes`、`output_modes` 和 `thinking` 不再解析。目录仍采用 `data`/`id`，不接受完整 Codex `models`/`slug` 响应。
 
-元数据按字段合并，优先级为 **用户 `models` 配置 > catalog 接口 > models.dev**。显式 `0`、`false` 和空数组都会覆盖低优先级数据，`thinking` 的各字段也独立合并。`models[].name` 使用上游原始 ID：目录中已有的模型覆盖元数据，目录中不存在的模型作为新增声明。新增模型沿用家族路由规则，未知家族通过自身的 `protocols` 指定协议；协议开关、端点检查和 ID 冲突检查均适用。显式声明的模型在目录为空或不可用时仍保留，包括 `stale-while-unavailable: false`；删除声明后模型移除，除非上游目录仍列出该 ID。models.dev 本身不会新增模型。覆盖字段沿用 CPA 供应商配置名称：`display-name`、`max-context-length`、`input-modalities`、`output-modalities` 和 `thinking`（`min`、`max`、`zero-allowed`、`dynamic-allowed`、`levels`）；`description` 和 `max-tokens` 是本插件新增的扩展。
+元数据按字段合并，优先级为 **用户 `models` 配置 > catalog 接口 > models.dev**。显式 `0`、`false` 和空数组都会覆盖低优先级数据，`thinking` 的各字段也独立合并。`models[].name` 使用上游原始 ID：目录中已有的模型覆盖元数据，目录中不存在的模型作为新增声明。新增模型沿用家族的默认开关，再叠加自身的 `protocols`；协议开关、端点检查和 ID 冲突检查均适用。显式声明的模型在目录为空或不可用时仍保留，包括 `stale-while-unavailable: false`；删除声明后模型移除，除非上游目录仍列出该 ID。models.dev 本身不会新增模型。覆盖字段沿用 CPA 供应商配置名称：`display-name`、`max-context-length`、`input-modalities`、`output-modalities` 和 `thinking`（`min`、`max`、`zero-allowed`、`dynamic-allowed`、`levels`）；`description` 和 `max-tokens` 是本插件新增的扩展。
 
 在插件配置中添加：
 
@@ -333,7 +339,8 @@ models:
     display-name: Custom model
     max-context-length: 200000
     protocols:
-      - protocol: responses
+      responses:
+        enabled: true
 ```
 
 上游目录中不存在的声明模型以 `UserDefined: true` 传给宿主，客户端 ID 沿用配置的模型前缀。执行时向配置的上游发送原始 `name`，声明不会改变上游实际可用性，也不会新增别名。
