@@ -2,9 +2,9 @@
 
 Minor release for **cpa-opencode-go**, based on v0.2.2 and requiring
 **CLIProxyAPI v8.0.0 or later**. Translation now uses **apix v0.1.0**, replacing
-api-translator v0.3.0. Configuration keys, credential records, and existing
-`opencode-go/<model>` IDs remain compatible, so upgrading only replaces the
-plugin library.
+api-translator v0.3.0. Credential records and existing `opencode-go/<model>`
+IDs remain compatible. Configuration keys also remain compatible except for the
+removed `excluded-models` setting; see below.
 
 ## Translation library
 
@@ -26,6 +26,13 @@ plugin library.
 - Numeric suffixes on Messages, such as `opencode-go/minimax-m3(16384)`, map to
   an effort by fixed thresholds instead of keeping the exact budget. Chat
   Completions and Responses mappings are unchanged.
+- Remove the plugin's `excluded-models` setting in favor of CLIProxyAPI's native
+  OAuth provider exclusions. Move patterns to `oauth.excluded-models` under the
+  `opencode-go` provider key. CLIProxyAPI matches client-facing model IDs with
+  the same case-insensitive `*` wildcards, so include the model prefix when it
+  is enabled, such as `opencode-go/glm-5.2` or `opencode-go/gpt-*`. The plugin
+  ignores a leftover `excluded-models` key, so those models become visible
+  again until the host setting is configured.
 
 ## Compatibility
 

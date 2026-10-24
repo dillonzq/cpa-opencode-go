@@ -316,10 +316,6 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			continue
 		}
 		seen[e.ID] = true
-		if excludedModel(e.ID, m.cfg.ExcludedModels) {
-			unsup = append(unsup, UnsupportedModel{UpstreamID: e.ID, Reason: "excluded by excluded-models config"})
-			continue
-		}
 		route, endpoint, ok, warn := m.resolve(e)
 		if warn != "" {
 			warns = append(warns, warn)

@@ -236,11 +236,6 @@ func pluginConfigFields() []pluginapi.ConfigField {
 			Description: "Client-facing model ID prefix configuration (`enabled: bool`, `value: string`).",
 		},
 		{
-			Name:        "excluded-models",
-			Type:        pluginapi.ConfigFieldTypeArray,
-			Description: "Upstream model IDs to exclude without the public prefix; supports case-insensitive exact and * wildcard patterns.",
-		},
-		{
 			Name:        "catalog",
 			Type:        pluginapi.ConfigFieldTypeObject,
 			Description: "Catalog discovery settings (`refresh-interval: string`, `stale-while-unavailable: bool`).",
@@ -347,8 +342,8 @@ func (m *Manager) handleLifecycle(request []byte) ([]byte, error) {
 	// manager is adopted unconditionally; when a previous snapshot exists
 	// AND the NEW config keeps stale-while-unavailable enabled, it is
 	// seeded into the new one and rebuilt with the NEW config. Carry raw
-	// entries even when exclusions currently hide every model, so removing
-	// an exclusion during an outage can restore those entries. Under fail-closed
+	// entries even when the old config routed none of them, so the new
+	// config can restore them during an outage. Under fail-closed
 	// (stale-while-unavailable:false) no seed happens — same as the ticker
 	// failure path — so a reconfigure during an outage serves nothing until
 	// a refresh succeeds, honoring the operator's policy on BOTH paths.

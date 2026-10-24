@@ -184,12 +184,6 @@ plugins:
         enabled: true           # true -> "opencode-go/<model>", false -> bare "<model>" (default: true)
         value: "opencode-go"    # prefix name (default: "opencode-go")
 
-      # Optional model blacklist (match upstream IDs without the public prefix)
-      excluded-models:
-        - "glm-5.2"             # exact model ID
-        - "gpt-*"               # all IDs starting with gpt-
-        - "*-preview*"          # IDs containing -preview
-
       # OpenCode Go API keys (at least one required). Supports ${ENV_VAR} expansion.
       api-keys:
         - value: "sk-opencode-key-1"
@@ -229,7 +223,6 @@ plugins:
 | `catalog-url` | `string` | `{base-url}/models` | Full URL for catalog discovery. Defaults to `{base-url}/models`. |
 | `model-prefix.enabled` | `bool` | `true` | When `true`, client-facing model names use `<prefix>/<model>`. When `false`, uses bare model IDs. |
 | `model-prefix.value` | `string` | `opencode-go` | Provider prefix string when prefixing is enabled. |
-| `excluded-models` | `[]string` | `[]` | Model blacklist matching upstream IDs; supports exact names and `*` wildcards. Applies to discovered and declared models. |
 | `catalog.refresh-interval` | `duration` | `15m` | Interval between catalog polling refreshes (e.g. `15m`, `1h`). Minimum is `1m`. |
 | `catalog.stale-while-unavailable` | `bool` | `true` | When `true`, serves the last valid catalog snapshot if an update fails. |
 | `protocols.chat-completions` | `bool` | `true` | Protocol switch for Chat Completions endpoints. |
@@ -243,12 +236,6 @@ plugins:
 | `models-dev.enabled` | `bool` | `true` | Enable fallback metadata from models.dev; does not add models to the catalog. |
 | `models-dev.url` | `string` | `https://models.dev/api.json` | Metadata source URL; follows the same URL validation rules as `base-url`. |
 | `models-dev.refresh-interval` | `duration` | `24h` | Successful metadata cache interval, minimum `1m`; failed fetches retry on subsequent catalog refreshes. |
-
-### Model blacklist
-
-Set `excluded-models` under the plugin configuration to hide models from discovery and reject their execution. Patterns match the entire upstream model ID, without the configured public prefix, ignoring case and surrounding pattern whitespace. `*` matches zero or more characters, including `/`; multiple wildcards are supported. All other characters (including `?` and brackets) are literal. Quote wildcard patterns in YAML; empty or whitespace-only entries are rejected. The default empty list excludes nothing, and `["*"]` excludes all models.
-
-The blacklist takes priority over `models` declarations and `route-overrides`. Blocked models cannot be executed using bare IDs, prefixed IDs, or thinking suffixes. Exclusions are included in catalog diagnostics. Reconfiguration applies changes to retained catalog snapshots immediately, including during upstream outages; removing an exclusion restores eligible cached models when stale serving is enabled.
 
 ### Catalog capability extensions
 
