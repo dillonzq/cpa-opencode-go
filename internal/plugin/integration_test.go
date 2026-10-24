@@ -606,6 +606,26 @@ func TestStaleCatalogSurvivesOutage(t *testing.T) {
 	}
 }
 
+// TestStaleCatalogCarriesUnroutedEntries keeps the raw snapshot across an
+// outage reconfigure that routes nothing, so a later config can restore it.
+func TestStaleCatalogCarriesUnroutedEntries(t *testing.T) {
+	m, _, st, yamlText := newIntegrationManager(t)
+	st.setCatalogDown(true)
+	disabled := "protocols:\n  chat-completions: false\n  messages: false\n  responses: false\n"
+	for _, tc := range []struct {
+		yaml string
+		want int
+	}{{yamlText + disabled, 0}, {yamlText, 3}} {
+		resp := mustHandle(t, m, "plugin.reconfigure", lifecycleRequestBody(tc.yaml))
+		if env := decodeEnv(t, resp); !env.OK {
+			t.Fatalf("reconfigure during outage: %s", resp)
+		}
+		if got := len(integrationStaticIDs(t, m)); got != tc.want {
+			t.Fatalf("model count during outage = %d, want %d", got, tc.want)
+		}
+	}
+}
+
 // ---- AC §C + §D non-stream and streaming round trips -------------------
 
 // emittedEvents returns the downstream SSE payloads emitted through the
