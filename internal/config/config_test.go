@@ -184,6 +184,12 @@ func TestLoadIgnoresRemovedSchedulerFields(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresRemovedExcludedModels(t *testing.T) {
+	if _, err := Load([]byte(withKey + "excluded-models: ['glm-*', '']\n")); err != nil {
+		t.Fatalf("removed excluded-models must remain unknown and ignored: %v", err)
+	}
+}
+
 func TestLoadDerivedCatalogURLFromCustomBase(t *testing.T) {
 	c, err := Load([]byte("base-url: https://upstream.example.com/api\n" + withKey))
 	if err != nil {
