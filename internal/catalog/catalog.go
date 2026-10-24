@@ -2,7 +2,7 @@
 // normalizes metadata, assigns routes, and serves the last good snapshot
 // (FR-002, FR-003, FR-004, FR-010).
 //
-// Route resolution priority follows arch spec §5: user route override >
+// Protocol resolution priority: the user's models[].protocols declaration >
 // built-in compatibility table > unsupported (excluded from the routable set,
 // kept in diagnostics).
 //
@@ -31,50 +31,83 @@ import (
 // max-response-bytes stays meaningful for completions elsewhere.
 const catalogBudgetFloor = 16 << 20
 
-// Route is the upstream protocol a model is served through (FR-004).
+// Route is an upstream protocol a model is served through (FR-004).
 type Route string
 
 const (
 	RouteChatCompletions Route = "chat-completions"
 	RouteMessages        Route = "messages"
 	RouteResponses       Route = "responses"
+	RouteGemini          Route = "gemini"
 )
 
-// EndpointPath returns the upstream endpoint path for the route (FR-004).
-// routeEndpoints maps each route to its upstream endpoint path.
+// routeEndpoints maps each route to its default endpoint path below base-url.
+// The Gemini path names the model resource; Target.URL appends the operation.
 var routeEndpoints = map[Route]string{
 	RouteChatCompletions: "/v1/chat/completions",
 	RouteMessages:        "/v1/messages",
 	RouteResponses:       "/v1/responses",
+	RouteGemini:          "/google/v1beta/models/" + config.ModelPlaceholder,
 }
 
-// EndpointPath returns the route's upstream endpoint path, or "" for
+// EndpointPath returns the route's default upstream endpoint path, or "" for
 // unknown routes.
 func (r Route) EndpointPath() string {
 	return routeEndpoints[r]
 }
 
-func routeFromString(s string) (Route, bool) {
-	if _, ok := routeEndpoints[Route(s)]; ok {
-		return Route(s), true
+// Target is one protocol a model supports and the endpoint path serving it.
+type Target struct {
+	Protocol     Route
+	EndpointPath string
+}
+
+// URL joins base-url and the endpoint path, substituting the upstream model.
+// Gemini carries the operation in the path: streaming uses
+// streamGenerateContent with SSE framing.
+func (t Target) URL(baseURL, model string, stream bool) string {
+	path := strings.ReplaceAll(t.EndpointPath, config.ModelPlaceholder, url.PathEscape(model))
+	if t.Protocol == RouteGemini {
+		if stream {
+			path += ":streamGenerateContent?alt=sse"
+		} else {
+			path += ":generateContent"
+		}
 	}
-	return "", false
+	return JoinUpstreamURL(baseURL, path)
 }
 
 // ModelRecord is one routable normalized catalog entry (arch §7, FR-003).
 type ModelRecord struct {
-	PublicID     string
-	UpstreamID   string
-	DisplayName  string
-	Description  string
-	Protocol     Route
-	EndpointPath string
+	PublicID    string
+	UpstreamID  string
+	DisplayName string
+	Description string
+	// Routes lists the supported protocols in declaration order; the first
+	// is the documented primary endpoint.
+	Routes       []Target
 	ContextLimit int64
 	OutputLimit  int64
 	InputModes   []string
 	OutputModes  []string
 	Thinking     *pluginapi.ThinkingSupport
 	UserDefined  bool
+}
+
+// Target returns the record's endpoint for a protocol.
+func (r ModelRecord) Target(route Route) (Target, bool) {
+	for _, t := range r.Routes {
+		if t.Protocol == route {
+			return t, true
+		}
+	}
+	return Target{}, false
+}
+
+// Supports reports whether the record serves a protocol.
+func (r ModelRecord) Supports(route Route) bool {
+	_, ok := r.Target(route)
+	return ok
 }
 
 // UnsupportedModel is a discovered model excluded from the routable set,
@@ -111,23 +144,31 @@ type rawReasoningLevel struct {
 	Effort string `json:"effort"`
 }
 
-// prefixRoutes covers unknown variants of known families;
-// longest prefix wins (list is ordered longest-first).
+// prefixRoutes follows the OpenCode Go endpoint table
+// (https://opencode.ai/docs/go/#endpoints) and covers unknown variants of
+// known families. The first protocol is the documented endpoint; DeepSeek
+// also serves Responses and Messages. Longest prefix wins (list is ordered
+// longest-first).
 var prefixRoutes = []struct {
 	prefix string
-	route  Route
+	routes []Route
 }{
-	{"muse-spark", RouteResponses},
-	{"deepseek", RouteChatCompletions},
-	{"minimax", RouteMessages},
-	{"longcat", RouteChatCompletions},
-	{"grok", RouteResponses},
-	{"gpt", RouteResponses},
-	{"kimi", RouteChatCompletions},
-	{"qwen", RouteMessages},
-	{"glm", RouteChatCompletions},
-	{"mimo", RouteChatCompletions},
-	{"hy", RouteChatCompletions},
+	{"minimax-m3.1-flash", []Route{RouteChatCompletions}},
+	{"muse-spark", []Route{RouteResponses}},
+	{"deepseek", []Route{RouteChatCompletions, RouteResponses, RouteMessages}},
+	{"longcat", []Route{RouteChatCompletions}},
+	{"minimax", []Route{RouteMessages}},
+	{"claude", []Route{RouteMessages}},
+	{"gemini", []Route{RouteGemini}},
+	{"beam", []Route{RouteChatCompletions}},
+	{"grok", []Route{RouteResponses}},
+	{"kimi", []Route{RouteChatCompletions}},
+	{"mimo", []Route{RouteChatCompletions}},
+	{"qwen", []Route{RouteMessages}},
+	{"step", []Route{RouteChatCompletions}},
+	{"glm", []Route{RouteChatCompletions}},
+	{"gpt", []Route{RouteResponses}},
+	{"hy", []Route{RouteChatCompletions}},
 }
 
 // Manager owns the catalog snapshot. All accessors are safe for
@@ -283,9 +324,9 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 	m.mu.Lock()
 	fallback := m.fallback
 	m.mu.Unlock()
-	overrides := make(map[string]modelmeta.Metadata, len(m.cfg.Models))
+	overrides := make(map[string]config.ModelOverride, len(m.cfg.Models))
 	for _, model := range m.cfg.Models {
-		overrides[model.Name] = model.Metadata
+		overrides[model.Name] = model
 	}
 	// Keep m.raw limited to discovered entries. Otherwise a removed user model
 	// could survive reconfiguration by being carried as stale upstream data.
@@ -316,42 +357,22 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			continue
 		}
 		seen[e.ID] = true
-		route, endpoint, ok, warn := m.resolve(e)
+		targets, warn := m.resolve(e.ID, overrides[e.ID].Protocols)
 		if warn != "" {
 			warns = append(warns, warn)
 		}
-		if !ok {
+		if len(targets) == 0 {
 			unsup = append(unsup, UnsupportedModel{UpstreamID: e.ID, Reason: "no route determined"})
 			continue
 		}
-		if !m.protocolEnabled(route) {
-			// Flags apply at snapshot build; a stale snapshot kept per
-			// FR-002 reflects the flags it was built with until the next
-			// successful refresh.
-			unsup = append(unsup, UnsupportedModel{
-				UpstreamID: e.ID,
-				Reason:     fmt.Sprintf("protocol %s disabled by config", route),
-			})
+		routes, reason, routeWarns := m.routable(e.ID, targets)
+		warns = append(warns, routeWarns...)
+		if len(routes) == 0 {
+			unsup = append(unsup, UnsupportedModel{UpstreamID: e.ID, Reason: reason})
 			continue
-		}
-		if endpoint != "" && endpointEscapesBase(m.cfg.BaseURL, endpoint) {
-			// The joined URL must stay on the configured upstream
-			// authority. Override endpoints flow through here, so they
-			// cannot rewrite the URL host — e.g. "/v1@evil.com/x"
-			// against a bare-host base-url turns the base into userinfo
-			// and would send credentials/prompts to an attacker host
-			// (spec 05 §2 trust boundary).
-			unsup = append(unsup, UnsupportedModel{
-				UpstreamID: e.ID,
-				Reason:     "resolved endpoint escapes the configured upstream host",
-			})
-			continue
-		}
-		if endpoint == "" {
-			endpoint = route.EndpointPath()
 		}
 		metadata := modelmeta.Merge(fallback[e.ID], e.metadata())
-		metadata = modelmeta.Merge(metadata, overrides[e.ID])
+		metadata = modelmeta.Merge(metadata, overrides[e.ID].Metadata)
 		display := modelmeta.Value(metadata.DisplayName)
 		if metadata.DisplayName == nil {
 			display = e.ID
@@ -361,8 +382,7 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			UpstreamID:   e.ID,
 			DisplayName:  display,
 			Description:  modelmeta.Value(metadata.Description),
-			Protocol:     route,
-			EndpointPath: endpoint,
+			Routes:       routes,
 			ContextLimit: modelmeta.Value(metadata.Context),
 			OutputLimit:  modelmeta.Value(metadata.Output),
 			InputModes:   metadata.InputModalities,
@@ -409,50 +429,105 @@ func (m *Manager) protocolEnabled(r Route) bool {
 		return m.cfg.Protocols.Messages
 	case RouteResponses:
 		return m.cfg.Protocols.Responses
+	case RouteGemini:
+		return m.cfg.Protocols.Gemini
 	}
 	return true
 }
 
-// resolve applies route priority strictly: user override, compatibility
-// table (family prefix), none (arch §5).
-func (m *Manager) resolve(e rawModel) (Route, string, bool, string) {
-	if o, ok := m.cfg.RouteOverrides[e.ID]; ok {
-		// Spec 04 §5: an override MUST be visible in diagnostics. Load
-		// validation (spec 04 §6) guarantees a known protocol, so the
-		// map lookup above is the only decision point here.
-		return Route(o.Protocol), o.Endpoint, true, fmt.Sprintf(
-			"model %q routed via user override (%s %s)", e.ID, o.Protocol, o.Endpoint)
+// resolve applies protocol priority strictly: the user's declaration,
+// compatibility table (family prefix), none. Empty endpoints take the
+// protocol's default path.
+func (m *Manager) resolve(id string, declared []config.ModelProtocol) ([]Target, string) {
+	if declared != nil {
+		// Spec 04 §5: user routing MUST be visible in diagnostics. Load
+		// validation (spec 04 §6) guarantees known, unique protocols.
+		targets := make([]Target, len(declared))
+		parts := make([]string, len(declared))
+		for i, p := range declared {
+			targets[i] = Target{Protocol: Route(p.Protocol), EndpointPath: p.Endpoint}
+			if targets[i].EndpointPath == "" {
+				targets[i].EndpointPath = targets[i].Protocol.EndpointPath()
+			}
+			parts[i] = p.Protocol + " " + targets[i].EndpointPath
+		}
+		return targets, fmt.Sprintf("model %q routed via user configuration (%s)", id, strings.Join(parts, ", "))
 	}
-	id := strings.ToLower(e.ID)
+	lower := strings.ToLower(id)
 	for _, p := range prefixRoutes {
-		if strings.HasPrefix(id, p.prefix) {
-			return p.route, "", true, ""
+		if strings.HasPrefix(lower, p.prefix) {
+			targets := make([]Target, len(p.routes))
+			for i, route := range p.routes {
+				targets[i] = Target{Protocol: route, EndpointPath: route.EndpointPath()}
+			}
+			return targets, ""
 		}
 	}
-	return "", "", false, ""
+	return nil, ""
+}
+
+// routable drops targets whose protocol switch is off or whose URL leaves
+// the configured upstream. With nothing left it returns the exclusion reason.
+func (m *Manager) routable(id string, targets []Target) ([]Target, string, []string) {
+	enabled := make([]Target, 0, len(targets))
+	var disabled []string
+	for _, t := range targets {
+		if m.protocolEnabled(t.Protocol) {
+			enabled = append(enabled, t)
+		} else {
+			// Flags apply at snapshot build; a stale snapshot kept per
+			// FR-002 reflects the flags it was built with until the next
+			// successful refresh.
+			disabled = append(disabled, string(t.Protocol))
+		}
+	}
+	if len(enabled) == 0 {
+		noun := "protocol"
+		if len(disabled) > 1 {
+			noun = "protocols"
+		}
+		return nil, fmt.Sprintf("%s %s disabled by config", noun, strings.Join(disabled, ", ")), nil
+	}
+	const escapes = "resolved endpoint escapes the configured upstream host"
+	routes := make([]Target, 0, len(enabled))
+	var warns []string
+	for _, t := range enabled {
+		// The joined URL must stay on the configured upstream authority.
+		// User endpoints flow through here, so they cannot rewrite the URL
+		// host — e.g. "/v1@evil.com/x" against a bare-host base-url turns
+		// the base into userinfo and would send credentials/prompts to an
+		// attacker host (spec 05 §2 trust boundary).
+		if endpointEscapesBase(m.cfg.BaseURL, t, id) {
+			warns = append(warns, fmt.Sprintf("model %q %s: %s", id, t.Protocol, escapes))
+			continue
+		}
+		routes = append(routes, t)
+	}
+	if len(routes) == 0 {
+		return nil, escapes, nil
+	}
+	return routes, "", warns
 }
 
 // JoinUpstreamURL joins the configured base-url onto an endpoint path and
-// is the single source of truth for that join (spec 05 §2): base-url
-// already carries the version segment (default .../zen/go/v1, catalog at
-// {base}/models), so a leading "/v1" on the endpoint is dropped instead of
-// doubled. The authority-escape check (endpointEscapesBase) must parse
-// exactly the URL this produces — two independent join formulas would be
-// free to drift apart and validate one URL while sending another.
+// is the single source of truth for that join (spec 05 §2): base-url carries
+// no version segment (default .../inference/go), so endpoint paths carry
+// their own /v1 or /v1beta. The authority-escape check (endpointEscapesBase)
+// must parse exactly the URL this produces — two independent join formulas
+// would be free to drift apart and validate one URL while sending another.
 func JoinUpstreamURL(baseURL, endpoint string) string {
-	return strings.TrimSuffix(baseURL, "/") + strings.TrimPrefix(endpoint, "/v1")
+	return strings.TrimSuffix(baseURL, "/") + endpoint
 }
 
-// endpointEscapesBase reports whether joining baseURL with endpoint via
-// JoinUpstreamURL would send the request to a different authority or scheme
-// than the configured base-url. Any parse failure counts as escaping (fail
-// closed).
-func endpointEscapesBase(baseURL, endpoint string) bool {
+// endpointEscapesBase reports whether the target's URL for model would send
+// the request to a different authority or scheme than the configured
+// base-url. Any parse failure counts as escaping (fail closed).
+func endpointEscapesBase(baseURL string, t Target, model string) bool {
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return true
 	}
-	got, err := url.Parse(JoinUpstreamURL(baseURL, endpoint))
+	got, err := url.Parse(t.URL(baseURL, model, true))
 	if err != nil {
 		return true
 	}

@@ -39,7 +39,7 @@ func TestQuotaSelectedCredential(t *testing.T) {
 	f := &fakeCaller{responder: func(method string, payload []byte) ([]byte, error) {
 		var req pluginapi.HTTPRequest
 		json.Unmarshal(payload, &req)
-		if method != pluginabi.MethodHostHTTPDo || req.Headers.Get("Authorization") != "Bearer selected" || req.URL != "https://quota.test/usage" {
+		if method != pluginabi.MethodHostHTTPDo || req.Headers.Get("Authorization") != "Bearer selected" || req.URL != "https://quota.test/v1/usage" {
 			t.Fatal("wrong credential or URL")
 		}
 		return hostOK(pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"usage":{"rolling":{"percent":25,"resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":100},"monthly":{"percent":0}}}`)}), nil

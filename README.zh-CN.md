@@ -39,7 +39,7 @@
 
 ## 解决的问题
 
-OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions（`/v1/chat/completions`）、Anthropic Messages（`/v1/messages`）和 OpenAI Responses（`/v1/responses`）。
+OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions（`/v1/chat/completions`）、Anthropic Messages（`/v1/messages`）、OpenAI Responses（`/v1/responses`）和 Gemini GenerateContent（`/google/v1beta/models/{model}`），部分模型同时支持多种协议。
 
 直接在 CLIProxyAPI 中接入这些接口，需要分别配置不同协议的服务商，带来以下问题：
 
@@ -53,7 +53,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 插件使用共享密钥池，将 OpenCode Go 统一接入 `opencode-go` 服务商：
 
 - **统一认证池**：密钥只需配置一次，由 CLIProxyAPI 在不同协议间统一调度、轮换和冷却。
-- **自动转换协议并路由**：客户端直接请求模型，例如 `opencode-go/glm-5.2` 或 `opencode-go/gpt-5.6-luna`，无需了解上游的协议格式。
+- **自动转换协议并路由**：客户端直接请求模型，例如 `opencode-go/glm-5.2` 或 `opencode-go/gpt-5.6-luna`，无需了解上游的协议格式。模型支持多种协议时，优先使用与客户端相同的协议。
 - **统一模型目录**：所有模型通过 `/v1/models` 提供，归属于 `opencode-go` 服务商。
 
 ## 功能
@@ -64,8 +64,10 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
   - OpenAI Chat Completions（`/v1/chat/completions`）
   - Anthropic Messages（`/v1/messages`）
   - OpenAI Responses（`/v1/responses`）
+  - Gemini GenerateContent（`/google/v1beta/models/{model}:generateContent`），也接受 Gemini 客户端的原生请求
+- **按请求选择协议**：每个模型声明自己支持的协议。请求优先使用与客户端相同的协议，否则选择语义损失最小的协议，详见[协议选择](#协议选择)。
 - **思考与推理支持**：同格式保留推理参数，跨格式仅做固定档位/预算转换；模型能力元数据不参与过滤或限幅，由上游校验。保留关闭和 Claude adaptive 档位；跨格式自动模式无对应字段时使用目标接口默认行为，无法转换的其他值明确报错。
-- **动态模型发现**：获取远程模型目录，可在上游不可用时保留上次成功的目录，支持显式模型声明和自定义路由覆盖。
+- **动态模型发现**：获取远程模型目录，可在上游不可用时保留上次成功的目录，支持显式声明模型及其协议和端点。
 - **多密钥调度**：使用 CLIProxyAPI 原生调度器，在不同协议间共享密钥轮换、重试和错误冷却状态。
 - **原生额度查询**：通过 CLIProxyAPI 通用额度接口查询当前选中凭证的滚动、每周和每月额度，移除独立插件额度页面。
 
@@ -73,6 +75,61 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 - **CLIProxyAPI**：`v8.0.0+`
 - **仅源码构建**：Go 1.26.10+、启用 CGO，并安装面向 CPA 宿主平台的 C 编译器。使用预编译发布库无需 Go 工具链或编译器。
+
+## 协议选择
+
+每个模型支持一组上游协议。内置集合依据 [OpenCode Go 端点表](https://opencode.ai/docs/go/#endpoints)，按模型家族前缀匹配：
+
+| 协议 | 模型家族 |
+|---|---|
+| Responses | `gpt-*`、`grok-*`、`muse-spark-*` |
+| Messages | `claude-*`、`minimax-*`（`minimax-m3.1-flash*` 除外）、`qwen*` |
+| Chat Completions | `glm-*`、`kimi-*`、`longcat-*`、`mimo-*`、`minimax-m3.1-flash*`、`hy*`、`step-*`、`beam-*` |
+| Gemini GenerateContent | `gemini-*` |
+| Chat Completions、Responses、Messages | `deepseek-*` |
+
+文档中 DeepSeek 只列出了 Chat Completions，但网关同样通过 Responses 和 Messages 提供服务。
+
+每个请求按客户端格式对应的顺序，选择模型支持的第一个协议：
+
+| 客户端格式 | 顺序 |
+|---|---|
+| Chat Completions | Chat Completions → Responses → Messages → Gemini |
+| Responses | Responses → Chat Completions → Messages → Gemini |
+| Messages | Messages → Responses → Chat Completions → Gemini |
+| Gemini | Gemini → Responses → Chat Completions → Messages |
+
+与客户端相同的协议排在最前，无需转换。其余协议按转换后的语义损失排序：
+
+- Responses 保留推理文本和 OpenAI file ID，托管搜索也能与 Messages 互通；
+- Messages 不支持音频、视频和 file ID；
+- Chat Completions 无法表示只有 URI 的文档；
+- Gemini 的签名和 thinking 语义与其他协议差异最大，因此对其他客户端都排在最后。
+
+例如，`opencode-go/deepseek-v4-pro` 收到 Claude Code 的请求时直接走 `/v1/messages`，收到 Codex 的请求时直接走 `/v1/responses`，都无需转换。
+
+通过 `models[].protocols` 替换模型的协议集合，或指定端点路径：
+
+```yaml
+models:
+  - name: deepseek-v4-pro
+    protocols:                   # 只使用 Chat Completions 和 Messages
+      - protocol: chat-completions
+      - protocol: messages
+  - name: custom-model           # 未知家族的新 ID
+    protocols:
+      - protocol: responses
+        endpoint: /v1/custom-responses   # 可选；留空使用默认路径
+```
+
+| 字段 | 规则 |
+|---|---|
+| `protocol` | 可选 `chat-completions`、`messages`、`responses` 或 `gemini`；同一模型内每个协议只能出现一次。 |
+| `endpoint` | 可选，拼接在 `base-url` 之后，必须以 `/` 开头。`gemini` 的端点必须包含 `{model}`，执行时替换为上游模型 ID，并追加 `:generateContent`；流式请求追加 `:streamGenerateContent?alt=sse`。 |
+
+各协议的默认路径依次为 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 和 `/google/v1beta/models/{model}`。Gemini 请求使用 `x-goog-api-key` 认证。
+
+关闭某个协议开关，只会从各模型中移除该协议；模型的协议全部被移除后才会被排除。
 
 ## 请求行为
 
@@ -177,11 +234,11 @@ plugins:
   configs:
     cpa-opencode-go:
       enabled: true
-      # 上游基础 URL（默认："https://opencode.ai/zen/go/v1"）
-      base-url: "https://opencode.ai/zen/go/v1"
+      # 上游基础 URL，不含版本段（默认："https://opencode.ai/inference/go"）
+      base-url: "https://opencode.ai/inference/go"
 
-      # 可选：覆盖模型目录地址（默认："{base-url}/models"）
-      # catalog-url: "https://opencode.ai/zen/go/v1/models"
+      # 可选：覆盖模型目录地址（默认："{base-url}/v1/models"）
+      # catalog-url: "https://opencode.ai/inference/go/v1/models"
 
       # 客户端可见的模型 ID 前缀
       model-prefix:
@@ -202,15 +259,17 @@ plugins:
 
       # 协议开关，默认全部启用
       protocols:
-        chat-completions: true   # 启用路由至 /v1/chat/completions 的模型
-        messages: true           # 启用路由至 /v1/messages 的模型
-        responses: true          # 启用路由至 /v1/responses 的模型
+        chat-completions: true   # 启用至 /v1/chat/completions 的路由
+        messages: true           # 启用至 /v1/messages 的路由
+        responses: true          # 启用至 /v1/responses 的路由
+        gemini: true             # 启用至 /google/v1beta/models/{model} 的路由
 
-      # 按模型覆盖路由，优先于内置的前缀路由规则
-      route-overrides:
-        "custom-model":
-          protocol: "messages"           # "chat-completions" | "messages" | "responses"
-          endpoint: "/v1/messages"       # 必须以 / 开头
+      # 模型声明；protocols 替换内置的协议集合
+      models:
+        - name: "custom-model"
+          protocols:
+            - protocol: "messages"       # "chat-completions" | "messages" | "responses" | "gemini"
+              endpoint: "/v1/messages"   # 可选，必须以 / 开头
 
       # 请求执行设置
       request-timeout: "5m"              # 上游请求超时（默认："5m"）
@@ -223,8 +282,8 @@ plugins:
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `api-keys` | `[]object` | 必填 | API 密钥列表，格式为 `- value: "..."`，可选 `name: "Personal"`。支持 `${ENV_VAR}` 环境变量展开，不允许重复或空值。 |
-| `base-url` | `string` | `https://opencode.ai/zen/go/v1` | 上游基础 URL。必须是有效的 HTTPS 地址；仅在 `allow-http: true` 时允许 HTTP。不得包含查询参数、片段或用户认证信息。 |
-| `catalog-url` | `string` | `{base-url}/models` | 模型目录的完整 URL，默认使用 `{base-url}/models`。 |
+| `base-url` | `string` | `https://opencode.ai/inference/go` | 上游基础 URL，不含版本段，`/v1` 或 `/v1beta` 由端点路径携带；末尾的 `/v1` 会被去掉。必须是有效的 HTTPS 地址；仅在 `allow-http: true` 时允许 HTTP。不得包含查询参数、片段或用户认证信息。 |
+| `catalog-url` | `string` | `{base-url}/v1/models` | 模型目录的完整 URL，默认使用 `{base-url}/v1/models`。 |
 | `model-prefix.enabled` | `bool` | `true` | 为 `true` 时，客户端模型名称使用 `<prefix>/<model>`；为 `false` 时，仅使用模型 ID。 |
 | `model-prefix.value` | `string` | `opencode-go` | 启用模型前缀时使用的前缀名称。 |
 | `catalog.refresh-interval` | `duration` | `15m` | 模型目录刷新间隔，例如 `15m`、`1h`，最短为 `1m`。 |
@@ -232,11 +291,11 @@ plugins:
 | `protocols.chat-completions` | `bool` | `true` | Chat Completions 协议开关。 |
 | `protocols.messages` | `bool` | `true` | Messages 协议开关。 |
 | `protocols.responses` | `bool` | `true` | Responses 协议开关。 |
-| `route-overrides` | `map` | `{}` | 按模型 ID 覆盖 `{ protocol: "...", endpoint: "..." }`。协议可选 `chat-completions`、`messages` 或 `responses`。 |
+| `protocols.gemini` | `bool` | `true` | Gemini GenerateContent 协议开关。 |
 | `request-timeout` | `duration` | `5m` | 上游连接建立及完整流的总超时；到期取消宿主 operation，必须大于零。 |
 | `max-response-bytes` | `int64` | `67108864`（64 MiB） | 非流式响应体的字节数上限。 |
 | `allow-http` | `bool` | `false` | 允许 `base-url`、`catalog-url` 和 `models-dev.url` 使用 `http://`，用于本地测试。 |
-| `models` | `[]object` | `[]` | 按上游 `name` 覆盖已有模型元数据或声明新增模型，详见[模型目录能力扩展](#模型目录能力扩展)。 |
+| `models` | `[]object` | `[]` | 按上游 `name` 覆盖已有模型元数据或声明新增模型，详见[模型目录能力扩展](#模型目录能力扩展)。`protocols` 替换模型的协议集合，详见[协议选择](#协议选择)。 |
 | `models-dev.enabled` | `bool` | `true` | 启用 models.dev 元数据兜底，本身不会新增目录模型。 |
 | `models-dev.url` | `string` | `https://models.dev/api.json` | 元数据来源地址，采用与 `base-url` 相同的 URL 校验规则。 |
 | `models-dev.refresh-interval` | `duration` | `24h` | 成功获取元数据后的缓存间隔，最短 `1m`；失败时在后续目录刷新中重试。 |
@@ -245,7 +304,7 @@ plugins:
 
 `catalog-url` 接受 OpenAI 风格的 `{"data":[{"id":"..."}]}` 列表。可选元数据字段包括 `display_name`、`description`、`context_window`、`max_tokens`、`input_modalities`、`output_modalities` 和 `supported_reasoning_levels`（包含 `effort` 和可选 `description` 的对象数组）。推理档位映射为宿主的 `Thinking.Levels`，`none` 同时启用 `ZeroAllowed`。缺失推理字段表示未知，空数组明确表示没有推理档位。旧扩展 `context_length`、`max_output_tokens`、`input_modes`、`output_modes` 和 `thinking` 不再解析。目录仍采用 `data`/`id`，不接受完整 Codex `models`/`slug` 响应。
 
-元数据按字段合并，优先级为 **用户 `models` 配置 > catalog 接口 > models.dev**。显式 `0`、`false` 和空数组都会覆盖低优先级数据，`thinking` 的各字段也独立合并。`models[].name` 使用上游原始 ID：目录中已有的模型覆盖元数据，目录中不存在的模型作为新增声明。新增模型沿用家族路由规则，未知家族通过 `route-overrides` 指定路由；协议开关、端点检查和 ID 冲突检查均适用。显式声明的模型在目录为空或不可用时仍保留，包括 `stale-while-unavailable: false`；删除声明后模型移除，除非上游目录仍列出该 ID。models.dev 本身不会新增模型。覆盖字段沿用 CPA 供应商配置名称：`display-name`、`max-context-length`、`input-modalities`、`output-modalities` 和 `thinking`（`min`、`max`、`zero-allowed`、`dynamic-allowed`、`levels`）；`description` 和 `max-tokens` 是本插件新增的扩展。
+元数据按字段合并，优先级为 **用户 `models` 配置 > catalog 接口 > models.dev**。显式 `0`、`false` 和空数组都会覆盖低优先级数据，`thinking` 的各字段也独立合并。`models[].name` 使用上游原始 ID：目录中已有的模型覆盖元数据，目录中不存在的模型作为新增声明。新增模型沿用家族路由规则，未知家族通过自身的 `protocols` 指定协议；协议开关、端点检查和 ID 冲突检查均适用。显式声明的模型在目录为空或不可用时仍保留，包括 `stale-while-unavailable: false`；删除声明后模型移除，除非上游目录仍列出该 ID。models.dev 本身不会新增模型。覆盖字段沿用 CPA 供应商配置名称：`display-name`、`max-context-length`、`input-modalities`、`output-modalities` 和 `thinking`（`min`、`max`、`zero-allowed`、`dynamic-allowed`、`levels`）；`description` 和 `max-tokens` 是本插件新增的扩展。
 
 在插件配置中添加：
 
@@ -266,17 +325,15 @@ models-dev:
   refresh-interval: 24h              # 默认 24 小时，最短 1 分钟
 ```
 
-未知家族的新模型需要同时声明模型及路由：
+未知家族的新模型需要同时声明模型及协议：
 
 ```yaml
 models:
   - name: custom-model
     display-name: Custom model
     max-context-length: 200000
-route-overrides:
-  custom-model:
-    protocol: responses
-    endpoint: /v1/responses
+    protocols:
+      - protocol: responses
 ```
 
 上游目录中不存在的声明模型以 `UserDefined: true` 传给宿主，客户端 ID 沿用配置的模型前缀。执行时向配置的上游发送原始 `name`，声明不会改变上游实际可用性，也不会新增别名。

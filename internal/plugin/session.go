@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
@@ -67,6 +68,8 @@ func deriveOpenCodeSessionID(format string, body []byte) (string, *errclass.Erro
 			content.WriteString(plain)
 			return sessionDigest(content.String()), nil
 		}
+	} else if format == "gemini" {
+		field = "contents"
 	} else if format != "openai" && format != "claude" {
 		return "", &errclass.Error{Class: errclass.ClassUnsupported, Message: "unsupported protocol format for OpenCode Go session derivation: " + format}
 	}
@@ -76,9 +79,14 @@ func deriveOpenCodeSessionID(format string, body []byte) (string, *errclass.Erro
 	for _, item := range items {
 		role, typ := sessionString(item["role"]), sessionString(item["type"])
 		user := role == "user" && (format != "openai-response" || typ == "message" || typ == "")
+		if format == "gemini" {
+			// GenerateContent defaults a missing role to user; system
+			// instructions live outside contents.
+			user = role == "user" || role == ""
+		}
 		if !started {
 			if !user {
-				if format == "openai" && role != "system" && role != "developer" {
+				if format == "openai" && role != "system" && role != "developer" || format == "gemini" {
 					break
 				}
 				continue
@@ -86,6 +94,10 @@ func deriveOpenCodeSessionID(format string, body []byte) (string, *errclass.Erro
 			started = true
 		} else if !user {
 			break
+		}
+		if format == "gemini" {
+			appendGeminiSessionParts(&content, item["parts"])
+			continue
 		}
 		appendSessionContent(&content, item["content"], format)
 	}
@@ -167,6 +179,75 @@ func appendSessionContent(out *strings.Builder, raw json.RawMessage, format stri
 		}
 	}
 }
+
+// appendGeminiSessionParts hashes Gemini parts as CPA's former Chat translation
+// did: text verbatim, inline and file images as their data URL or URI. Thought
+// parts are omitted; other parts contribute canonical JSON.
+func appendGeminiSessionParts(out *strings.Builder, raw json.RawMessage) {
+	var parts []json.RawMessage
+	if json.Unmarshal(raw, &parts) != nil {
+		if hasContent(raw) {
+			appendSessionJSON(out, raw)
+		}
+		return
+	}
+	for _, part := range parts {
+		var p map[string]json.RawMessage
+		if json.Unmarshal(part, &p) != nil {
+			appendSessionJSON(out, part)
+			continue
+		}
+		if thought, _ := strconv.ParseBool(string(p["thought"])); thought {
+			continue
+		}
+		if text, ok := p["text"]; ok {
+			out.WriteString(sessionString(text))
+			continue
+		}
+		if data := aliasObject(p, "inlineData", "inline_data"); data != nil {
+			mime, payload := aliasString(data, "mimeType", "mime_type"), sessionString(data["data"])
+			if mime == "" {
+				mime = "application/octet-stream"
+			}
+			if payload != "" && isImageMIME(mime) {
+				out.WriteString("data:" + mime + ";base64," + payload)
+				continue
+			}
+		}
+		if file := aliasObject(p, "fileData", "file_data"); file != nil {
+			uri, mime := aliasString(file, "fileUri", "file_uri"), aliasString(file, "mimeType", "mime_type")
+			if uri != "" && isImageMIME(mime) {
+				out.WriteString(uri)
+				continue
+			}
+		}
+		appendSessionJSON(out, part)
+	}
+}
+
+// aliasObject decodes the first present object among camelCase and
+// snake_case field aliases.
+func aliasObject(obj map[string]json.RawMessage, names ...string) map[string]json.RawMessage {
+	for _, name := range names {
+		var out map[string]json.RawMessage
+		if json.Unmarshal(obj[name], &out) == nil && out != nil {
+			return out
+		}
+	}
+	return nil
+}
+
+// aliasString returns the first nonempty string among field aliases.
+func aliasString(obj map[string]json.RawMessage, names ...string) string {
+	for _, name := range names {
+		if s := sessionString(obj[name]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func isImageMIME(mime string) bool { return strings.HasPrefix(strings.ToLower(mime), "image/") }
 
 func appendSessionJSON(out *strings.Builder, raw json.RawMessage) {
 	var value any

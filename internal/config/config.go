@@ -17,7 +17,7 @@ import (
 
 // Defaults (spec 04 §2/§4).
 const (
-	DefaultBaseURL          = "https://opencode.ai/zen/go/v1"
+	DefaultBaseURL          = "https://opencode.ai/inference/go"
 	DefaultModelPrefix      = "opencode-go"
 	DefaultRefreshInterval  = 15 * time.Minute
 	DefaultRequestTimeout   = 5 * time.Minute
@@ -43,11 +43,7 @@ type Protocols struct {
 	ChatCompletions bool
 	Messages        bool
 	Responses       bool
-}
-
-type RouteOverride struct {
-	Protocol string `yaml:"protocol"`
-	Endpoint string `yaml:"endpoint"`
+	Gemini          bool
 }
 
 type Config struct {
@@ -59,16 +55,28 @@ type Config struct {
 	APIKeys          []APIKey
 	Catalog          Catalog
 	Protocols        Protocols
-	RouteOverrides   map[string]RouteOverride
 	AllowHTTP        bool
 	RequestTimeout   time.Duration
 	MaxResponseBytes int64
 }
 
 type ModelOverride struct {
-	Name               string `yaml:"name"`
+	Name string `yaml:"name"`
+	// Protocols replaces the built-in protocol set when present; an empty
+	// Endpoint uses the protocol's default path.
+	Protocols          []ModelProtocol `yaml:"protocols"`
 	modelmeta.Metadata `yaml:",inline"`
 }
+
+// ModelProtocol is one upstream protocol a model supports.
+type ModelProtocol struct {
+	Protocol string `yaml:"protocol"`
+	Endpoint string `yaml:"endpoint"`
+}
+
+// ModelPlaceholder marks where a model-dependent endpoint path (Gemini)
+// carries the upstream model ID.
+const ModelPlaceholder = "{model}"
 
 type ModelsDev struct {
 	Enabled         bool
@@ -86,16 +94,15 @@ type rawConfig struct {
 		URL             *string `yaml:"url"`
 		RefreshInterval *string `yaml:"refresh-interval"`
 	} `yaml:"models-dev"`
-	BaseURL          *string                  `yaml:"base-url"`
-	CatalogURL       *string                  `yaml:"catalog-url"`
-	ModelPrefix      rawPrefix                `yaml:"model-prefix"`
-	APIKeys          []rawKey                 `yaml:"api-keys"`
-	Catalog          rawCatalog               `yaml:"catalog"`
-	Protocols        rawProtocols             `yaml:"protocols"`
-	RouteOverrides   map[string]RouteOverride `yaml:"route-overrides"`
-	AllowHTTP        bool                     `yaml:"allow-http"`
-	RequestTimeout   *string                  `yaml:"request-timeout"`
-	MaxResponseBytes *int64                   `yaml:"max-response-bytes"`
+	BaseURL          *string      `yaml:"base-url"`
+	CatalogURL       *string      `yaml:"catalog-url"`
+	ModelPrefix      rawPrefix    `yaml:"model-prefix"`
+	APIKeys          []rawKey     `yaml:"api-keys"`
+	Catalog          rawCatalog   `yaml:"catalog"`
+	Protocols        rawProtocols `yaml:"protocols"`
+	AllowHTTP        bool         `yaml:"allow-http"`
+	RequestTimeout   *string      `yaml:"request-timeout"`
+	MaxResponseBytes *int64       `yaml:"max-response-bytes"`
 }
 
 type rawPrefix struct {
@@ -117,10 +124,11 @@ type rawProtocols struct {
 	ChatCompletions *bool `yaml:"chat-completions"`
 	Messages        *bool `yaml:"messages"`
 	Responses       *bool `yaml:"responses"`
+	Gemini          *bool `yaml:"gemini"`
 }
 
 var (
-	validProtocols = map[string]bool{"chat-completions": true, "messages": true, "responses": true}
+	validProtocols = map[string]bool{"chat-completions": true, "messages": true, "responses": true, "gemini": true}
 )
 
 // Load decodes YAML, expands ${VAR} references in api-key values only,
@@ -153,7 +161,7 @@ func Load(yamlBytes []byte) (Config, error) {
 	c := Config{
 		Models:    raw.Models,
 		ModelsDev: ModelsDev{Enabled: orDefault(raw.ModelsDev.Enabled, true), URL: orDefault(raw.ModelsDev.URL, "https://models.dev/api.json")},
-		BaseURL:   orDefault(raw.BaseURL, DefaultBaseURL),
+		BaseURL:   normalizeBaseURL(orDefault(raw.BaseURL, DefaultBaseURL)),
 		ModelPrefix: ModelPrefix{
 			Enabled: orDefault(raw.ModelPrefix.Enabled, true),
 			Value:   orDefault(raw.ModelPrefix.Value, DefaultModelPrefix),
@@ -167,8 +175,8 @@ func Load(yamlBytes []byte) (Config, error) {
 			ChatCompletions: orDefault(raw.Protocols.ChatCompletions, true),
 			Messages:        orDefault(raw.Protocols.Messages, true),
 			Responses:       orDefault(raw.Protocols.Responses, true),
+			Gemini:          orDefault(raw.Protocols.Gemini, true),
 		},
-		RouteOverrides:   raw.RouteOverrides,
 		AllowHTTP:        raw.AllowHTTP,
 		RequestTimeout:   requestTimeout,
 		MaxResponseBytes: orDefault(raw.MaxResponseBytes, DefaultMaxResponseBytes),
@@ -182,12 +190,19 @@ func Load(yamlBytes []byte) (Config, error) {
 		// catalog-url cannot double up separators downstream.
 		c.CatalogURL = strings.TrimRight(*raw.CatalogURL, "/")
 	} else {
-		c.CatalogURL = strings.TrimRight(c.BaseURL, "/") + "/models"
+		c.CatalogURL = c.BaseURL + "/v1/models"
 	}
 	if err := c.validate(); err != nil {
 		return Config{}, err
 	}
 	return c, nil
+}
+
+// normalizeBaseURL drops trailing slashes and a trailing /v1: endpoint paths
+// carry their own version segment, and earlier releases documented a base-url
+// ending in /v1.
+func normalizeBaseURL(raw string) string {
+	return strings.TrimSuffix(strings.TrimRight(raw, "/"), "/v1")
 }
 
 // PublicID returns the client-facing model ID (FR-003).
@@ -220,6 +235,9 @@ func (c Config) validate() error {
 				return fmt.Errorf("models[%d].thinking: invalid budget range", i)
 			}
 		}
+		if err := validateModelProtocols(i, model.Protocols); err != nil {
+			return err
+		}
 	}
 	if err := validateURL("base-url", c.BaseURL, c.AllowHTTP); err != nil {
 		return err
@@ -248,19 +266,40 @@ func (c Config) validate() error {
 	if c.MaxResponseBytes <= 0 {
 		return fmt.Errorf("max-response-bytes: must be positive")
 	}
-	for name, o := range c.RouteOverrides {
-		if !validProtocols[o.Protocol] {
-			return fmt.Errorf("route-overrides[%s].protocol: unsupported protocol %q", name, o.Protocol)
-		}
-		if o.Endpoint == "" {
-			return fmt.Errorf("route-overrides[%s].endpoint: must not be empty", name)
-		}
-		if !strings.HasPrefix(o.Endpoint, "/") {
-			return fmt.Errorf("route-overrides[%s].endpoint: must start with /", name)
-		}
-	}
 	if c.ModelPrefix.Enabled && !validPrefix(c.ModelPrefix.Value) {
 		return fmt.Errorf("model-prefix.value: invalid provider-ID characters %q", c.ModelPrefix.Value)
+	}
+	return nil
+}
+
+// validateModelProtocols checks one declaration's protocol list. A nil list
+// keeps the built-in protocols; an explicit empty list routes nothing and is
+// rejected.
+func validateModelProtocols(i int, protocols []ModelProtocol) error {
+	if protocols == nil {
+		return nil
+	}
+	if len(protocols) == 0 {
+		return fmt.Errorf("models[%d].protocols: must list at least one protocol", i)
+	}
+	seen := make(map[string]bool, len(protocols))
+	for j, p := range protocols {
+		if !validProtocols[p.Protocol] {
+			return fmt.Errorf("models[%d].protocols[%d].protocol: unsupported protocol %q", i, j, p.Protocol)
+		}
+		if seen[p.Protocol] {
+			return fmt.Errorf("models[%d].protocols[%d].protocol: duplicate protocol %q", i, j, p.Protocol)
+		}
+		seen[p.Protocol] = true
+		if p.Endpoint == "" {
+			continue
+		}
+		if !strings.HasPrefix(p.Endpoint, "/") {
+			return fmt.Errorf("models[%d].protocols[%d].endpoint: must start with /", i, j)
+		}
+		if p.Protocol == "gemini" && !strings.Contains(p.Endpoint, ModelPlaceholder) {
+			return fmt.Errorf("models[%d].protocols[%d].endpoint: gemini endpoint must contain %s", i, j, ModelPlaceholder)
+		}
 	}
 	return nil
 }

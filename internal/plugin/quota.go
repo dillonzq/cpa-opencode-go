@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+
+	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 )
 
 type quotaUpstreamWindow struct {
@@ -38,7 +40,7 @@ func (m *Manager) FetchQuota(ctx context.Context, req pluginapi.QuotaFetchReques
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	resp, err := m.bridge.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodGet, URL: strings.TrimRight(baseURL, "/") + "/usage", Headers: http.Header{"Authorization": {"Bearer " + key}, "Accept": {"application/json"}}})
+	resp, err := m.bridge.Do(ctx, pluginapi.HTTPRequest{Method: http.MethodGet, URL: catalog.JoinUpstreamURL(baseURL, "/v1/usage"), Headers: http.Header{"Authorization": {"Bearer " + key}, "Accept": {"application/json"}}})
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return empty, fmt.Errorf("quota upstream request failed")
 	}

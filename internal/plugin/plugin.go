@@ -213,7 +213,7 @@ type registrationResult struct {
 // through the registration metadata.
 func pluginConfigFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
-		{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Model declarations and metadata overrides using CPA provider fields: name, display-name, max-context-length, input-modalities, output-modalities, thinking; plus description and max-tokens. New IDs use family routing or route-overrides."},
+		{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Model declarations and metadata overrides using CPA provider fields: name, display-name, max-context-length, input-modalities, output-modalities, thinking; plus description, max-tokens, and protocols (`- protocol: chat-completions|messages|responses|gemini`, optional `endpoint`), which replaces the built-in protocol set. New IDs use family routing or protocols."},
 		{Name: "models-dev", Type: pluginapi.ConfigFieldTypeObject, Description: "Fallback metadata source (enabled, url, refresh-interval); priority: models > catalog > models.dev."},
 		{
 			Name:        "api-keys",
@@ -223,12 +223,12 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{
 			Name:        "base-url",
 			Type:        pluginapi.ConfigFieldTypeString,
-			Description: "Upstream base URL (default: https://opencode.ai/zen/go/v1).",
+			Description: "Upstream base URL without a version segment (default: https://opencode.ai/inference/go); a trailing /v1 is dropped.",
 		},
 		{
 			Name:        "catalog-url",
 			Type:        pluginapi.ConfigFieldTypeString,
-			Description: "Optional catalog discovery URL (default: {base-url}/models).",
+			Description: "Optional catalog discovery URL (default: {base-url}/v1/models).",
 		},
 		{
 			Name:        "model-prefix",
@@ -243,12 +243,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{
 			Name:        "protocols",
 			Type:        pluginapi.ConfigFieldTypeObject,
-			Description: "Protocol enable/disable switches (`chat-completions: bool`, `messages: bool`, `responses: bool`).",
-		},
-		{
-			Name:        "route-overrides",
-			Type:        pluginapi.ConfigFieldTypeObject,
-			Description: "Explicit route overrides per model (`<model-id>: {protocol: string, endpoint: string}`).",
+			Description: "Protocol enable/disable switches (`chat-completions: bool`, `messages: bool`, `responses: bool`, `gemini: bool`).",
 		},
 		{
 			Name:        "request-timeout",
@@ -269,7 +264,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 }
 
 func registrationEnvelope() []byte {
-	formats := []string{"openai", "claude", "openai-response"}
+	formats := []string{"openai", "claude", "openai-response", "gemini"}
 	return okEnvelope(registrationResult{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{

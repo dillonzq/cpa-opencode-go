@@ -43,8 +43,9 @@ The final value is the SHA-256 of the extracted content, encoded as 64 lowercase
 | `openai` (Chat Completions) | Skip leading system/developer messages, then collect the first consecutive user messages; stop at any other role, including assistant/tool before the first user |
 | `claude` (Messages) | Skip non-user messages before the first user, collect the first consecutive user messages, then stop at a non-user message |
 | `openai-response` (Responses) | Hash string `input` directly; for arrays, skip items before the first user message, collect consecutive user messages (`role: user` with type message or absent), then stop at any other item |
+| `gemini` (GenerateContent) | Ignore `systemInstruction`; collect the first consecutive user `contents` (`role: user` or absent), stopping at any other role, including a model turn before the first user |
 
-System instructions, message-level ID/status, later conversation turns, model, and authentication information do not contribute to the plugin fallback hash. Identical plain text produces the same ID across all three formats; text whitespace and line endings are preserved.
+System instructions, message-level ID/status, later conversation turns, model, and authentication information do not contribute to the plugin fallback hash. Identical plain text produces the same ID across all four formats; text whitespace and line endings are preserved.
 
 | Content | Compatibility behavior |
 | --- | --- |
@@ -53,6 +54,7 @@ System instructions, message-level ID/status, later conversation turns, model, a
 | Claude image | Concatenate URLs; convert base64 sources to data URLs, defaulting missing MIME to application/octet-stream |
 | Claude tool_result | Recursively extract content, preserving historical hashes |
 | Claude thinking/redacted_thinking/tool_use | Omit from the hash, preserving historical behavior |
+| Gemini parts | Concatenate text; inline and file images contribute their data URL or URI; omit thought parts. This matches the Chat translation CPA applied to Gemini clients before the plugin accepted them natively. Other parts use the stable JSON encoding below |
 | Files, images with only file_id, and unknown content | Include stable JSON encoding with NUL delimiters on both sides; object keys have stable ordering, json.Number preserves numeric precision, and the content object's top-level cache_control is removed |
 
 Session extraction does not call protocol translation decoders or validate unrelated native fields, so files and future content types are not rejected solely by session extraction. Unsupported formats or top-level JSON decoding failures return errors; other input shapes are left to the request adapter or upstream to validate. An explicit ID bypasses content hashing, but the request still undergoes subsequent processing.
@@ -65,7 +67,7 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 ## Request coverage and limitations
 
-Streaming and non-streaming inference requests for Chat Completions, Messages, and Responses all set `x-opencode-session`. Model catalog `/models` requests do not include it. Extraction does not log the content used for hashing; debug logs include the final session ID.
+Streaming and non-streaming inference requests for Chat Completions, Messages, Responses, and Gemini GenerateContent all set `x-opencode-session`. Model catalog `/models` requests do not include it. Extraction does not log the content used for hashing; debug logs include the final session ID.
 
 Content hashing is a deterministic fallback that cannot fully distinguish real conversations. Identical initial content produces the same ID; history trimming, context compaction, or interceptor changes to initial content may change it; requests without extractable content share the empty-content hash. Historical text concatenation also allows different splits to produce the same result, such as `ab` + `c` and `a` + `bc`.
 

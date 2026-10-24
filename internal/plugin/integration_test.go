@@ -408,9 +408,9 @@ func (st *mockOpenCode) chatRequest(t *testing.T) (path, auth string, body map[s
 }
 
 func integrationYAML(baseURL string) string {
-	// The real base-url carries the version segment (.../zen/go/v1); the
-	// mock server root therefore gets "/v1" appended so /v1/models and
-	// /v1/chat/completions line up.
+	// Endpoint paths carry the version segment, so the mock server root
+	// serves /v1/models and /v1/chat/completions. A base-url written the old
+	// way, ending in /v1, normalizes to that root.
 	return fmt.Sprintf("base-url: %s/v1\nallow-http: true\napi-keys:\n  - value: sk-test-1\nmodels-dev:\n  enabled: false\n", baseURL)
 }
 
@@ -1225,13 +1225,13 @@ func TestHTTPSDefaultEnforced(t *testing.T) {
 	}
 }
 
-// TestRouteOverrideEndpointReachesUpstream pins that a user route override,
-// not the route default, determines the upstream URL (arch §5 route priority,
-// FR-004).
+// TestRouteOverrideEndpointReachesUpstream pins that a user protocol
+// endpoint, not the route default, determines the upstream URL (route
+// priority, FR-004).
 func TestRouteOverrideEndpointReachesUpstream(t *testing.T) {
 	m, _, st, yamlText := newIntegrationManager(t)
 	st.setCatalogBody(`{"data":[{"id":"totally-new-x"}]}`)
-	yamlText += "route-overrides:\n  totally-new-x:\n    protocol: messages\n    endpoint: /v1/messages-override\n"
+	yamlText += "models:\n  - name: totally-new-x\n    protocols:\n      - protocol: messages\n        endpoint: /v1/messages-override\n"
 	resp := mustHandle(t, m, "plugin.reconfigure", lifecycleRequestBody(yamlText))
 	if env := decodeEnv(t, resp); !env.OK {
 		t.Fatalf("reconfigure: %s", resp)
