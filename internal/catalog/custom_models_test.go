@@ -15,7 +15,7 @@ func TestConfiguredModelsAddAndOverride(t *testing.T) {
 	cfg.Models = []config.ModelOverride{
 		{Name: "glm-existing", Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Override")}},
 		{Name: "glm-custom", Metadata: modelmeta.Metadata{Context: modelmeta.Ptr(int64(200000))}},
-		{Name: "custom-model", Protocols: []config.ModelProtocol{{Protocol: "responses"}}, Metadata: modelmeta.Metadata{Output: modelmeta.Ptr(int64(64000))}},
+		{Name: "custom-model", Protocols: map[string]config.ProtocolOverride{"responses": {}}, Metadata: modelmeta.Metadata{Output: modelmeta.Ptr(int64(64000))}},
 		{Name: "unknown-model"},
 	}
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-existing","display_name":"Catalog"}]}`)}}
@@ -77,7 +77,7 @@ func TestConfiguredModelsSurviveCatalogEmptyAndFailure(t *testing.T) {
 	}
 }
 
-func TestConfiguredModelRemovalAndProtocolFlags(t *testing.T) {
+func TestConfiguredModelRemovalAndProtocolSwitches(t *testing.T) {
 	cfg := testCfg()
 	cfg.Models = []config.ModelOverride{{Name: "glm-custom"}}
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-discovered"}]}`)}}
@@ -92,8 +92,8 @@ func TestConfiguredModelRemovalAndProtocolFlags(t *testing.T) {
 	if _, ok := m.Lookup("glm-discovered"); !ok {
 		t.Fatal("genuine discovered snapshot lost")
 	}
-	cfg.Models = []config.ModelOverride{{Name: "glm-custom"}}
-	cfg.Protocols.ChatCompletions = false
+	cfg.Models = nil
+	declare(&cfg, "glm-custom", off("chat-completions"))
 	m = New(cfg, fc)
 	if len(m.Models()) != 0 || len(m.Unsupported()) != 1 {
 		t.Fatal("custom model bypassed protocol disable")

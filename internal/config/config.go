@@ -4,9 +4,11 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,13 +41,6 @@ type Catalog struct {
 	StaleWhileUnavailable bool
 }
 
-type Protocols struct {
-	ChatCompletions bool
-	Messages        bool
-	Responses       bool
-	Gemini          bool
-}
-
 type Config struct {
 	Models           []ModelOverride
 	ModelsDev        ModelsDev
@@ -54,7 +49,7 @@ type Config struct {
 	ModelPrefix      ModelPrefix
 	APIKeys          []APIKey
 	Catalog          Catalog
-	Protocols        Protocols
+	Protocols        map[string]ProtocolOverride // endpoints for every model; switches live on models
 	AllowHTTP        bool
 	RequestTimeout   time.Duration
 	MaxResponseBytes int64
@@ -62,16 +57,22 @@ type Config struct {
 
 type ModelOverride struct {
 	Name string `yaml:"name"`
-	// Protocols replaces the built-in protocol set when present; an empty
-	// Endpoint uses the protocol's default path.
-	Protocols          []ModelProtocol `yaml:"protocols"`
+	// Protocols patches the built-in protocol set, keyed by protocol: an
+	// entry switches its protocol on unless Enabled is false, and a
+	// non-empty Endpoint overrides the global path.
+	Protocols          map[string]ProtocolOverride `yaml:"protocols"`
 	modelmeta.Metadata `yaml:",inline"`
 }
 
-// ModelProtocol is one upstream protocol a model supports.
-type ModelProtocol struct {
-	Protocol string `yaml:"protocol"`
+// ProtocolOverride is one protocols entry.
+type ProtocolOverride struct {
+	Enabled  *bool  `yaml:"enabled"`
 	Endpoint string `yaml:"endpoint"`
+}
+
+// IsEnabled reports whether the entry switches its protocol on.
+func (p ProtocolOverride) IsEnabled() bool {
+	return p.Enabled == nil || *p.Enabled
 }
 
 // ModelPlaceholder marks where a model-dependent endpoint path (Gemini)
@@ -94,15 +95,15 @@ type rawConfig struct {
 		URL             *string `yaml:"url"`
 		RefreshInterval *string `yaml:"refresh-interval"`
 	} `yaml:"models-dev"`
-	BaseURL          *string      `yaml:"base-url"`
-	CatalogURL       *string      `yaml:"catalog-url"`
-	ModelPrefix      rawPrefix    `yaml:"model-prefix"`
-	APIKeys          []rawKey     `yaml:"api-keys"`
-	Catalog          rawCatalog   `yaml:"catalog"`
-	Protocols        rawProtocols `yaml:"protocols"`
-	AllowHTTP        bool         `yaml:"allow-http"`
-	RequestTimeout   *string      `yaml:"request-timeout"`
-	MaxResponseBytes *int64       `yaml:"max-response-bytes"`
+	BaseURL          *string                     `yaml:"base-url"`
+	CatalogURL       *string                     `yaml:"catalog-url"`
+	ModelPrefix      rawPrefix                   `yaml:"model-prefix"`
+	APIKeys          []rawKey                    `yaml:"api-keys"`
+	Catalog          rawCatalog                  `yaml:"catalog"`
+	Protocols        map[string]ProtocolOverride `yaml:"protocols"`
+	AllowHTTP        bool                        `yaml:"allow-http"`
+	RequestTimeout   *string                     `yaml:"request-timeout"`
+	MaxResponseBytes *int64                      `yaml:"max-response-bytes"`
 }
 
 type rawPrefix struct {
@@ -118,13 +119,6 @@ type rawKey struct {
 type rawCatalog struct {
 	RefreshInterval       *string `yaml:"refresh-interval"`
 	StaleWhileUnavailable *bool   `yaml:"stale-while-unavailable"`
-}
-
-type rawProtocols struct {
-	ChatCompletions *bool `yaml:"chat-completions"`
-	Messages        *bool `yaml:"messages"`
-	Responses       *bool `yaml:"responses"`
-	Gemini          *bool `yaml:"gemini"`
 }
 
 var (
@@ -171,12 +165,7 @@ func Load(yamlBytes []byte) (Config, error) {
 			RefreshInterval:       refreshInterval,
 			StaleWhileUnavailable: orDefault(raw.Catalog.StaleWhileUnavailable, true),
 		},
-		Protocols: Protocols{
-			ChatCompletions: orDefault(raw.Protocols.ChatCompletions, true),
-			Messages:        orDefault(raw.Protocols.Messages, true),
-			Responses:       orDefault(raw.Protocols.Responses, true),
-			Gemini:          orDefault(raw.Protocols.Gemini, true),
-		},
+		Protocols:        raw.Protocols,
 		AllowHTTP:        raw.AllowHTTP,
 		RequestTimeout:   requestTimeout,
 		MaxResponseBytes: orDefault(raw.MaxResponseBytes, DefaultMaxResponseBytes),
@@ -220,6 +209,9 @@ func (c Config) validate() error {
 	if c.ModelsDev.RefreshInterval < time.Minute {
 		return fmt.Errorf("models-dev.refresh-interval: must be at least 1m")
 	}
+	if err := validateProtocols("protocols", c.Protocols, false); err != nil {
+		return err
+	}
 	seenModels := map[string]bool{}
 	for i, model := range c.Models {
 		if strings.TrimSpace(model.Name) == "" || seenModels[model.Name] {
@@ -235,7 +227,7 @@ func (c Config) validate() error {
 				return fmt.Errorf("models[%d].thinking: invalid budget range", i)
 			}
 		}
-		if err := validateModelProtocols(i, model.Protocols); err != nil {
+		if err := validateProtocols(fmt.Sprintf("models[%d].protocols", i), model.Protocols, true); err != nil {
 			return err
 		}
 	}
@@ -272,33 +264,25 @@ func (c Config) validate() error {
 	return nil
 }
 
-// validateModelProtocols checks one declaration's protocol list. A nil list
-// keeps the built-in protocols; an explicit empty list routes nothing and is
-// rejected.
-func validateModelProtocols(i int, protocols []ModelProtocol) error {
-	if protocols == nil {
-		return nil
-	}
-	if len(protocols) == 0 {
-		return fmt.Errorf("models[%d].protocols: must list at least one protocol", i)
-	}
-	seen := make(map[string]bool, len(protocols))
-	for j, p := range protocols {
-		if !validProtocols[p.Protocol] {
-			return fmt.Errorf("models[%d].protocols[%d].protocol: unsupported protocol %q", i, j, p.Protocol)
+// validateProtocols checks one protocols map. Only model entries may switch
+// a protocol; global entries set paths.
+func validateProtocols(field string, protocols map[string]ProtocolOverride, switchable bool) error {
+	for _, name := range slices.Sorted(maps.Keys(protocols)) {
+		p := protocols[name]
+		if !validProtocols[name] {
+			return fmt.Errorf("%s: unsupported protocol %q", field, name)
 		}
-		if seen[p.Protocol] {
-			return fmt.Errorf("models[%d].protocols[%d].protocol: duplicate protocol %q", i, j, p.Protocol)
+		if p.Enabled != nil && !switchable {
+			return fmt.Errorf("%s.%s: only endpoint is allowed; switch protocols under models[].protocols", field, name)
 		}
-		seen[p.Protocol] = true
 		if p.Endpoint == "" {
 			continue
 		}
 		if !strings.HasPrefix(p.Endpoint, "/") {
-			return fmt.Errorf("models[%d].protocols[%d].endpoint: must start with /", i, j)
+			return fmt.Errorf("%s.%s.endpoint: must start with /", field, name)
 		}
-		if p.Protocol == "gemini" && !strings.Contains(p.Endpoint, ModelPlaceholder) {
-			return fmt.Errorf("models[%d].protocols[%d].endpoint: gemini endpoint must contain %s", i, j, ModelPlaceholder)
+		if name == "gemini" && !strings.Contains(p.Endpoint, ModelPlaceholder) {
+			return fmt.Errorf("%s.%s.endpoint: gemini endpoint must contain %s", field, name, ModelPlaceholder)
 		}
 	}
 	return nil

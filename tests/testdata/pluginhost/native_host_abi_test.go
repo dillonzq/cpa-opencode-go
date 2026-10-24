@@ -147,7 +147,7 @@ func TestOpenCodeNativeMetadata(t *testing.T) {
 	if fallbackCalls.Load() != 1 {
 		t.Fatalf("reconfiguration refetched unexpired cache: %d", fallbackCalls.Load())
 	}
-	declared := reconfigured + "  - name: custom-only-model\n    display-name: Custom model\n    max-context-length: 222222\n    max-tokens: 64000\n    input-modalities: [text]\n    thinking:\n      levels: [high]\n    protocols:\n      - protocol: responses\n"
+	declared := reconfigured + "  - name: custom-only-model\n    display-name: Custom model\n    max-context-length: 222222\n    max-tokens: 64000\n    input-modalities: [text]\n    thinking:\n      levels: [high]\n    protocols:\n      responses:\n        enabled: true\n"
 	plug, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginReconfigure, []byte(declared))
 	if err != nil {
 		t.Fatal(err)

@@ -2,19 +2,21 @@
 // normalizes metadata, assigns routes, and serves the last good snapshot
 // (FR-002, FR-003, FR-004, FR-010).
 //
-// Protocol resolution priority: the user's models[].protocols declaration >
-// built-in compatibility table > unsupported (excluded from the routable set,
-// kept in diagnostics).
+// Protocol resolution: the built-in compatibility table patched by the
+// user's models[].protocols switches; a model left without protocols is
+// unsupported (excluded from the routable set, kept in diagnostics).
 //
 // No scheduling lives here; M3 wires the refresh cadence.
 package catalog
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +42,10 @@ const (
 	RouteResponses       Route = "responses"
 	RouteGemini          Route = "gemini"
 )
+
+// protocolOrder lists every route; protocols a model declaration adds beyond
+// its built-in set follow in this order.
+var protocolOrder = []Route{RouteChatCompletions, RouteMessages, RouteResponses, RouteGemini}
 
 // routeEndpoints maps each route to its default endpoint path below base-url.
 // The Gemini path names the model resource; Target.URL appends the operation.
@@ -182,9 +188,9 @@ type Manager struct {
 
 	mu sync.Mutex
 	// raw retains the decoded upstream entries behind the current snapshot
-	// so SeedFrom can rebuild records against a NEW config (route overrides,
-	// protocol flags, and prefix settings may all have changed since the
-	// snapshot was built).
+	// so SeedFrom can rebuild records against a NEW config (protocol
+	// switches, endpoints, and prefix settings may all have changed since
+	// the snapshot was built).
 	raw    []rawModel
 	models []ModelRecord
 	// index maps both PublicID and UpstreamID to their record so ID
@@ -204,16 +210,16 @@ func New(cfg config.Config, client HostClient) *Manager {
 // SeedFrom republishes only prev's raw catalog snapshot, keeping m's current
 // fallback metadata and cache expiry. It rebuilds every record through the same
 // resolution/validation path a refresh applies, but against m's OWN cfg:
-// routes re-resolve (a removed override drops its model), the protocolEnabled
-// gate re-applies, PublicIDs recompute under m's prefix, endpoints re-check
+// routes re-resolve (a removed declaration drops its model), protocol
+// switches re-apply, PublicIDs recompute under m's prefix, endpoints re-check
 // against m's base-url, and collisions/diagnostics regenerate (arch §5).
 //
 // m keeps its OWN cfg: subsequent Refresh calls use m's base-url/catalog-url/
 // protocols/prefix (F5: a failed-refresh reconfigure must adopt the new
 // manager rather than keep ticking the old URL). Because seeding rebuilds
 // instead of copying, a config change between snapshots takes effect at seed
-// time — e.g. a protocol kill-switch flipped during a catalog outage demotes
-// its routes immediately instead of serving stale routable records until the
+// time — e.g. a protocol switched off during a catalog outage demotes its
+// routes immediately instead of serving stale routable records until the
 // outage ends.
 func (m *Manager) SeedFrom(prev *Manager) {
 	prev.mu.Lock()
@@ -357,12 +363,20 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			continue
 		}
 		seen[e.ID] = true
-		targets, warn := m.resolve(e.ID, overrides[e.ID].Protocols)
+		targets, disabled, warn := m.resolve(e.ID, overrides[e.ID].Protocols)
 		if warn != "" {
 			warns = append(warns, warn)
 		}
 		if len(targets) == 0 {
-			unsup = append(unsup, UnsupportedModel{UpstreamID: e.ID, Reason: "no route determined"})
+			reason := "no route determined"
+			if len(disabled) > 0 {
+				noun := "protocol"
+				if len(disabled) > 1 {
+					noun = "protocols"
+				}
+				reason = fmt.Sprintf("%s %s disabled by config", noun, strings.Join(disabled, ", "))
+			}
+			unsup = append(unsup, UnsupportedModel{UpstreamID: e.ID, Reason: reason})
 			continue
 		}
 		routes, reason, routeWarns := m.routable(e.ID, targets)
@@ -419,79 +433,50 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 	m.raw, m.models, m.index, m.unsup, m.warns = entries, models, index, unsup, warns
 }
 
-// protocolEnabled reports whether the resolved route's protocol flag is on
-// (spec 04 §4); flags default to true.
-func (m *Manager) protocolEnabled(r Route) bool {
-	switch r {
-	case RouteChatCompletions:
-		return m.cfg.Protocols.ChatCompletions
-	case RouteMessages:
-		return m.cfg.Protocols.Messages
-	case RouteResponses:
-		return m.cfg.Protocols.Responses
-	case RouteGemini:
-		return m.cfg.Protocols.Gemini
-	}
-	return true
-}
-
-// resolve applies protocol priority strictly: the user's declaration,
-// compatibility table (family prefix), none. Empty endpoints take the
-// protocol's default path.
-func (m *Manager) resolve(id string, declared []config.ModelProtocol) ([]Target, string) {
-	if declared != nil {
-		// Spec 04 §5: user routing MUST be visible in diagnostics. Load
-		// validation (spec 04 §6) guarantees known, unique protocols.
-		targets := make([]Target, len(declared))
-		parts := make([]string, len(declared))
-		for i, p := range declared {
-			targets[i] = Target{Protocol: Route(p.Protocol), EndpointPath: p.Endpoint}
-			if targets[i].EndpointPath == "" {
-				targets[i].EndpointPath = targets[i].Protocol.EndpointPath()
-			}
-			parts[i] = p.Protocol + " " + targets[i].EndpointPath
-		}
-		return targets, fmt.Sprintf("model %q routed via user configuration (%s)", id, strings.Join(parts, ", "))
-	}
+// resolve builds a model's targets: the compatibility table (family prefix)
+// patched by the model's declaration, whose entries switch protocols on or
+// off. Endpoints take the model's path, then the global protocols path, then
+// the protocol default. disabled lists the built-in protocols switched off.
+func (m *Manager) resolve(id string, declared map[string]config.ProtocolOverride) (targets []Target, disabled []string, warn string) {
+	var routes []Route
 	lower := strings.ToLower(id)
 	for _, p := range prefixRoutes {
 		if strings.HasPrefix(lower, p.prefix) {
-			targets := make([]Target, len(p.routes))
-			for i, route := range p.routes {
-				targets[i] = Target{Protocol: route, EndpointPath: route.EndpointPath()}
-			}
-			return targets, ""
+			routes = append(routes, p.routes...)
+			break
 		}
 	}
-	return nil, ""
+	for _, r := range protocolOrder {
+		if p, ok := declared[string(r)]; ok && p.IsEnabled() && !slices.Contains(routes, r) {
+			routes = append(routes, r)
+		}
+	}
+	parts := make([]string, 0, len(routes))
+	for _, r := range routes {
+		p := declared[string(r)]
+		if !p.IsEnabled() {
+			disabled = append(disabled, string(r))
+			continue
+		}
+		t := Target{Protocol: r, EndpointPath: cmp.Or(p.Endpoint, m.cfg.Protocols[string(r)].Endpoint, r.EndpointPath())}
+		targets = append(targets, t)
+		parts = append(parts, string(r)+" "+t.EndpointPath)
+	}
+	// Spec 04 §5: user routing MUST be visible in diagnostics. Load
+	// validation (spec 04 §6) guarantees known protocols.
+	if len(declared) > 0 && len(targets) > 0 {
+		warn = fmt.Sprintf("model %q routed via user configuration (%s)", id, strings.Join(parts, ", "))
+	}
+	return targets, disabled, warn
 }
 
-// routable drops targets whose protocol switch is off or whose URL leaves
-// the configured upstream. With nothing left it returns the exclusion reason.
+// routable drops targets whose URL leaves the configured upstream. With
+// nothing left it returns the exclusion reason.
 func (m *Manager) routable(id string, targets []Target) ([]Target, string, []string) {
-	enabled := make([]Target, 0, len(targets))
-	var disabled []string
-	for _, t := range targets {
-		if m.protocolEnabled(t.Protocol) {
-			enabled = append(enabled, t)
-		} else {
-			// Flags apply at snapshot build; a stale snapshot kept per
-			// FR-002 reflects the flags it was built with until the next
-			// successful refresh.
-			disabled = append(disabled, string(t.Protocol))
-		}
-	}
-	if len(enabled) == 0 {
-		noun := "protocol"
-		if len(disabled) > 1 {
-			noun = "protocols"
-		}
-		return nil, fmt.Sprintf("%s %s disabled by config", noun, strings.Join(disabled, ", ")), nil
-	}
 	const escapes = "resolved endpoint escapes the configured upstream host"
-	routes := make([]Target, 0, len(enabled))
+	routes := make([]Target, 0, len(targets))
 	var warns []string
-	for _, t := range enabled {
+	for _, t := range targets {
 		// The joined URL must stay on the configured upstream authority.
 		// User endpoints flow through here, so they cannot rewrite the URL
 		// host — e.g. "/v1@evil.com/x" against a bare-host base-url turns
