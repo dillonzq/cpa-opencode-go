@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -94,6 +95,7 @@ func TestDeriveOpenCodeSessionIDCrossFormatParityAndErrors(t *testing.T) {
 		"openai":          `{"messages":[{"role":"user","content":"same"}]}`,
 		"claude":          `{"messages":[{"role":"user","content":"same"}]}`,
 		"openai-response": `{"input":"same"}`,
+		"gemini":          `{"systemInstruction":{"parts":[{"text":"ignore"}]},"contents":[{"role":"user","parts":[{"text":"same"}]}]}`,
 	}
 	want := "0967115f2813a3541eaef77de9d9d5773f1c0c04314b0bbfe4ff3b3b1c55b5d5"
 	for format, body := range bodies {
@@ -107,6 +109,36 @@ func TestDeriveOpenCodeSessionIDCrossFormatParityAndErrors(t *testing.T) {
 	}
 	if _, eErr := deriveOpenCodeSessionID("openai", []byte(`{"messages":`)); eErr == nil {
 		t.Fatal("malformed content must fail derivation")
+	}
+}
+
+// Gemini clients used to reach the plugin through CPA's Chat translation;
+// native Gemini hashing keeps those sessions on the same ID.
+func TestDeriveGeminiSessionMatchesTranslatedChat(t *testing.T) {
+	cases := []struct{ name, gemini, chat string }{
+		{
+			"initial user turns with media",
+			`{"contents":[{"role":"user","parts":[{"text":"a"},{"thought":true,"text":"hidden"},{"inlineData":{"mimeType":"image/png","data":"abc"}},{"file_data":{"mime_type":"IMAGE/JPEG","file_uri":"https://v"}}]},{"parts":[{"text":"b"}]},{"role":"model","parts":[{"text":"stop"}]},{"role":"user","parts":[{"text":"excluded"}]}]}`,
+			`{"messages":[{"role":"user","content":[{"type":"text","text":"a"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}},{"type":"image_url","image_url":{"url":"https://v"}}]},{"role":"user","content":"b"},{"role":"assistant","content":"stop"},{"role":"user","content":"excluded"}]}`,
+		},
+		{"leading model turn", `{"contents":[{"role":"model","parts":[{"text":"x"}]},{"role":"user","parts":[{"text":"y"}]}]}`, `{"messages":[{"role":"assistant","content":"x"},{"role":"user","content":"y"}]}`},
+		{"no contents", `{}`, `{}`},
+	}
+	for _, tc := range cases {
+		got, gErr := deriveOpenCodeSessionID("gemini", []byte(tc.gemini))
+		want, wErr := deriveOpenCodeSessionID("openai", []byte(tc.chat))
+		if gErr != nil || wErr != nil || got != want {
+			t.Errorf("%s: gemini = %q (%v), chat = %q (%v)", tc.name, got, gErr, want, wErr)
+		}
+	}
+	// Parts without a Chat equivalent hash as canonical JSON, so they still
+	// distinguish sessions.
+	for _, part := range []string{`{"inlineData":{"mimeType":"audio/wav","data":"%s"}}`, `{"fileData":{"mimeType":"video/mp4","fileUri":"%s"}}`} {
+		a, _ := deriveOpenCodeSessionID("gemini", []byte(`{"contents":[{"parts":[`+fmt.Sprintf(part, "a")+`]}]}`))
+		b, _ := deriveOpenCodeSessionID("gemini", []byte(`{"contents":[{"parts":[`+fmt.Sprintf(part, "b")+`]}]}`))
+		if a == b || a == sessionDigest("") {
+			t.Fatalf("part %s must contribute to the hash: %q %q", part, a, b)
+		}
 	}
 }
 

@@ -35,12 +35,14 @@ type executorRequest struct {
 }
 
 // resolvedExecution carries everything both execution paths need after
-// model/key resolution succeeded. suffix is the requested model's thinking
-// suffix: a zero value means the model ID carried none, or that a literal
-// parenthesized catalog ID won routing and keeps its own identity.
+// model/key resolution succeeded. route is the upstream selected for the
+// request's input format. suffix is the requested model's thinking suffix: a
+// zero value means the model ID carried none, or that a literal parenthesized
+// catalog ID won routing and keeps its own identity.
 type resolvedExecution struct {
 	cfg    config.Config
 	rec    catalog.ModelRecord
+	route  catalog.Target
 	key    string
 	suffix reasoning.Suffix
 	state  *protocol.State
@@ -88,8 +90,9 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 			StatusCode: http.StatusNotFound,
 		})
 	}
-	debugTrace("executor resolved model lookup=%s suffix_raw=%q suffix_effort=%q", lookupID, suffix.Raw, suffix.Effort)
-	return &resolvedExecution{cfg: cfg, rec: rec, key: key, suffix: suffix, state: &protocol.State{Output: req.outputFormat()}}, nil
+	route := selectRoute(rec, req.inputFormat())
+	debugTrace("executor resolved model lookup=%s suffix_raw=%q suffix_effort=%q route=%s", lookupID, suffix.Raw, suffix.Effort, route.Protocol)
+	return &resolvedExecution{cfg: cfg, rec: rec, route: route, key: key, suffix: suffix, state: &protocol.State{Output: req.outputFormat(), Stream: req.Stream}}, nil
 }
 
 // handleExecute implements executor.execute (non-stream). Stream-flagged
@@ -120,15 +123,15 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	if _, eErr := protocol.Format(req.outputFormat()); eErr != nil {
 		return classEnvelope(eErr), nil
 	}
-	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
-	debugTrace("executor resolved public_model=%s upstream_model=%s route=%s url=%s key_count=%d", req.Model, res.rec.UpstreamID, res.rec.Protocol, url, len(res.cfg.APIKeys))
+	url := res.route.URL(res.cfg.BaseURL, res.rec.UpstreamID, false)
+	debugTrace("executor resolved public_model=%s upstream_model=%s route=%s url=%s key_count=%d", req.Model, res.rec.UpstreamID, res.route.Protocol, url, len(res.cfg.APIKeys))
 	debugTrace("executor sending non-stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(withHostCallbackScope(m.workContext(), req.HostCallbackID), res.cfg.RequestTimeout)
 	defer cancel()
 	resp, err := m.bridge.Do(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
 		URL:     url,
-		Headers: upstreamAuthHeaders(res.rec.Protocol, res.key, sessionID),
+		Headers: upstreamAuthHeaders(res.route.Protocol, res.key, sessionID),
 		Body:    upstreamBody,
 	})
 	if err != nil {
@@ -143,7 +146,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	if int64(len(resp.Body)) > res.cfg.MaxResponseBytes {
 		return classEnvelope(errclass.Translation("response exceeds max-response-bytes")), nil
 	}
-	converted, eErr := convertNonStream(res.rec.Protocol, req.outputFormat(), resp.StatusCode, resp.Body, res.state)
+	converted, eErr := convertNonStream(res.route.Protocol, req.outputFormat(), resp.StatusCode, resp.Body, res.state)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
@@ -174,10 +177,13 @@ func requestState(states []*protocol.State) *protocol.State {
 
 func upstreamAuthHeaders(route catalog.Route, key, sessionID string) http.Header {
 	h := make(http.Header)
-	if route == catalog.RouteMessages {
+	switch route {
+	case catalog.RouteMessages:
 		h.Set("x-api-key", key)
 		h.Set("anthropic-version", "2023-06-01")
-	} else {
+	case catalog.RouteGemini:
+		h.Set("x-goog-api-key", key)
+	default:
 		h.Set("Authorization", "Bearer "+key)
 	}
 	h.Set("x-opencode-session", sessionID)
@@ -235,11 +241,11 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 		return classEnvelope(eErr), nil
 	}
 
-	conv, eErr := newStreamConverter(res.rec.Protocol, req.outputFormat(), res.state)
+	conv, eErr := newStreamConverter(res.route.Protocol, req.outputFormat(), res.state)
 	if eErr != nil {
 		return classEnvelope(eErr), nil
 	}
-	url := catalog.JoinUpstreamURL(res.cfg.BaseURL, res.rec.EndpointPath)
+	url := res.route.URL(res.cfg.BaseURL, res.rec.UpstreamID, true)
 	debugTrace("executor sending stream url=%s body_len=%d", url, len(upstreamBody))
 	ctx, cancel := context.WithTimeout(withHostCallbackScope(m.workContext(), req.HostCallbackID), res.cfg.RequestTimeout)
 	owned := false
@@ -251,7 +257,7 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	st, _, id, err := m.bridge.DoStream(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
 		URL:     url,
-		Headers: upstreamAuthHeaders(res.rec.Protocol, res.key, sessionID),
+		Headers: upstreamAuthHeaders(res.route.Protocol, res.key, sessionID),
 		Body:    upstreamBody,
 	})
 	debugTrace("executor stream DoStream status=%d upstreamID=%s err=%v", st, id, err)

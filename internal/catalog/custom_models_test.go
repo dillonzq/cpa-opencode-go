@@ -15,10 +15,9 @@ func TestConfiguredModelsAddAndOverride(t *testing.T) {
 	cfg.Models = []config.ModelOverride{
 		{Name: "glm-existing", Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Override")}},
 		{Name: "glm-custom", Metadata: modelmeta.Metadata{Context: modelmeta.Ptr(int64(200000))}},
-		{Name: "custom-model", Metadata: modelmeta.Metadata{Output: modelmeta.Ptr(int64(64000))}},
+		{Name: "custom-model", Protocols: []config.ModelProtocol{{Protocol: "responses"}}, Metadata: modelmeta.Metadata{Output: modelmeta.Ptr(int64(64000))}},
 		{Name: "unknown-model"},
 	}
-	cfg.RouteOverrides = map[string]config.RouteOverride{"custom-model": {Protocol: "responses", Endpoint: "/v1/responses"}}
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-existing","display_name":"Catalog"}]}`)}}
 	m := New(cfg, fc)
 	mustRefresh(t, m)
@@ -30,11 +29,11 @@ func TestConfiguredModelsAddAndOverride(t *testing.T) {
 		t.Fatalf("existing model duplicated or misclassified: %+v", existing)
 	}
 	custom := findModel(t, m.Models(), "glm-custom")
-	if !custom.UserDefined || custom.PublicID != "opencode-go/glm-custom" || custom.Protocol != RouteChatCompletions || custom.ContextLimit != 200000 {
+	if !custom.UserDefined || custom.PublicID != "opencode-go/glm-custom" || primary(custom) != RouteChatCompletions || custom.ContextLimit != 200000 {
 		t.Fatalf("family-routed declaration: %+v", custom)
 	}
 	custom = findModel(t, m.Models(), "custom-model")
-	if !custom.UserDefined || custom.Protocol != RouteResponses || custom.OutputLimit != 64000 {
+	if !custom.UserDefined || len(custom.Routes) != 1 || custom.Routes[0] != (Target{RouteResponses, "/v1/responses"}) || custom.OutputLimit != 64000 {
 		t.Fatalf("explicit route: %+v", custom)
 	}
 	for _, id := range []string{"custom-model", "opencode-go/custom-model"} {

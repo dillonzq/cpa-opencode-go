@@ -19,13 +19,13 @@ func buildUpstreamBody(res *resolvedExecution, req executorRequest) ([]byte, *er
 		// A recognized suffix replaced the client's control, so that control
 		// must not be translated: a value the target cannot represent would
 		// fail the conversion before the override below runs.
-		source = stripSupersededReasoning(res.rec.Protocol, req.inputFormat(), source)
+		source = stripSupersededReasoning(res.route.Protocol, req.inputFormat(), source)
 	}
-	body, eErr := buildUpstreamRequest(res.rec.Protocol, res.rec.UpstreamID, req.inputFormat(), source, res.rec.Thinking, res.state)
+	body, eErr := buildUpstreamRequest(res.route.Protocol, res.rec.UpstreamID, req.inputFormat(), source, res.rec.Thinking, res.state)
 	if eErr != nil {
 		return nil, eErr
 	}
-	return applyReasoningSuffix(res.rec.Protocol, body, res.suffix)
+	return applyReasoningSuffix(res.route.Protocol, body, res.suffix)
 }
 
 // Keep the host format bridge here; all reasoning transformations belong to the library.

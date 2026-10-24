@@ -4,7 +4,8 @@ Minor release for **cpa-opencode-go**, based on v0.2.2 and requiring
 **CLIProxyAPI v8.0.0 or later**. Translation now uses **apix v0.1.0**, replacing
 api-translator v0.3.0. Credential records and existing `opencode-go/<model>`
 IDs remain compatible. Configuration keys also remain compatible except for the
-removed `excluded-models` setting; see below.
+removed `excluded-models` and `route-overrides` settings and the new `base-url`
+default; see below.
 
 ## Translation library
 
@@ -15,6 +16,23 @@ removed `excluded-models` setting; see below.
   Responses tool normalization now runs inside that exchange.
 - Cross-protocol Responses streams without an upstream response ID use `apix`
   instead of `api-translator` as the fallback ID.
+
+## Protocol routing
+
+- A model can serve several upstream protocols. Each request uses the client's
+  own protocol when the model serves it, otherwise the served protocol with the
+  least semantic loss in a fixed per-format order. See
+  [protocol selection](https://github.com/dillonzq/cpa-opencode-go/blob/v0.3.0/README.md#protocol-selection).
+- DeepSeek models serve Chat Completions, Responses, and Messages, so Claude Code
+  and Codex requests reach them without conversion.
+- Add Gemini GenerateContent as an upstream protocol for `gemini-*` models and as
+  a native client format. Gemini requests use `x-goog-api-key`, and
+  `protocols.gemini` switches the protocol off.
+- The built-in protocol table follows the current OpenCode Go endpoint table:
+  `claude-*`, `step-*`, and `beam-*` models are now routable, and
+  `minimax-m3.1-flash*` uses Chat Completions instead of Messages.
+- `models[].protocols` replaces a model's protocol set and optionally sets each
+  protocol's endpoint path.
 
 ## Behavior changes
 
@@ -33,13 +51,29 @@ removed `excluded-models` setting; see below.
   is enabled, such as `opencode-go/glm-5.2` or `opencode-go/gpt-*`. The plugin
   ignores a leftover `excluded-models` key, so those models become visible
   again until the host setting is configured.
+- The default `base-url` is now `https://opencode.ai/inference/go`, the address
+  in the current OpenCode Go documentation, and `base-url` no longer includes a
+  version segment: endpoint paths carry `/v1` or `/v1beta`. A trailing `/v1` is
+  dropped, so a `base-url` written for v0.2.2 keeps working. The default catalog
+  is `{base-url}/v1/models`. Gemini models need the inference address.
+- Remove `route-overrides` in favor of `models[].protocols`. A leftover key is
+  ignored, so move each entry into the model's declaration:
+
+  ```yaml
+  models:
+    - name: custom-model
+      protocols:
+        - protocol: responses
+          endpoint: /v1/responses   # optional
+  ```
 
 ## Compatibility
 
 Source builds now require **Go 1.26.10+**. Prebuilt libraries do not need a Go
-toolchain. Adaptive thinking on OpenCode Go Messages models is verified by
-offline tests only; if an upstream rejects `thinking.type: "adaptive"` or
-`output_config.effort`, roll back to v0.2.2.
+toolchain. DeepSeek on Responses and Messages, the Gemini endpoint, and adaptive
+thinking on OpenCode Go Messages models are verified by offline tests only; if an
+upstream rejects `thinking.type: "adaptive"` or `output_config.effort`, roll back
+to v0.2.2.
 
 ## Installation and upgrade
 

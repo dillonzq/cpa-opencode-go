@@ -39,7 +39,7 @@ The OpenCode mark in `assets/logo.svg` is the plugin icon. Register it in the CL
 
 ## The Problem
 
-OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/v1/chat/completions`, Anthropic Messages `/v1/messages`, and OpenAI Responses `/v1/responses`).
+OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/v1/chat/completions`, Anthropic Messages `/v1/messages`, OpenAI Responses `/v1/responses`, and Gemini GenerateContent `/google/v1beta/models/{model}`), and some models serve more than one.
 
 Without this plugin, using OpenCode Go in CLIProxyAPI requires configuring separate provider blocks for each protocol family. This leads to:
 - **Duplicated configuration & keys**: The same API keys must be configured across multiple provider blocks.
@@ -51,7 +51,7 @@ Without this plugin, using OpenCode Go in CLIProxyAPI requires configuring separ
 
 This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a shared keys pool:
 - **Unified auth pool**: Configure keys once; CLIProxyAPI schedules, rotates, and cools down keys across all protocols.
-- **Transparent protocol translation & routing**: Clients request models (e.g. `opencode-go/glm-5.2`, `opencode-go/gpt-5.6-luna`) without needing to know the upstream protocol format.
+- **Transparent protocol translation & routing**: Clients request models (e.g. `opencode-go/glm-5.2`, `opencode-go/gpt-5.6-luna`) without needing to know the upstream protocol format. A model that serves several protocols is reached through the client's own protocol when it can be.
 - **Single model catalog**: All models are discovered and published under the `opencode-go` provider namespace in `/v1/models`.
 
 ## Features
@@ -61,8 +61,10 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
   - OpenAI Chat Completions (`/v1/chat/completions`)
   - Anthropic Messages (`/v1/messages`)
   - OpenAI Responses (`/v1/responses`)
+  - Gemini GenerateContent (`/google/v1beta/models/{model}:generateContent`), also accepted natively from Gemini clients
+- **Per-request protocol selection**: Each model declares the protocols it serves. A request uses the client's own protocol when the model serves it, otherwise the protocol with the least semantic loss; see [Protocol selection](#protocol-selection).
 - **Thinking & Reasoning Support**: Preserves native reasoning controls and uses fixed effort/budget conversion across formats. Capability metadata does not filter or clamp requests; upstream validates controls. Preserves explicit off and Claude adaptive effort; cross-format auto uses target defaults where no wire equivalent exists. Controls that cannot be converted fail explicitly.
-- **Dynamic Catalog Discovery**: Fetches remote model catalogs, optionally retains the last successful catalog during outages, and supports explicit model declarations and custom route overrides.
+- **Dynamic Catalog Discovery**: Fetches remote model catalogs, optionally retains the last successful catalog during outages, and supports explicit model declarations with their own protocols and endpoints.
 - **Translation library**: pinned [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0), with reasoning history replay, media input, local shell adaptation, cache hints, structured output, tool strict, representable URL citations, and Responses ↔ Messages hosted search. Target model support remains upstream-dependent. Native upstream cleaning and CPA streaming framing stay in the plugin.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
 - **Native quotas**: Rolling, weekly, and monthly quotas use CLIProxyAPI's generic quota endpoints and the selected credential. The separate plugin page is removed.
@@ -71,6 +73,61 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 
 - **CLIProxyAPI**: `v8.0.0+`
 - **Source builds only**: Go 1.26.10+, CGO enabled, and a C compiler targeting the CPA host platform. Prebuilt release libraries do not require a Go toolchain or compiler.
+
+## Protocol selection
+
+Each model serves a set of upstream protocols. The built-in set follows the [OpenCode Go endpoint table](https://opencode.ai/docs/go/#endpoints), matched by model family prefix:
+
+| Protocols | Model families |
+|---|---|
+| Responses | `gpt-*`, `grok-*`, `muse-spark-*` |
+| Messages | `claude-*`, `minimax-*` (except `minimax-m3.1-flash*`), `qwen*` |
+| Chat Completions | `glm-*`, `kimi-*`, `longcat-*`, `mimo-*`, `minimax-m3.1-flash*`, `hy*`, `step-*`, `beam-*` |
+| Gemini GenerateContent | `gemini-*` |
+| Chat Completions, Responses, Messages | `deepseek-*` |
+
+DeepSeek is documented on Chat Completions only, but the gateway also serves it through Responses and Messages.
+
+For each request, the plugin selects the first protocol the model serves in the client format's order:
+
+| Client format | Order |
+|---|---|
+| Chat Completions | Chat Completions → Responses → Messages → Gemini |
+| Responses | Responses → Chat Completions → Messages → Gemini |
+| Messages | Messages → Responses → Chat Completions → Gemini |
+| Gemini | Gemini → Responses → Chat Completions → Messages |
+
+The client's own protocol comes first and needs no conversion. The rest are ordered by the semantic loss of converting to them:
+
+- Responses keeps reasoning text, OpenAI file IDs, and hosted search shared with Messages.
+- Messages cannot carry audio, video, or file IDs.
+- Chat Completions cannot carry URI-only documents.
+- Gemini differs most in signatures and thinking, so it comes last for every other client.
+
+For example, `opencode-go/deepseek-v4-pro` reaches `/v1/messages` from Claude Code and `/v1/responses` from Codex without conversion.
+
+Replace a model's protocol set, or set an endpoint path, with `models[].protocols`:
+
+```yaml
+models:
+  - name: deepseek-v4-pro
+    protocols:                   # only Chat Completions and Messages
+      - protocol: chat-completions
+      - protocol: messages
+  - name: custom-model           # a new ID outside the known families
+    protocols:
+      - protocol: responses
+        endpoint: /v1/custom-responses   # optional; empty uses the default path
+```
+
+| Field | Rule |
+|---|---|
+| `protocol` | One of `chat-completions`, `messages`, `responses`, or `gemini`. Each protocol may appear once per model. |
+| `endpoint` | Optional path joined to `base-url`. It must start with `/`. A `gemini` endpoint must contain `{model}`, which is replaced with the upstream model ID; the plugin appends `:generateContent`, or `:streamGenerateContent?alt=sse` for streams. |
+
+Default paths are `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, and `/google/v1beta/models/{model}`. Gemini requests authenticate with `x-goog-api-key`.
+
+Protocol switches remove only their own protocol from each model. A model is excluded when none of its protocols remain.
 
 ## Request behavior
 
@@ -173,11 +230,11 @@ plugins:
   configs:
     cpa-opencode-go:
       enabled: true
-      # Upstream base URL (default: "https://opencode.ai/zen/go/v1")
-      base-url: "https://opencode.ai/zen/go/v1"
+      # Upstream base URL without a version segment (default: "https://opencode.ai/inference/go")
+      base-url: "https://opencode.ai/inference/go"
 
-      # Optional catalog endpoint override (default: "{base-url}/models")
-      # catalog-url: "https://opencode.ai/zen/go/v1/models"
+      # Optional catalog endpoint override (default: "{base-url}/v1/models")
+      # catalog-url: "https://opencode.ai/inference/go/v1/models"
 
       # Client-facing model ID prefix configuration
       model-prefix:
@@ -198,15 +255,17 @@ plugins:
 
       # Protocol enable/disable switches (all default to true)
       protocols:
-        chat-completions: true   # enables models routed to /v1/chat/completions
-        messages: true           # enables models routed to /v1/messages
-        responses: true          # enables models routed to /v1/responses
+        chat-completions: true   # enables routes to /v1/chat/completions
+        messages: true           # enables routes to /v1/messages
+        responses: true          # enables routes to /v1/responses
+        gemini: true             # enables routes to /google/v1beta/models/{model}
 
-      # Explicit route overrides per model (takes priority over built-in prefix routing)
-      route-overrides:
-        "custom-model":
-          protocol: "messages"           # "chat-completions" | "messages" | "responses"
-          endpoint: "/v1/messages"       # must start with /
+      # Model declarations; protocols replaces the built-in protocol set
+      models:
+        - name: "custom-model"
+          protocols:
+            - protocol: "messages"       # "chat-completions" | "messages" | "responses" | "gemini"
+              endpoint: "/v1/messages"   # optional; must start with /
 
       # Execution settings
       request-timeout: "5m"              # upstream request timeout (default: "5m")
@@ -219,8 +278,8 @@ plugins:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `api-keys` | `[]object` | *(Required)* | List of API keys (`- value: "..."`, optional `name: "Personal"`). Supports `${ENV_VAR}` expansion. Duplicates and empty values are rejected. |
-| `base-url` | `string` | `https://opencode.ai/zen/go/v1` | Upstream base URL. Must be valid HTTPS (or HTTP if `allow-http: true`) without query parameters, fragments, or userinfo. |
-| `catalog-url` | `string` | `{base-url}/models` | Full URL for catalog discovery. Defaults to `{base-url}/models`. |
+| `base-url` | `string` | `https://opencode.ai/inference/go` | Upstream base URL without a version segment; endpoint paths carry `/v1` or `/v1beta`. A trailing `/v1` is dropped. Must be valid HTTPS (or HTTP if `allow-http: true`) without query parameters, fragments, or userinfo. |
+| `catalog-url` | `string` | `{base-url}/v1/models` | Full URL for catalog discovery. Defaults to `{base-url}/v1/models`. |
 | `model-prefix.enabled` | `bool` | `true` | When `true`, client-facing model names use `<prefix>/<model>`. When `false`, uses bare model IDs. |
 | `model-prefix.value` | `string` | `opencode-go` | Provider prefix string when prefixing is enabled. |
 | `catalog.refresh-interval` | `duration` | `15m` | Interval between catalog polling refreshes (e.g. `15m`, `1h`). Minimum is `1m`. |
@@ -228,11 +287,11 @@ plugins:
 | `protocols.chat-completions` | `bool` | `true` | Protocol switch for Chat Completions endpoints. |
 | `protocols.messages` | `bool` | `true` | Protocol switch for Messages endpoints. |
 | `protocols.responses` | `bool` | `true` | Protocol switch for Responses endpoints. |
-| `route-overrides` | `map` | `{}` | Map of model ID to `{ protocol: "...", endpoint: "..." }` overriding built-in family routing. Valid protocols: `chat-completions`, `messages`, `responses`. |
+| `protocols.gemini` | `bool` | `true` | Protocol switch for Gemini GenerateContent endpoints. |
 | `request-timeout` | `duration` | `5m` | Deadline for upstream HTTP opening and the entire stream; expiry cancels the host operation. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` in `base-url`, `catalog-url`, and `models-dev.url` for local testing. |
-| `models` | `[]object` | `[]` | Override discovered model metadata or declare additional models by upstream `name`; see [Catalog capability extensions](#catalog-capability-extensions). |
+| `models` | `[]object` | `[]` | Override discovered model metadata or declare additional models by upstream `name`; see [Catalog capability extensions](#catalog-capability-extensions). `protocols` replaces a model's protocol set; see [Protocol selection](#protocol-selection). |
 | `models-dev.enabled` | `bool` | `true` | Enable fallback metadata from models.dev; does not add models to the catalog. |
 | `models-dev.url` | `string` | `https://models.dev/api.json` | Metadata source URL; follows the same URL validation rules as `base-url`. |
 | `models-dev.refresh-interval` | `duration` | `24h` | Successful metadata cache interval, minimum `1m`; failed fetches retry on subsequent catalog refreshes. |
@@ -241,7 +300,7 @@ plugins:
 
 `catalog-url` accepts an OpenAI-style `{"data":[{"id":"..."}]}` list. Optional metadata fields are `display_name`, `description`, `context_window`, `max_tokens`, `input_modalities`, `output_modalities`, and `supported_reasoning_levels` (objects with `effort` and optional `description`). Reasoning efforts are published as host `Thinking.Levels`; `none` also enables `ZeroAllowed`. Missing reasoning metadata stays unknown; an empty array explicitly publishes no reasoning levels. Legacy `context_length`, `max_output_tokens`, `input_modes`, `output_modes`, and `thinking` catalog extensions are ignored. This remains a `data`/`id` catalog, not a full Codex `models`/`slug` response.
 
-Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. `models[].name` is the exact upstream ID: entries already in the catalog override metadata; entries missing from the catalog declare additional models. New models use the existing family routes or an explicit `route-overrides` entry. Protocol switches, endpoint checks, and ID collision checks apply to both sources. Explicit declarations remain available when the catalog is empty or unavailable, including under `stale-while-unavailable: false`; removing a declaration removes it unless the upstream catalog still lists it. Models.dev alone never adds models. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
+Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. `models[].name` is the exact upstream ID: entries already in the catalog override metadata; entries missing from the catalog declare additional models. New models use the existing family routes or their own `protocols`. Protocol switches, endpoint checks, and ID collision checks apply to both sources. Explicit declarations remain available when the catalog is empty or unavailable, including under `stale-while-unavailable: false`; removing a declaration removes it unless the upstream catalog still lists it. Models.dev alone never adds models. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
 
 Add these settings under the plugin configuration:
 
@@ -262,17 +321,15 @@ models-dev:
   refresh-interval: 24h              # default; minimum 1m
 ```
 
-For a new ID outside known model families, add its declaration and route:
+For a new ID outside known model families, add its declaration and protocols:
 
 ```yaml
 models:
   - name: custom-model
     display-name: Custom model
     max-context-length: 200000
-route-overrides:
-  custom-model:
-    protocol: responses
-    endpoint: /v1/responses
+    protocols:
+      - protocol: responses
 ```
 
 Declared models are published with host `UserDefined: true` when absent from the upstream catalog, using the usual configured public ID prefix. Execution sends the original `name` to the configured upstream; the declaration does not change upstream availability or add aliases.

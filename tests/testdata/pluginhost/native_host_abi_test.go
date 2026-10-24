@@ -39,7 +39,7 @@ func TestOpenCodeNativeMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/models":
+		case "/v1/models":
 			io.WriteString(w, `{"data":[{"id":"glm-metadata-test","context_window":200000,"max_tokens":64000}]}`)
 		case "/metadata":
 			fallbackCalls.Add(1)
@@ -47,7 +47,7 @@ func TestOpenCodeNativeMetadata(t *testing.T) {
 				t.Error("metadata service received credential")
 			}
 			io.WriteString(w, `{"opencode-go":{"models":{"glm-metadata-test":{"name":"Fallback name","description":"Fallback description","limit":{"context":100000,"output":32000},"modalities":{"input":["text","image"],"output":["text"]},"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]}}}}`)
-		case "/responses":
+		case "/v1/responses":
 			var request struct {
 				Model string `json:"model"`
 			}
@@ -147,7 +147,7 @@ func TestOpenCodeNativeMetadata(t *testing.T) {
 	if fallbackCalls.Load() != 1 {
 		t.Fatalf("reconfiguration refetched unexpired cache: %d", fallbackCalls.Load())
 	}
-	declared := reconfigured + "  - name: custom-only-model\n    display-name: Custom model\n    max-context-length: 222222\n    max-tokens: 64000\n    input-modalities: [text]\n    thinking:\n      levels: [high]\nroute-overrides:\n  custom-only-model:\n    protocol: responses\n    endpoint: /v1/responses\n"
+	declared := reconfigured + "  - name: custom-only-model\n    display-name: Custom model\n    max-context-length: 222222\n    max-tokens: 64000\n    input-modalities: [text]\n    thinking:\n      levels: [high]\n    protocols:\n      - protocol: responses\n"
 	plug, err = registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginReconfigure, []byte(declared))
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 	var observedMu sync.Mutex
 	var observed [][]byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/models" {
+		if r.URL.Path == "/v1/models" {
 			if blockCatalog.Load() {
 				started <- "catalog"
 				<-r.Context().Done()
@@ -204,7 +204,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 		observedMu.Lock()
 		observed = append(observed, body)
 		observedMu.Unlock()
-		if r.URL.Path == "/responses" {
+		if r.URL.Path == "/v1/responses" {
 			w.Header().Set("X-Test-Session", r.Header.Get("X-Opencode-Session"))
 			var req struct {
 				Stream bool `json:"stream"`
@@ -229,7 +229,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 			return
 		}
 		mode := req.Messages[0].Content
-		if r.URL.Path == "/messages" && req.Stream {
+		if r.URL.Path == "/v1/messages" && req.Stream {
 			w.Header().Set("Content-Type", "text/event-stream")
 			io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}\n\nevent: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\nevent: message_stop")
 			return
@@ -539,7 +539,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 func TestOpenCodeNativeUnload(t *testing.T) {
 	started, canceled := make(chan bool, 2), make(chan bool, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/models" {
+		if r.URL.Path == "/v1/models" {
 			io.WriteString(w, `{"data":[{"id":"glm-5.3"}]}`)
 			return
 		}
@@ -631,7 +631,7 @@ func TestOpenCodeNativeUnload(t *testing.T) {
 // host.auth.save (which uses os.WriteFile), plus the native plugin ABI.
 func TestOpenCodeNativeAuthNames(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/models" {
+		if r.URL.Path != "/v1/models" {
 			http.Error(w, "unexpected offline request", 400)
 			return
 		}
@@ -693,7 +693,7 @@ func TestOpenCodeNativeAuthNames(t *testing.T) {
 // the final SSE separator. Valid snapshots must retain one terminal only.
 func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/models" {
+		if r.URL.Path == "/v1/models" {
 			io.WriteString(w, `{"data":[{"id":"minimax-m3"},{"id":"gpt-5.6-luna"}]}`)
 			return
 		}
@@ -718,7 +718,7 @@ func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 		}
 		shape, ending, event := parts[0], parts[1], parts[2]
 		payload := ""
-		if r.URL.Path == "/messages" {
+		if r.URL.Path == "/v1/messages" {
 			switch shape {
 			case "empty":
 				payload = `{}`
@@ -745,7 +745,7 @@ func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		if r.URL.Path == "/messages" {
+		if r.URL.Path == "/v1/messages" {
 			io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n")
 			if shape == "valid" {
 				io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
@@ -842,7 +842,7 @@ func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 func TestOpenCodeNativeHTTPStreams(t *testing.T) {
 	var upstreamRequests atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/models" {
+		if r.URL.Path == "/v1/models" {
 			io.WriteString(w, `{"data":[{"id":"glm-5.3"},{"id":"minimax-m3"},{"id":"gpt-5.6-luna"}]}`)
 			return
 		}
@@ -881,11 +881,11 @@ func TestOpenCodeNativeHTTPStreams(t *testing.T) {
 			}
 			name := "error"
 			payload := map[string]any{"type": "error"}
-			if r.URL.Path == "/responses" {
+			if r.URL.Path == "/v1/responses" {
 				payload["message"], payload["status_code"] = message, 500
 			} else {
 				payload["error"] = map[string]any{"type": "api_error", "message": message, "code": 500}
-				if r.URL.Path == "/chat/completions" {
+				if r.URL.Path == "/v1/chat/completions" {
 					name = ""
 					delete(payload, "type")
 				}
@@ -895,14 +895,14 @@ func TestOpenCodeNativeHTTPStreams(t *testing.T) {
 			return true
 		}
 		switch r.URL.Path {
-		case "/chat/completions":
+		case "/v1/chat/completions":
 			frame("", `{"id":"r","model":"glm-5.3","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}`)
 			if afterText() {
 				return
 			}
 			frame("", `{"id":"r","model":"glm-5.3","choices":[{"delta":{},"finish_reason":"stop"}]}`)
 			frame("", "[DONE]")
-		case "/messages":
+		case "/v1/messages":
 			frame("message_start", `{"type":"message_start","message":{"id":"r","model":"minimax-m3"}}`)
 			frame("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
 			frame("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)
@@ -912,7 +912,7 @@ func TestOpenCodeNativeHTTPStreams(t *testing.T) {
 			frame("content_block_stop", `{"type":"content_block_stop","index":0}`)
 			frame("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`)
 			frame("message_stop", `{"type":"message_stop"}`)
-		case "/responses":
+		case "/v1/responses":
 			frame("response.created", `{"type":"response.created","response":{"id":"r","model":"gpt-5.6-luna"}}`)
 			frame("response.output_item.added", `{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg","role":"assistant","content":[]}}`)
 			frame("response.output_text.delta", `{"type":"response.output_text.delta","item_id":"msg","output_index":0,"content_index":0,"delta":"hello"}`)

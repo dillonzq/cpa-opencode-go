@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -66,10 +67,10 @@ func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(minimal) failed: %v", err)
 	}
-	if c.BaseURL != "https://opencode.ai/zen/go/v1" {
+	if c.BaseURL != "https://opencode.ai/inference/go" {
 		t.Errorf("BaseURL = %q", c.BaseURL)
 	}
-	if c.CatalogURL != "https://opencode.ai/zen/go/v1/models" {
+	if c.CatalogURL != "https://opencode.ai/inference/go/v1/models" {
 		t.Errorf("CatalogURL = %q", c.CatalogURL)
 	}
 	if !c.ModelPrefix.Enabled || c.ModelPrefix.Value != "opencode-go" {
@@ -84,7 +85,7 @@ func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	if !c.Catalog.StaleWhileUnavailable {
 		t.Errorf("StaleWhileUnavailable = false")
 	}
-	if !c.Protocols.ChatCompletions || !c.Protocols.Messages || !c.Protocols.Responses {
+	if !c.Protocols.ChatCompletions || !c.Protocols.Messages || !c.Protocols.Responses || !c.Protocols.Gemini {
 		t.Errorf("Protocols = %+v", c.Protocols)
 	}
 	if c.AllowHTTP {
@@ -103,7 +104,7 @@ func TestLoadFullConfigHonorsEveryField(t *testing.T) {
 	doc := `
 enabled: true
 future-key: 1
-base-url: http://localhost:9090/v1
+base-url: http://localhost:9090/api
 catalog-url: https://example.com/models
 model-prefix:
   enabled: true
@@ -117,10 +118,13 @@ protocols:
   chat-completions: false
   messages: false
   responses: false
-route-overrides:
-  gpt-5.6-luna:
-    protocol: responses
-    endpoint: /v1/responses
+  gemini: false
+models:
+  - name: gpt-5.6-luna
+    protocols:
+      - protocol: responses
+        endpoint: /v1/responses
+      - protocol: messages
 allow-http: true
 request-timeout: 5m
 max-response-bytes: 1024
@@ -129,7 +133,7 @@ max-response-bytes: 1024
 	if err != nil {
 		t.Fatalf("Load(full) failed: %v", err)
 	}
-	if c.BaseURL != "http://localhost:9090/v1" {
+	if c.BaseURL != "http://localhost:9090/api" {
 		t.Errorf("BaseURL = %q", c.BaseURL)
 	}
 	if c.CatalogURL != "https://example.com/models" {
@@ -147,12 +151,12 @@ max-response-bytes: 1024
 	if c.Catalog.StaleWhileUnavailable {
 		t.Errorf("StaleWhileUnavailable = true")
 	}
-	if c.Protocols.ChatCompletions || c.Protocols.Messages || c.Protocols.Responses {
+	if c.Protocols.ChatCompletions || c.Protocols.Messages || c.Protocols.Responses || c.Protocols.Gemini {
 		t.Errorf("Protocols = %+v", c.Protocols)
 	}
-	o, ok := c.RouteOverrides["gpt-5.6-luna"]
-	if !ok || o.Protocol != "responses" || o.Endpoint != "/v1/responses" {
-		t.Errorf("RouteOverrides = %+v", c.RouteOverrides)
+	want := []ModelProtocol{{Protocol: "responses", Endpoint: "/v1/responses"}, {Protocol: "messages"}}
+	if len(c.Models) != 1 || !reflect.DeepEqual(c.Models[0].Protocols, want) {
+		t.Errorf("Models = %+v", c.Models)
 	}
 	if !c.AllowHTTP {
 		t.Errorf("AllowHTTP = false")
@@ -190,23 +194,38 @@ func TestLoadIgnoresRemovedExcludedModels(t *testing.T) {
 	}
 }
 
+func TestLoadIgnoresRemovedRouteOverrides(t *testing.T) {
+	doc := withKey + "route-overrides:\n  custom-model:\n    protocol: grpc\n    endpoint: v1/x\n"
+	if _, err := Load([]byte(doc)); err != nil {
+		t.Fatalf("removed route-overrides must remain unknown and ignored: %v", err)
+	}
+}
+
 func TestLoadDerivedCatalogURLFromCustomBase(t *testing.T) {
 	c, err := Load([]byte("base-url: https://upstream.example.com/api\n" + withKey))
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
-	if c.CatalogURL != "https://upstream.example.com/api/models" {
+	if c.CatalogURL != "https://upstream.example.com/api/v1/models" {
 		t.Errorf("CatalogURL = %q", c.CatalogURL)
 	}
 }
 
-func TestLoadDerivedCatalogURLTrimsTrailingSlash(t *testing.T) {
-	c, err := Load([]byte("base-url: https://opencode.ai/zen/go/v1/\n" + withKey))
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
+// Endpoint paths carry the version segment, so a base-url written the old
+// way (ending in /v1) is normalized instead of doubling /v1.
+func TestLoadBaseURLDropsTrailingSlashAndV1(t *testing.T) {
+	for _, base := range []string{"https://opencode.ai/inference/go", "https://opencode.ai/inference/go/", "https://opencode.ai/inference/go/v1", "https://opencode.ai/inference/go/v1/"} {
+		c, err := Load([]byte("base-url: " + base + "\n" + withKey))
+		if err != nil {
+			t.Fatalf("Load(%s) failed: %v", base, err)
+		}
+		if c.BaseURL != "https://opencode.ai/inference/go" || c.CatalogURL != "https://opencode.ai/inference/go/v1/models" {
+			t.Errorf("base %s: BaseURL = %q, CatalogURL = %q", base, c.BaseURL, c.CatalogURL)
+		}
 	}
-	if c.CatalogURL != "https://opencode.ai/zen/go/v1/models" {
-		t.Errorf("CatalogURL = %q, want no double slash", c.CatalogURL)
+	c, err := Load([]byte("base-url: https://upstream.example.com/v1beta\n" + withKey))
+	if err != nil || c.BaseURL != "https://upstream.example.com/v1beta" {
+		t.Errorf("only an exact /v1 segment is dropped: %q, %v", c.BaseURL, err)
 	}
 }
 
@@ -260,10 +279,8 @@ func TestLoadRejections(t *testing.T) {
 		{"keyless config rejected", "", "api-keys: at least one key is required"},
 		{"request-timeout zero rejected", "request-timeout: 0s\n" + withKey, "request-timeout: must be positive"},
 		{
-			"duplicate route-override keys",
-			"route-overrides:\n" +
-				"  gpt-5.6-luna:\n    protocol: responses\n    endpoint: /v1/responses\n" +
-				"  gpt-5.6-luna:\n    protocol: messages\n    endpoint: /v1/messages\n",
+			"duplicate protocol switch keys",
+			"protocols:\n  gemini: true\n  gemini: false\n",
 			"decode config: invalid YAML structure near line",
 		},
 		{
@@ -279,7 +296,7 @@ func TestLoadRejections(t *testing.T) {
 		{"explicitly empty base-url", `base-url: ""`, "base-url: must not be empty"},
 		{"explicitly empty catalog-url", `catalog-url: ""`, "catalog-url: must not be empty"},
 		{"malformed base-url", `base-url: "::::"`, "base-url: invalid URL"},
-		{"scheme-less base-url", "base-url: opencode.ai/zen/go/v1", "base-url: invalid URL"},
+		{"scheme-less base-url", "base-url: opencode.ai/inference/go", "base-url: invalid URL"},
 		{"malformed catalog-url", `catalog-url: "http://exa mple.com"`, "catalog-url: invalid URL"},
 		{"http base-url without allow-http", "base-url: http://localhost:9090/v1", "base-url: http scheme requires allow-http"},
 		{"http catalog-url without allow-http", "catalog-url: http://localhost:9090/models", "catalog-url: http scheme requires allow-http"},
@@ -297,19 +314,34 @@ func TestLoadRejections(t *testing.T) {
 		{"max-response-bytes zero rejected", "max-response-bytes: 0\n" + withKey, "max-response-bytes: must be positive"},
 		{"max-response-bytes negative rejected", "max-response-bytes: -5\n" + withKey, "max-response-bytes: must be positive"},
 		{
-			"override unsupported protocol",
-			"route-overrides:\n  bad-model:\n    protocol: grpc\n    endpoint: /v1/x\n" + withKey,
-			"route-overrides[bad-model].protocol: unsupported protocol",
+			"model protocols explicitly empty",
+			"models:\n  - name: bad-model\n    protocols: []\n" + withKey,
+			"models[0].protocols: must list at least one protocol",
 		},
 		{
-			"override empty endpoint",
-			"route-overrides:\n  bad-model:\n    protocol: responses\n    endpoint: \"\"\n" + withKey,
-			"route-overrides[bad-model].endpoint: must not be empty",
+			"model protocol unsupported",
+			"models:\n  - name: bad-model\n    protocols:\n      - protocol: grpc\n" + withKey,
+			`models[0].protocols[0].protocol: unsupported protocol "grpc"`,
 		},
 		{
-			"override endpoint without leading slash",
-			"route-overrides:\n  bad-model:\n    protocol: responses\n    endpoint: v1/x\n" + withKey,
-			"route-overrides[bad-model].endpoint: must start with /",
+			"model protocol missing",
+			"models:\n  - name: bad-model\n    protocols:\n      - endpoint: /v1/x\n" + withKey,
+			`models[0].protocols[0].protocol: unsupported protocol ""`,
+		},
+		{
+			"model protocol duplicated",
+			"models:\n  - name: bad-model\n    protocols:\n      - protocol: responses\n      - protocol: responses\n        endpoint: /v1/x\n" + withKey,
+			`models[0].protocols[1].protocol: duplicate protocol "responses"`,
+		},
+		{
+			"model endpoint without leading slash",
+			"models:\n  - name: bad-model\n    protocols:\n      - protocol: responses\n        endpoint: v1/x\n" + withKey,
+			"models[0].protocols[0].endpoint: must start with /",
+		},
+		{
+			"gemini endpoint without model placeholder",
+			"models:\n  - name: bad-model\n    protocols:\n      - protocol: gemini\n        endpoint: /google/v1beta/models\n" + withKey,
+			"models[0].protocols[0].endpoint: gemini endpoint must contain {model}",
 		},
 		{"prefix enabled empty value", "model-prefix:\n  enabled: true\n  value: \"\"\n" + withKey, "model-prefix.value: invalid provider-ID characters"},
 		{"prefix with space", "model-prefix:\n  value: has space\n" + withKey, "model-prefix.value: invalid provider-ID characters"},

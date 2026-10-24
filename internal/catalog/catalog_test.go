@@ -40,12 +40,38 @@ func (f *fakeClient) set(resp pluginapi.HTTPResponse, err error) {
 
 func testCfg() config.Config {
 	return config.Config{
-		CatalogURL:       "https://opencode.ai/zen/go/v1/models",
+		CatalogURL:       "https://opencode.ai/inference/go/v1/models",
 		ModelPrefix:      config.ModelPrefix{Enabled: true, Value: "opencode-go"},
 		MaxResponseBytes: 1 << 20,
 		Catalog:          config.Catalog{StaleWhileUnavailable: true},
-		Protocols:        config.Protocols{ChatCompletions: true, Messages: true, Responses: true},
+		Protocols:        config.Protocols{ChatCompletions: true, Messages: true, Responses: true, Gemini: true},
 	}
+}
+
+// declare adds a models[] entry carrying only a protocol declaration.
+func declare(cfg *config.Config, name string, protocols ...config.ModelProtocol) {
+	cfg.Models = append(cfg.Models, config.ModelOverride{Name: name, Protocols: protocols})
+}
+
+func proto(protocol, endpoint string) config.ModelProtocol {
+	return config.ModelProtocol{Protocol: protocol, Endpoint: endpoint}
+}
+
+// routesOf lists a record's protocols in order.
+func routesOf(rec ModelRecord) []Route {
+	out := make([]Route, len(rec.Routes))
+	for i, t := range rec.Routes {
+		out[i] = t.Protocol
+	}
+	return out
+}
+
+// primary returns the record's first (documented) protocol.
+func primary(rec ModelRecord) Route {
+	if len(rec.Routes) == 0 {
+		return ""
+	}
+	return rec.Routes[0].Protocol
 }
 
 func newManager(cfg config.Config, fc *fakeClient) *Manager {
@@ -78,6 +104,7 @@ func TestRouteEndpointPath(t *testing.T) {
 		{RouteChatCompletions, "/v1/chat/completions"},
 		{RouteMessages, "/v1/messages"},
 		{RouteResponses, "/v1/responses"},
+		{RouteGemini, "/google/v1beta/models/{model}"},
 		{Route("bogus"), ""},
 	}
 	for _, c := range cases {
@@ -95,7 +122,7 @@ func TestRefreshRequestShape(t *testing.T) {
 	if req.Method != "GET" {
 		t.Errorf("Method = %q, want GET", req.Method)
 	}
-	if req.URL != "https://opencode.ai/zen/go/v1/models" {
+	if req.URL != "https://opencode.ai/inference/go/v1/models" {
 		t.Errorf("URL = %q", req.URL)
 	}
 	if got := req.Headers.Get("Authorization"); got != "Bearer "+testKey {
@@ -143,9 +170,7 @@ func TestRefreshSuccess(t *testing.T) {
 		{"id":"minimax-m3"}
 	]}`
 	cfg := testCfg()
-	cfg.RouteOverrides = map[string]config.RouteOverride{
-		"gpt-5.6-luna": {Protocol: "responses", Endpoint: "/v1/responses"},
-	}
+	declare(&cfg, "gpt-5.6-luna", proto("responses", "/v1/responses"))
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
 	m := newManager(cfg, fc)
 	mustRefresh(t, m)
@@ -155,8 +180,7 @@ func TestRefreshSuccess(t *testing.T) {
 	if luna.PublicID != "opencode-go/gpt-5.6-luna" {
 		t.Errorf("PublicID = %q", luna.PublicID)
 	}
-	if luna.DisplayName != "gpt-5.6-luna" || luna.Protocol != RouteResponses ||
-		luna.EndpointPath != "/v1/responses" {
+	if luna.DisplayName != "gpt-5.6-luna" || !reflect.DeepEqual(luna.Routes, []Target{{RouteResponses, "/v1/responses"}}) {
 		t.Errorf("luna mapping wrong: %+v", luna)
 	}
 
@@ -164,26 +188,24 @@ func TestRefreshSuccess(t *testing.T) {
 	if glm.DisplayName != "glm-5.2" {
 		t.Errorf("DisplayName fallback = %q, want upstream id", glm.DisplayName)
 	}
-	if glm.Protocol != RouteChatCompletions || glm.EndpointPath != "/v1/chat/completions" {
+	if !reflect.DeepEqual(glm.Routes, []Target{{RouteChatCompletions, "/v1/chat/completions"}}) {
 		t.Errorf("glm route wrong: %+v", glm)
 	}
 	mm := findModel(t, models, "minimax-m3")
-	if mm.DisplayName != "minimax-m3" || mm.Protocol != RouteMessages {
+	if mm.DisplayName != "minimax-m3" || primary(mm) != RouteMessages {
 		t.Errorf("minimax wrong: %+v", mm)
 	}
 
 	if len(m.Unsupported()) != 0 || len(m.Warnings()) != 1 ||
-		!strings.Contains(m.Warnings()[0], `model "gpt-5.6-luna" routed via user override`) {
+		!strings.Contains(m.Warnings()[0], `model "gpt-5.6-luna" routed via user configuration (responses /v1/responses)`) {
 		t.Errorf("unexpected diagnostics: %v %v", m.Unsupported(), m.Warnings())
 	}
 }
 
 func TestRoutePriorityMatrix(t *testing.T) {
 	cfg := testCfg()
-	cfg.RouteOverrides = map[string]config.RouteOverride{
-		"totally-new-x": {Protocol: "messages", Endpoint: "/v1/messages-override"},
-		"grok-4.5":      {Protocol: "chat-completions", Endpoint: "/v1/chat/completions"},
-	}
+	declare(&cfg, "totally-new-x", proto("messages", "/v1/messages-override"), proto("gemini", ""))
+	declare(&cfg, "grok-4.5", proto("chat-completions", ""))
 	body := `{"data":[
 		{"id":"glm-5.2"},
 		{"id":"totally-new-x"},
@@ -197,21 +219,21 @@ func TestRoutePriorityMatrix(t *testing.T) {
 	mustRefresh(t, m)
 
 	models := m.Models()
-	if got := findModel(t, models, "glm-5.2").Protocol; got != RouteChatCompletions {
+	if got := primary(findModel(t, models, "glm-5.2")); got != RouteChatCompletions {
 		t.Errorf("compat route wrong: got %q", got)
 	}
 	ovr := findModel(t, models, "totally-new-x")
-	if ovr.Protocol != RouteMessages || ovr.EndpointPath != "/v1/messages-override" {
-		t.Errorf("override not applied: %+v", ovr)
+	if !reflect.DeepEqual(ovr.Routes, []Target{{RouteMessages, "/v1/messages-override"}, {RouteGemini, "/google/v1beta/models/{model}"}}) {
+		t.Errorf("declaration not applied: %+v", ovr)
 	}
-	if got := findModel(t, models, "glm-5.1").Protocol; got != RouteChatCompletions {
+	if got := primary(findModel(t, models, "glm-5.1")); got != RouteChatCompletions {
 		t.Errorf("compat route wrong: got %q", got)
 	}
-	if got := findModel(t, models, "qwen3.8-max").Protocol; got != RouteMessages {
+	if got := primary(findModel(t, models, "qwen3.8-max")); got != RouteMessages {
 		t.Errorf("compat route wrong: got %q", got)
 	}
-	if got := findModel(t, models, "grok-4.5").Protocol; got != RouteChatCompletions {
-		t.Errorf("override should beat compat: got %q", got)
+	if got := findModel(t, models, "grok-4.5").Routes; !reflect.DeepEqual(got, []Target{{RouteChatCompletions, "/v1/chat/completions"}}) {
+		t.Errorf("declaration should replace compat: got %+v", got)
 	}
 	unsup := m.Unsupported()
 	if len(unsup) != 1 || unsup[0].UpstreamID != "mystery-model" || unsup[0].Reason != "no route determined" {
@@ -224,36 +246,60 @@ func TestRoutePriorityMatrix(t *testing.T) {
 	}
 }
 
-// TestCompatExactIDs pins every documented exact ID from the Aug 2026
-// OpenCode Go docs to its required route.
+// TestCompatExactIDs pins every model ID in the Oct 2026 OpenCode Go
+// endpoint table (https://opencode.ai/docs/go/#endpoints), plus earlier
+// documented IDs, to its protocol set. DeepSeek also serves Responses and
+// Messages beyond its documented Chat endpoint.
 func TestCompatExactIDs(t *testing.T) {
-	cases := map[string]Route{
+	chat := []Route{RouteChatCompletions}
+	messages := []Route{RouteMessages}
+	responses := []Route{RouteResponses}
+	deepseek := []Route{RouteChatCompletions, RouteResponses, RouteMessages}
+	cases := map[string][]Route{
 		// Responses.
-		"grok-4.5":                   RouteResponses,
-		"gpt-5.6-luna":               RouteResponses,
-		"muse-spark-1.2-contributor": RouteResponses,
-		// Chat Completions.
-		"glm-5.3":           RouteChatCompletions,
-		"glm-5.2":           RouteChatCompletions,
-		"glm-5.1":           RouteChatCompletions,
-		"kimi-k3":           RouteChatCompletions,
-		"kimi-k2.7-code":    RouteChatCompletions,
-		"kimi-k2.6":         RouteChatCompletions,
-		"deepseek-v4-pro":   RouteChatCompletions,
-		"deepseek-v4-flash": RouteChatCompletions,
-		"mimo-v2.5":         RouteChatCompletions,
-		"mimo-v2.5-pro":     RouteChatCompletions,
-		"hy3":               RouteChatCompletions,
-		"hy4-preview":       RouteChatCompletions,
-		"longcat-2.0":       RouteChatCompletions,
+		"grok-4.7":                   responses,
+		"grok-4.5":                   responses,
+		"gpt-6-luna":                 responses,
+		"gpt-5.6-luna":               responses,
+		"muse-spark-1.3-contributor": responses,
+		"muse-spark-1.2-contributor": responses,
 		// Messages.
-		"minimax-m3":   RouteMessages,
-		"minimax-m2.7": RouteMessages,
-		"minimax-m2.5": RouteMessages,
-		"qwen3.8-max":  RouteMessages,
-		"qwen3.7-max":  RouteMessages,
-		"qwen3.7-plus": RouteMessages,
-		"qwen3.6-plus": RouteMessages,
+		"claude-haiku-5-5": messages,
+		"minimax-m3":       messages,
+		"minimax-m2.7":     messages,
+		"minimax-m2.5":     messages,
+		"qwen3.8-max":      messages,
+		"qwen3.8-flash":    messages,
+		"qwen3.7-max":      messages,
+		"qwen3.7-plus":     messages,
+		"qwen3.6-plus":     messages,
+		// Gemini.
+		"gemini-4-argon-contributor": {RouteGemini},
+		// Chat Completions.
+		"glm-5.3-flash":            chat,
+		"glm-5.3":                  chat,
+		"glm-5.2":                  chat,
+		"glm-5.1":                  chat,
+		"kimi-k3.1-pro":            chat,
+		"kimi-k3":                  chat,
+		"kimi-k2.7-code":           chat,
+		"kimi-k2.6":                chat,
+		"longcat-2.0":              chat,
+		"longcat-2.5-preview-free": chat,
+		"mimo-v2.6-flash":          chat,
+		"mimo-v2.6-pro":            chat,
+		"mimo-v2.5":                chat,
+		"mimo-v2.5-pro":            chat,
+		"minimax-m3.1-flash":       chat,
+		"minimax-m3.1-flash-free":  chat,
+		"hy4-preview":              chat,
+		"hy3":                      chat,
+		"step-5-preview":           chat,
+		"beam-free":                chat,
+		// Chat Completions documented; Responses and Messages also served.
+		"deepseek-v4.1-flash": deepseek,
+		"deepseek-v4-pro":     deepseek,
+		"deepseek-v4-flash":   deepseek,
 	}
 	var sb strings.Builder
 	sb.WriteString(`{"data":[`)
@@ -270,11 +316,13 @@ func TestCompatExactIDs(t *testing.T) {
 	m := newManager(testCfg(), fc)
 	mustRefresh(t, m)
 	for _, mo := range m.Models() {
-		if want := cases[mo.UpstreamID]; mo.Protocol != want {
-			t.Errorf("%s: Protocol = %q, want %q", mo.UpstreamID, mo.Protocol, want)
+		if want := cases[mo.UpstreamID]; !reflect.DeepEqual(routesOf(mo), want) {
+			t.Errorf("%s: protocols = %q, want %q", mo.UpstreamID, routesOf(mo), want)
 		}
-		if mo.EndpointPath != mo.Protocol.EndpointPath() {
-			t.Errorf("%s: EndpointPath = %q", mo.UpstreamID, mo.EndpointPath)
+		for _, target := range mo.Routes {
+			if target.EndpointPath != target.Protocol.EndpointPath() {
+				t.Errorf("%s: %s EndpointPath = %q", mo.UpstreamID, target.Protocol, target.EndpointPath)
+			}
 		}
 	}
 	if len(m.Models()) != len(cases) {
@@ -284,23 +332,29 @@ func TestCompatExactIDs(t *testing.T) {
 
 func TestCompatPrefixFallback(t *testing.T) {
 	cases := map[string]Route{
-		"glm-9.9":        RouteChatCompletions,
-		"qwen99-max":     RouteMessages,
-		"gpt-9":          RouteResponses,
-		"muse-spark-9":   RouteResponses,
-		"kimi-k99":       RouteChatCompletions,
-		"deepseek-v99":   RouteChatCompletions,
-		"minimax-m99":    RouteMessages,
-		"mimo-x":         RouteChatCompletions,
-		"hy3-extreme":    RouteChatCompletions,
-		"hy4-turbo":      RouteChatCompletions,
-		"longcat-max":    RouteChatCompletions,
-		"GLM-5.2":        RouteChatCompletions,
-		"DeepSeek-V4-X":  RouteChatCompletions,
-		"HY3":            RouteChatCompletions,
-		"HY4":            RouteChatCompletions,
-		"GPT-5.6-LUNA-X": RouteResponses,
-		"QWEN4-MAX":      RouteMessages,
+		"glm-9.9":              RouteChatCompletions,
+		"qwen99-max":           RouteMessages,
+		"gpt-9":                RouteResponses,
+		"muse-spark-9":         RouteResponses,
+		"kimi-k99":             RouteChatCompletions,
+		"deepseek-v99":         RouteChatCompletions,
+		"minimax-m99":          RouteMessages,
+		"minimax-m3.1-flash-x": RouteChatCompletions,
+		"claude-sonnet-9":      RouteMessages,
+		"gemini-9-pro":         RouteGemini,
+		"step-9":               RouteChatCompletions,
+		"beam-pro":             RouteChatCompletions,
+		"mimo-x":               RouteChatCompletions,
+		"hy3-extreme":          RouteChatCompletions,
+		"hy4-turbo":            RouteChatCompletions,
+		"longcat-max":          RouteChatCompletions,
+		"GLM-5.2":              RouteChatCompletions,
+		"DeepSeek-V4-X":        RouteChatCompletions,
+		"HY3":                  RouteChatCompletions,
+		"HY4":                  RouteChatCompletions,
+		"GPT-5.6-LUNA-X":       RouteResponses,
+		"QWEN4-MAX":            RouteMessages,
+		"Gemini-X":             RouteGemini,
 	}
 	var sb strings.Builder
 	sb.WriteString(`{"data":[`)
@@ -320,8 +374,23 @@ func TestCompatPrefixFallback(t *testing.T) {
 		t.Fatalf("got %d routable, want %d", got, len(cases))
 	}
 	for _, mo := range m.Models() {
-		if want := cases[mo.UpstreamID]; mo.Protocol != want {
-			t.Errorf("%s: Protocol = %q, want %q", mo.UpstreamID, mo.Protocol, want)
+		if want := cases[mo.UpstreamID]; primary(mo) != want {
+			t.Errorf("%s: primary protocol = %q, want %q", mo.UpstreamID, primary(mo), want)
+		}
+	}
+}
+
+// TestPrefixRoutesLongestFirst keeps longest-prefix-wins true: a prefix may
+// only follow the prefixes it does not extend.
+func TestPrefixRoutesLongestFirst(t *testing.T) {
+	for i, later := range prefixRoutes {
+		for _, earlier := range prefixRoutes[:i] {
+			if strings.HasPrefix(later.prefix, earlier.prefix) {
+				t.Errorf("prefix %q is shadowed by earlier %q", later.prefix, earlier.prefix)
+			}
+		}
+		if len(later.routes) == 0 {
+			t.Errorf("prefix %q has no protocols", later.prefix)
 		}
 	}
 }
@@ -503,7 +572,7 @@ func TestLookupByPrefixedBareAndMiss(t *testing.T) {
 	mustRefresh(t, m)
 
 	rec, ok := m.Lookup("opencode-go/glm-5.2")
-	if !ok || rec.UpstreamID != "glm-5.2" || rec.Protocol != RouteChatCompletions {
+	if !ok || rec.UpstreamID != "glm-5.2" || primary(rec) != RouteChatCompletions {
 		t.Errorf("prefixed lookup = %+v %v", rec, ok)
 	}
 	rec, ok = m.Lookup("glm-5.2")
@@ -591,7 +660,7 @@ func TestRouteCountsViaModels(t *testing.T) {
 	mustRefresh(t, m)
 	counts := map[Route]int{}
 	for _, mo := range m.Models() {
-		counts[mo.Protocol]++
+		counts[primary(mo)]++
 	}
 	if counts[RouteChatCompletions] != 2 || counts[RouteMessages] != 3 || counts[RouteResponses] != 1 {
 		t.Errorf("counts = %v", counts)
@@ -725,6 +794,35 @@ func TestProtocolFlagsExcludeRoutes(t *testing.T) {
 	}
 }
 
+// A switch removes only its own protocol from a multi-protocol model; the
+// model stays routable until every protocol it serves is disabled.
+func TestProtocolFlagsFilterMultiProtocolModels(t *testing.T) {
+	body := `{"data":[{"id":"deepseek-v4-pro"},{"id":"gemini-4-argon-contributor"}]}`
+	cfg := testCfg()
+	cfg.Protocols.ChatCompletions = false
+	cfg.Protocols.Gemini = false
+	m := newManager(cfg, &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}})
+	mustRefresh(t, m)
+	deepseek := findModel(t, m.Models(), "deepseek-v4-pro")
+	if got := routesOf(deepseek); !reflect.DeepEqual(got, []Route{RouteResponses, RouteMessages}) {
+		t.Fatalf("deepseek protocols = %q, want chat filtered out", got)
+	}
+	unsup := m.Unsupported()
+	if len(unsup) != 1 || unsup[0].UpstreamID != "gemini-4-argon-contributor" || unsup[0].Reason != "protocol gemini disabled by config" {
+		t.Fatalf("unsupported = %+v", unsup)
+	}
+
+	cfg.Protocols.Responses, cfg.Protocols.Messages = false, false
+	m = newManager(cfg, &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}})
+	mustRefresh(t, m)
+	if len(m.Models()) != 0 {
+		t.Fatalf("models = %+v, want none routable", m.Models())
+	}
+	if unsup := m.Unsupported(); len(unsup) != 2 || unsup[0].Reason != "protocols chat-completions, responses, messages disabled by config" {
+		t.Fatalf("unsupported = %+v", unsup)
+	}
+}
+
 func TestProtocolFlagsAllOnKeepsEverything(t *testing.T) {
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[
 		{"id":"glm-5.2"},{"id":"qwen3.7-max"},{"id":"gpt-5.6-luna"}
@@ -746,13 +844,11 @@ func TestProtocolEnabledUnknownRouteDefaultsTrue(t *testing.T) {
 	}
 }
 
-// TestOverrideApplicationRecordedInWarnings pins spec 04 §5: an applied
-// user route override MUST be visible in diagnostics.
+// TestOverrideApplicationRecordedInWarnings pins spec 04 §5: user protocol
+// routing MUST be visible in diagnostics, including defaulted endpoints.
 func TestOverrideApplicationRecordedInWarnings(t *testing.T) {
 	cfg := testCfg()
-	cfg.RouteOverrides = map[string]config.RouteOverride{
-		"weird-model": {Protocol: "chat-completions", Endpoint: "/v1/custom"},
-	}
+	declare(&cfg, "weird-model", proto("chat-completions", "/v1/custom"), proto("messages", ""))
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
 		Body:       []byte(`{"data":[{"id":"weird-model"}]}`),
@@ -761,30 +857,50 @@ func TestOverrideApplicationRecordedInWarnings(t *testing.T) {
 	mustRefresh(t, m)
 
 	warns := m.Warnings()
-	if len(warns) != 1 || !strings.Contains(warns[0], `model "weird-model" routed via user override`) ||
-		!strings.Contains(warns[0], "chat-completions /v1/custom") {
+	if len(warns) != 1 || !strings.Contains(warns[0], `model "weird-model" routed via user configuration`) ||
+		!strings.Contains(warns[0], "chat-completions /v1/custom, messages /v1/messages") {
 		t.Fatalf("override warning wrong: %+v", warns)
 	}
 }
 
-// TestJoinUpstreamURL pins the shared join formula byte-for-byte against
-// the historical inline expression (TrimSuffix "/" + TrimPrefix "/v1") so
-// both former call sites keep producing identical URLs.
+// TestJoinUpstreamURL pins the shared join formula: base-url carries no
+// version segment, so endpoint paths are appended verbatim.
 func TestJoinUpstreamURL(t *testing.T) {
-	legacy := func(base, endpoint string) string {
-		return strings.TrimSuffix(base, "/") + strings.TrimPrefix(endpoint, "/v1")
-	}
-	cases := []struct{ base, endpoint string }{
-		{"https://opencode.ai", "/v1/chat/completions"},
-		{"https://opencode.ai/", "/v1/messages"},
-		{"https://opencode.ai/zen/go/v1", "/v1/responses"},
-		{"https://opencode.ai", "v1@evil.com"},
-		{"https://opencode.ai", "/custom"},
-		{"https://opencode.ai/", ""},
+	cases := []struct{ base, endpoint, want string }{
+		{"https://opencode.ai/inference/go", "/v1/chat/completions", "https://opencode.ai/inference/go/v1/chat/completions"},
+		{"https://opencode.ai/inference/go/", "/v1/messages", "https://opencode.ai/inference/go/v1/messages"},
+		{"https://opencode.ai", "/google/v1beta/models/m", "https://opencode.ai/google/v1beta/models/m"},
+		{"https://opencode.ai", "@evil.com", "https://opencode.ai@evil.com"},
+		{"https://opencode.ai/", "", "https://opencode.ai"},
 	}
 	for _, c := range cases {
-		if got, want := JoinUpstreamURL(c.base, c.endpoint), legacy(c.base, c.endpoint); got != want {
-			t.Errorf("JoinUpstreamURL(%q, %q) = %q, legacy = %q", c.base, c.endpoint, got, want)
+		if got := JoinUpstreamURL(c.base, c.endpoint); got != c.want {
+			t.Errorf("JoinUpstreamURL(%q, %q) = %q, want %q", c.base, c.endpoint, got, c.want)
+		}
+	}
+}
+
+// TestTargetURL pins per-protocol URLs: Gemini substitutes the escaped model
+// and appends the operation for the streaming mode.
+func TestTargetURL(t *testing.T) {
+	const base = "https://opencode.ai/inference/go"
+	gemini := Target{RouteGemini, RouteGemini.EndpointPath()}
+	cases := []struct {
+		target Target
+		model  string
+		stream bool
+		want   string
+	}{
+		{Target{RouteChatCompletions, "/v1/chat/completions"}, "glm-5.2", true, base + "/v1/chat/completions"},
+		{Target{RouteResponses, "/v1/custom-responses"}, "gpt-5.6-luna", false, base + "/v1/custom-responses"},
+		{gemini, "gemini-4-argon-contributor", false, base + "/google/v1beta/models/gemini-4-argon-contributor:generateContent"},
+		{gemini, "gemini-4-argon-contributor", true, base + "/google/v1beta/models/gemini-4-argon-contributor:streamGenerateContent?alt=sse"},
+		{gemini, "a/b?c", false, base + "/google/v1beta/models/a%2Fb%3Fc:generateContent"},
+		{Target{RouteGemini, "/custom/{model}/x"}, "m", false, base + "/custom/m/x:generateContent"},
+	}
+	for _, c := range cases {
+		if got := c.target.URL(base, c.model, c.stream); got != c.want {
+			t.Errorf("%+v.URL(%q, %t) = %q, want %q", c.target, c.model, c.stream, got, c.want)
 		}
 	}
 }
@@ -799,38 +915,47 @@ func TestEndpointEscapesBase(t *testing.T) {
 		endpoint string
 		want     bool
 	}{
-		{"https://opencode.ai", "/v1@evil.com/x", true},
+		{"https://opencode.ai", "@evil.com/x", true},
 		{"https://opencode.ai", "@evil.com/", true},
-		{"https://opencode.ai/zen/go/v1", "/v1@evil.com/x", false}, // @ lands in path
+		{"https://opencode.ai", "/v1@evil.com/x", false}, // @ lands in path
 		{"https://opencode.ai", "/v1/chat/completions", false},
-		{"https://opencode.ai/zen/go/v1", "/v1/messages", false},
+		{"https://opencode.ai/inference/go", "/v1/messages", false},
 		{"https://opencode.ai/", "/v1/responses", false},
 		{"https://OPENCODE.ai", "/v1/chat/completions", false}, // host compare is case-insensitive
-		{"https://opencode.ai", "v1@evil.com", true},
+		{"https://opencode.ai", ".evil.com", true},
 		{"https://opencode.ai", "\x7f", true},   // unparseable join
 		{"https://opencode.ai\x00", "/x", true}, // unparseable base
 	}
 	for _, c := range cases {
-		if got := endpointEscapesBase(c.base, c.endpoint); got != c.want {
+		target := Target{RouteChatCompletions, c.endpoint}
+		if got := endpointEscapesBase(c.base, target, "m"); got != c.want {
 			t.Errorf("endpointEscapesBase(%q, %q) = %v, want %v", c.base, c.endpoint, got, c.want)
 		}
 	}
+	// The substituted model is path-escaped and cannot rewrite the authority.
+	gemini := Target{RouteGemini, "/google/v1beta/models/{model}"}
+	for _, model := range []string{"x@evil.com", "../../@evil.com", "a/b#frag"} {
+		if endpointEscapesBase("https://opencode.ai", gemini, model) {
+			t.Errorf("gemini model %q escapes the base", model)
+		}
+	}
+	if !endpointEscapesBase("https://opencode.ai", Target{RouteGemini, "{model}"}, "@evil.com") {
+		t.Error("a model placeholder ahead of any path separator must fail the check")
+	}
 }
 
-// F-security pin: override endpoints are concatenated onto base-url; one that
-// rewrites the URL authority (e.g. "/v1@evil.com/x" against a bare-host
-// base-url) must exclude the model from the routable set (spec 05 §2).
-// Override endpoints flow through the same check before swap's validation.
+// F-security pin: user endpoints are concatenated onto base-url; one that
+// rewrites the URL authority (e.g. "@evil.com/x" against a bare-host
+// base-url, if config validation were bypassed) must exclude the model from
+// the routable set (spec 05 §2).
 func TestEndpointEscapeExcludedFromRoutableSet(t *testing.T) {
 	const escapeReason = "resolved endpoint escapes the configured upstream host"
 
 	t.Run("bare-host base rejects authority rewrite", func(t *testing.T) {
 		cfg := testCfg()
 		cfg.BaseURL = "https://opencode.ai"
-		cfg.RouteOverrides = map[string]config.RouteOverride{
-			"evil":      {Protocol: "chat-completions", Endpoint: "/v1@evil.com/x"},
-			"custom-ok": {Protocol: "responses", Endpoint: "/v1/custom"},
-		}
+		declare(&cfg, "evil", proto("chat-completions", "@evil.com/x"))
+		declare(&cfg, "custom-ok", proto("responses", "/v1/custom"))
 		fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[
 			{"id":"evil"},
 			{"id":"custom-ok"}
@@ -842,14 +967,16 @@ func TestEndpointEscapeExcludedFromRoutableSet(t *testing.T) {
 			if mo.UpstreamID == "evil" {
 				t.Fatalf("authority-rewriting endpoint still routable: %+v", mo)
 			}
-			u := cfg.BaseURL + mo.EndpointPath
-			if p, err := url.Parse(u); err != nil || !strings.EqualFold(p.Host, "opencode.ai") || p.Scheme != "https" {
-				t.Fatalf("routable record escapes base: %q parses to %+v err=%v", u, p, err)
+			for _, target := range mo.Routes {
+				u := target.URL(cfg.BaseURL, mo.UpstreamID, true)
+				if p, err := url.Parse(u); err != nil || !strings.EqualFold(p.Host, "opencode.ai") || p.Scheme != "https" {
+					t.Fatalf("routable record escapes base: %q parses to %+v err=%v", u, p, err)
+				}
 			}
 		}
 		customFound := false
 		for _, mo := range m.Models() {
-			if mo.UpstreamID == "custom-ok" && mo.EndpointPath == "/v1/custom" {
+			if mo.UpstreamID == "custom-ok" && reflect.DeepEqual(mo.Routes, []Target{{RouteResponses, "/v1/custom"}}) {
 				customFound = true
 			}
 		}
@@ -862,12 +989,10 @@ func TestEndpointEscapeExcludedFromRoutableSet(t *testing.T) {
 		}
 	})
 
-	t.Run("path-hosted base keeps same-host @ endpoint routable", func(t *testing.T) {
+	t.Run("@ inside the path stays routable", func(t *testing.T) {
 		cfg := testCfg()
-		cfg.BaseURL = "https://opencode.ai/zen/go/v1"
-		cfg.RouteOverrides = map[string]config.RouteOverride{
-			"glm-5.2": {Protocol: "chat-completions", Endpoint: "/v1@evil.com/x"},
-		}
+		cfg.BaseURL = "https://opencode.ai"
+		declare(&cfg, "glm-5.2", proto("chat-completions", "/v1@evil.com/x"))
 		fc := &fakeClient{resp: pluginapi.HTTPResponse{
 			StatusCode: 200,
 			Body:       []byte(`{"data":[{"id":"glm-5.2"}]}`),
@@ -875,17 +1000,15 @@ func TestEndpointEscapeExcludedFromRoutableSet(t *testing.T) {
 		m := newManager(cfg, fc)
 		mustRefresh(t, m)
 		rec := findModel(t, m.Models(), "glm-5.2")
-		if rec.EndpointPath != "/v1@evil.com/x" {
-			t.Errorf("EndpointPath = %q; @ stays in path on default-style base", rec.EndpointPath)
+		if !reflect.DeepEqual(rec.Routes, []Target{{RouteChatCompletions, "/v1@evil.com/x"}}) {
+			t.Errorf("Routes = %+v; @ stays in path after the leading slash", rec.Routes)
 		}
 	})
 
-	t.Run("override endpoints flow through the same check", func(t *testing.T) {
+	t.Run("only the escaping protocol is dropped", func(t *testing.T) {
 		cfg := testCfg()
 		cfg.BaseURL = "https://opencode.ai"
-		cfg.RouteOverrides = map[string]config.RouteOverride{
-			"mystery-model": {Protocol: "chat-completions", Endpoint: "/v1@evil.com/y"},
-		}
+		declare(&cfg, "mystery-model", proto("chat-completions", "@evil.com/y"), proto("messages", ""))
 		fc := &fakeClient{resp: pluginapi.HTTPResponse{
 			StatusCode: 200,
 			Body:       []byte(`{"data":[{"id":"mystery-model"}]}`),
@@ -893,12 +1016,19 @@ func TestEndpointEscapeExcludedFromRoutableSet(t *testing.T) {
 		m := newManager(cfg, fc)
 		mustRefresh(t, m)
 
-		if got := m.Models(); len(got) != 0 {
-			t.Fatalf("override-supplied escaping endpoint still routable: %+v", got)
+		rec := findModel(t, m.Models(), "mystery-model")
+		if !reflect.DeepEqual(rec.Routes, []Target{{RouteMessages, "/v1/messages"}}) {
+			t.Fatalf("Routes = %+v, want only messages", rec.Routes)
 		}
-		unsup := m.Unsupported()
-		if len(unsup) != 1 || unsup[0].UpstreamID != "mystery-model" || unsup[0].Reason != escapeReason {
-			t.Fatalf("unsupported = %+v, want override endpoint excluded with %q", unsup, escapeReason)
+		if len(m.Unsupported()) != 0 {
+			t.Fatalf("unsupported = %+v", m.Unsupported())
+		}
+		var found bool
+		for _, w := range m.Warnings() {
+			found = found || w == `model "mystery-model" chat-completions: `+escapeReason
+		}
+		if !found {
+			t.Fatalf("warnings = %v, want dropped-protocol diagnostic", m.Warnings())
 		}
 	})
 }
@@ -931,9 +1061,9 @@ func TestFailClearsLookupIndex(t *testing.T) {
 
 // TestSeedFromRevalidatesEndpointsAgainstNewBase pins the seed-revalidation
 // fix: a record whose endpoint was safe under the OLD base-url (path-hosted,
-// so "/v1@evil.com/x" stays in the path) must not keep serving once seeded
-// into a manager whose base-url is the bare host — there the join turns the
-// old host into userinfo and the endpoint escapes to an attacker authority.
+// so "@evil.com/x" stays in the path) must not keep serving once seeded into
+// a manager whose base-url is the bare host — there the join turns the old
+// host into userinfo and the endpoint escapes to an attacker authority.
 func TestSeedFromRevalidatesEndpointsAgainstNewBase(t *testing.T) {
 	body := `{"data":[
 		{"id":"glm-5.2"},
@@ -942,9 +1072,7 @@ func TestSeedFromRevalidatesEndpointsAgainstNewBase(t *testing.T) {
 	oldCfg := testCfg()
 	oldCfg.BaseURL = "https://api.test/v1"
 	oldCfg.CatalogURL = "https://api.test/v1/models"
-	oldCfg.RouteOverrides = map[string]config.RouteOverride{
-		"totally-new-x": {Protocol: "chat-completions", Endpoint: "/v1@evil.com/x"},
-	}
+	declare(&oldCfg, "totally-new-x", proto("chat-completions", "@evil.com/x"))
 	prev := newManager(oldCfg, &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
 		Body:       []byte(body),
@@ -955,9 +1083,7 @@ func TestSeedFromRevalidatesEndpointsAgainstNewBase(t *testing.T) {
 	cfg := testCfg()
 	cfg.BaseURL = "https://opencode.ai"
 	cfg.CatalogURL = "https://opencode.ai/go/v1/models"
-	cfg.RouteOverrides = map[string]config.RouteOverride{
-		"totally-new-x": {Protocol: "chat-completions", Endpoint: "/v1@evil.com/x"},
-	}
+	declare(&cfg, "totally-new-x", proto("chat-completions", "@evil.com/x"))
 	m := newManager(cfg, &fakeClient{})
 	m.SeedFrom(prev)
 
@@ -1005,7 +1131,7 @@ func TestSeedFromAppliesProtocolKillSwitch(t *testing.T) {
 	m.SeedFrom(prev)
 
 	for _, mo := range m.Models() {
-		if mo.Protocol == RouteMessages {
+		if mo.Supports(RouteMessages) {
 			t.Fatalf("disabled-protocol record still routable after seed: %+v", mo)
 		}
 	}
@@ -1071,10 +1197,8 @@ func TestSwapPublicUpstreamCrossKeyCollision(t *testing.T) {
 			body := fmt.Sprintf(`{"data":[{"id":%q},{"id":%q}]}`, ids[0], ids[1])
 			fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
 			cfg := testCfg()
-			cfg.RouteOverrides = map[string]config.RouteOverride{
-				ids[0]: {Protocol: "chat-completions", Endpoint: "/v1/chat/completions"},
-				ids[1]: {Protocol: "messages", Endpoint: "/v1/messages"},
-			}
+			declare(&cfg, ids[0], proto("chat-completions", ""))
+			declare(&cfg, ids[1], proto("messages", ""))
 			m := newManager(cfg, fc)
 			mustRefresh(t, m)
 

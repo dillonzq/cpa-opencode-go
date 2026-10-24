@@ -2,15 +2,17 @@
 
 [简体中文](protocol-conversion.zh-CN.md) · [Back to README](../README.md)
 
-Requests, regular responses, and streaming responses use pinned [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0). All six cross-protocol directions and same-protocol processing are supported for Chat Completions, Messages, and Responses. See the library's [LLM protocol guide](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/llm.md) for field mappings and limits. This document describes the plugin's host and upstream policies.
+Requests, regular responses, and streaming responses use pinned [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0). All twelve cross-protocol directions and same-protocol processing are supported for Chat Completions, Messages, Responses, and Gemini GenerateContent. See the library's [LLM protocol guide](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/llm.md) and [Gemini protocol guide](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/gemini.md) for field mappings and limits. This document describes the plugin's host and upstream policies.
 
 ## Integration
 
-CPA formats `openai`, `claude`, and `openai-response` map to `chat-completions`, `messages`, and `responses`. The plugin executes effective `Payload` in `SourceFormat`; only omitted/null Payload falls back to OriginalRequest. Explicit empty payload never replays the original. `Format` independently selects the output protocol. Unknown formats fail before contacting upstream.
+CPA formats `openai`, `claude`, `openai-response`, and `gemini` map to `chat-completions`, `messages`, `responses`, and `gemini`. The plugin executes effective `Payload` in `SourceFormat`; only omitted/null Payload falls back to OriginalRequest. Explicit empty payload never replays the original. `Format` independently selects the output protocol. Unknown formats fail before contacting upstream.
+
+The upstream protocol is chosen per request from the model's protocol set: the `SourceFormat` protocol when the model serves it, otherwise the first served protocol in that format's least-loss order (see [Protocol selection](../README.md#protocol-selection)). GenerateContent carries the model and streaming mode in its URL, so a Gemini request takes its streaming mode from the host's `Stream` flag; conversion writes `stream: true` into the target body. A Gemini upstream URL is `{base-url}/google/v1beta/models/{model}:generateContent`, or `:streamGenerateContent?alt=sse` for streams.
 
 Each execution owns a separate apix exchange shared by request and response conversion. The default is LossPolicyAllow, which collects known library loss diagnostics without rejecting solely for those losses. No new user configuration is introduced. Protocol errors and unrepresentable actual output still fail.
 
-The plugin retains HTTP, authentication, routing, sessions, cancellation, timeouts, response byte limits, and CPA error envelopes. Messages uses x-api-key and anthropic-version: 2023-06-01; other protocols use Bearer. All include x-opencode-session. Sessions are derived before cleaning or conversion, with canonical ID, explicit headers, and initial user content precedence preserved.
+The plugin retains HTTP, authentication, routing, sessions, cancellation, timeouts, response byte limits, and CPA error envelopes. Messages uses x-api-key and anthropic-version: 2023-06-01; Gemini uses x-goog-api-key; other protocols use Bearer. All include x-opencode-session. Sessions are derived before cleaning or conversion, with canonical ID, explicit headers, and initial user content precedence preserved.
 
 ## Native upstream compatibility
 
@@ -21,6 +23,7 @@ The library's same-protocol request conversion only rewrites model. Before that,
 | Chat → Chat | Rewrite developer to system; remove top-level thinking without a valid string type |
 | Messages → Messages | Fold historical system turns into top-level system; omit their thinking/redacted_thinking; reject images and unknown system blocks; without system turns, only rewrite model |
 | Responses → GPT Responses | Only rewrite model; preserve native tools, reasoning, compaction, and other fields |
+| Gemini → Gemini | Pass through unchanged (the model is in the URL); preserve native parts, signatures, and other fields |
 | Responses → non-GPT Responses | Preserve reasoning content and summaries without promoting summaries to original content; remove foreign encrypted_content, reasoning items without non-whitespace reasoning_text content or summary_text summaries (including absent/null/empty or malformed arrays), and compaction; filter custom apply_patch, tool_search, image_generation; reduce web_search declarations to type; then let the exchange (`ResponsesOptions.NormalizeTools`) merge additional_tools, flatten namespace/custom tools, adapt local shell to a function, and register identities for response restoration |
 
 The GPT branch retains the case-insensitive `gpt` upstream ID prefix check. Custom input uses a string parameter wrapper; non-string historical custom input fails. Duplicate declarations of the same identity keep the first; flattened identity collisions fail. Upstream acceptance of native hosted tools remains model-dependent.
@@ -57,7 +60,7 @@ Recognized suffixes remove superseded request controls before conversion and app
 
 The library handles arbitrary network chunks, multiple data lines, LF/CRLF/CR, interleaved tools, late identities, and deduplicated done/item/terminal snapshots. Synthesized Responses events have increasing sequence_number values.
 
-Library output is complete SSE frames. For Chat output, the plugin uses SSEDecoder to extract bare JSON and consume library DONE; CPA's HTTP handler wraps data and sends one DONE on normal close. Messages/Responses keep complete frames. SSE comments/retry/id/ping are not guaranteed preserved across protocols.
+Library output is complete SSE frames. For Chat and Gemini output, the plugin uses SSEDecoder to extract bare JSON and consume library DONE; CPA's HTTP handlers wrap data, and the Chat handler sends one DONE on normal close. Messages/Responses keep complete frames. SSE comments/retry/id/ping are not guaranteed preserved across protocols.
 
 When Feed/Finish returns both events and an error, completed events are emitted before closing with the error, without successful completion. On EOF before done, Finish checks terminal validity. Cancellation, timeout, and network errors close directly as failures. Chat finish_reason/DONE and Messages stop_reason/message_stop can establish termination; Responses requires a valid terminal event. Failed conversion cannot recover or resend upstream requests. Empty or whitespace-only library error messages receive a fallback message so CPA does not interpret error closure as success.
 

@@ -2,15 +2,17 @@
 
 [English](protocol-conversion.md) · [返回 README](../README.zh-CN.md)
 
-请求、普通响应和流式响应使用固定版本的 [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0)。支持 Chat Completions、Messages、Responses 的六个跨协议方向及同协议处理。详细字段映射和限制见[库的 LLM 协议说明](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/llm.zh-CN.md)。本文补充插件的宿主和上游兼容行为。
+请求、普通响应和流式响应使用固定版本的 [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0)。支持 Chat Completions、Messages、Responses、Gemini GenerateContent 的十二个跨协议方向及同协议处理。详细字段映射和限制见[库的 LLM 协议说明](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/llm.zh-CN.md)和 [Gemini 协议说明](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/gemini.zh-CN.md)。本文补充插件的宿主和上游兼容行为。
 
 ## 插件接入
 
-CPA 的 `openai`、`claude`、`openai-response` 分别映射为库的 `chat-completions`、`messages`、`responses`。输入使用宿主有效 `Payload` 和 `SourceFormat`；仅缺省/null Payload 回退到 `OriginalRequest`，显式空 payload 不回放原始请求。`Format` 决定输出协议，可以与输入不同。未知格式在请求上游前报错。
+CPA 的 `openai`、`claude`、`openai-response`、`gemini` 分别映射为库的 `chat-completions`、`messages`、`responses`、`gemini`。输入使用宿主有效 `Payload` 和 `SourceFormat`；仅缺省/null Payload 回退到 `OriginalRequest`，显式空 payload 不回放原始请求。`Format` 决定输出协议，可以与输入不同。未知格式在请求上游前报错。
+
+上游协议按请求从模型的协议集合中选择：模型支持 `SourceFormat` 对应的协议时直接使用；否则按该格式的最小损失顺序，取模型支持的第一个协议（见[协议选择](../README.zh-CN.md#协议选择)）。GenerateContent 的模型和流式模式都在 URL 中，因此 Gemini 请求的流式模式取自宿主的 `Stream` 标志，转换时写入目标请求体的 `stream: true`。Gemini 上游地址为 `{base-url}/google/v1beta/models/{model}:generateContent`，流式请求为 `:streamGenerateContent?alt=sse`。
 
 每次执行独立创建一个 apix exchange，请求和响应共用工具身份映射。默认 `LossPolicyAllow`，允许已知请求损耗并收集库诊断；没有新增用户配置。协议错误和无法表示的实际输出仍报错，不因 allow 而静默接受。
 
-HTTP、鉴权、目录路由、session、超时、取消、最大响应字节和 CPA 错误 envelope 仍由插件管理。Messages 使用 `x-api-key` 和 `anthropic-version: 2023-06-01`，其他协议使用 Bearer；都带 `x-opencode-session`。session 在清洗和转换前从有效输入提取，保留 canonical ID、显式 header、初始用户内容的优先级。
+HTTP、鉴权、目录路由、session、超时、取消、最大响应字节和 CPA 错误 envelope 仍由插件管理。Messages 使用 `x-api-key` 和 `anthropic-version: 2023-06-01`，Gemini 使用 `x-goog-api-key`，其他协议使用 Bearer；都带 `x-opencode-session`。session 在清洗和转换前从有效输入提取，保留 canonical ID、显式 header、初始用户内容的优先级。
 
 ## 原生请求的上游兼容规则
 
@@ -21,6 +23,7 @@ HTTP、鉴权、目录路由、session、超时、取消、最大响应字节和
 | Chat → Chat | developer 改为 system；删除缺少有效字符串 type 的顶层 thinking |
 | Messages → Messages | 历史 system turn 折叠到顶层 system；其 thinking/redacted_thinking 省略；图片或未知 system 块明确报错；没有 system turn 时只改 model |
 | Responses → GPT Responses | 仅改 model，保留原生工具、reasoning、compaction 和其他字段 |
+| Gemini → Gemini | 原样透传（model 在 URL 中），保留原生 part、签名和其他字段 |
 | Responses → 非 GPT Responses | 保留 reasoning 原始 content 和 summary，不用 summary 冒充原文；删除外来 encrypted_content、没有非空白 reasoning_text 原文或 summary_text 摘要的 reasoning（包括缺省/null/空数组或无效数组） 和 compaction；过滤 custom apply_patch、tool_search、image_generation；web_search 声明仅保留 type；然后由 exchange（`ResponsesOptions.NormalizeTools`）合并 additional_tools、展平 namespace、custom 和本地 shell 转 function，并登记工具身份供响应恢复 |
 
 GPT 分支沿用 upstream ID 不区分大小写的 `gpt` 前缀判断。通用 custom 工具的 input 包装为字符串参数；非字符串历史 custom input 会报错。同一身份重复声明保留首次声明，展平后的身份冲突报错。Hosted 工具并非全部可转换，上游是否接受原生工具仍由其自身验证。
@@ -57,7 +60,7 @@ GPT 分支沿用 upstream ID 不区分大小写的 `gpt` 前缀判断。通用 c
 
 库处理任意网络分块、多 data 行和 LF/CRLF/CR，负责工具交错、晚到身份和 done/item/终止快照补尾去重。合成 Responses 事件带递增 sequence_number。
 
-库返回完整 SSE 帧。插件对 Chat 输出使用 SSEDecoder 提取裸 JSON并消费库的 DONE，由 CPA HTTP handler 包装 data 并在正常关闭时发送一次 DONE；Messages/Responses 输出完整帧。SSE comment/retry/id/ping 不保证跨协议保留。
+库返回完整 SSE 帧。插件对 Chat 和 Gemini 输出使用 SSEDecoder 提取裸 JSON 并消费库的 DONE，由 CPA HTTP handler 包装 data，Chat handler 在正常关闭时发送一次 DONE；Messages/Responses 输出完整帧。SSE comment/retry/id/ping 不保证跨协议保留。
 
 Feed/Finish 同时返回事件和错误时，先发送已完成事件，再以错误关闭，不生成成功终止。EOF 且尚未完成时调用 Finish 校验有效终止；取消、超时和网络错误直接失败关闭。Chat finish_reason/DONE、Messages stop_reason/message_stop 可建立结束状态；Responses 需要合法终止事件。错误后不恢复转换或重发请求。库错误消息为空或纯空白时，桥接补充默认消息，防止 CPA 将空错误关闭当成正常结束。
 
