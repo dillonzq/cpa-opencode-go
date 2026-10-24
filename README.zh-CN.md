@@ -21,7 +21,7 @@
   <a href="https://github.com/dillonzq/cpa-opencode-go"><img src="https://img.shields.io/github/stars/dillonzq/cpa-opencode-go?style=social" alt="GitHub stars"></a>
   <a href="https://github.com/dillonzq/cpa-opencode-go/releases"><img src="https://img.shields.io/github/v/release/dillonzq/cpa-opencode-go" alt="Latest release"></a>
   <a href="https://help.router-for.me/plugin/development"><img src="https://img.shields.io/badge/CLIProxyAPI-8.0.0%2B-555" alt="CLIProxyAPI 8.0.0+"></a>
-  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.26.7%2B-555" alt="Go 1.26.7+ for source builds"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.26.10%2B-555" alt="Go 1.26.10+ for source builds"></a>
 </p>
 
 ---
@@ -59,7 +59,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 ## 功能
 
 - **统一服务商命名空间**：默认使用 `opencode-go` 模型前缀，例如 `opencode-go/glm-5.2`、`opencode-go/qwen3.7-max` 和 `opencode-go/gpt-5.6-luna`。
-- **转换实现**：固定使用 [api-translator v0.3.0](https://github.com/dillonzq/api-translator/tree/v0.3.0)，支持推理历史回放、媒体输入、本地 shell 适配、缓存提示、结构化输出、工具 strict、可表示的 URL 引用和 Responses ↔ Messages 托管搜索；目标模型支持范围仍由上游验证。插件保留原生上游清洗和 CPA 流式包装适配。
+- **转换实现**：固定使用 [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0)，支持推理历史回放、媒体输入、本地 shell 适配、缓存提示、结构化输出、工具 strict、可表示的 URL 引用和 Responses ↔ Messages 托管搜索；目标模型支持范围仍由上游验证。插件保留原生上游清洗和 CPA 流式包装适配。
 - **多协议转换**：转换以下客户端协议与上游协议之间的请求及流式响应：
   - OpenAI Chat Completions（`/v1/chat/completions`）
   - Anthropic Messages（`/v1/messages`）
@@ -72,7 +72,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 ## 环境要求
 
 - **CLIProxyAPI**：`v8.0.0+`
-- **仅源码构建**：Go 1.26.7+、启用 CGO，并安装面向 CPA 宿主平台的 C 编译器。使用预编译发布库无需 Go 工具链或编译器。
+- **仅源码构建**：Go 1.26.10+、启用 CGO，并安装面向 CPA 宿主平台的 C 编译器。使用预编译发布库无需 Go 工具链或编译器。
 
 ## 请求行为
 
@@ -81,7 +81,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 - 跨协议请求保留原始 reasoning 与 assistant 正文、工具调用的关联。合成的 Responses 普通与流式完成项包含可回传的 `content`（`reasoning_text`）及展示 summary。转入 Messages 默认省略无签名 thinking 历史；原生 Messages 历史保持保留。
 - 跨协议普通和流式响应保留可读推理，映射为 `reasoning_content`、`thinking` 或 Responses reasoning content 与展示 summary；其他字段的映射与丢弃详见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 按 `SourceFormat` 执行 CLIProxyAPI 的有效 `Payload`，保留拦截器修改。只有缺省或 null Payload 的旧调用才回退到 `OriginalRequest`；显式空 Payload 按空输入校验；`Format` 决定输出协议。
-- 支持 CLIProxyAPI 的模型名思考后缀（`opencode-go/glm-5.2(high)`）：后缀只用于选择推理强度，不参与目录路由，并按 CPA 的后缀优先级取代请求体自带参数；数字值在 Messages 上保留精确 budget。无法识别的值只剥离后缀，与 CPA 行为一致。各协议字段映射与已知限制见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
+- 支持 CLIProxyAPI 的模型名思考后缀（`opencode-go/glm-5.2(high)`）：后缀只用于选择推理强度，不参与目录路由，并按 CPA 的后缀优先级取代请求体自带参数；数字值按固定阈值映射为档位。无法识别的值只剥离后缀，与 CPA 行为一致。各协议字段映射与已知限制见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 每次上游 HTTP 调用独立持有宿主 operation 与请求 callback scope。客户端断开、scope 结束、`request-timeout` 和目录刷新停止会取消实际 HTTP；流式超时覆盖建立连接与消费流的总时长。
 - `plugin.quiesce` 拒绝新工作、取消活动任务并等待回调退出。Shutdown 等待所有回调结束后才允许卸载动态库，因此永不返回的宿主回调会一直延迟关闭。
 - 流在协议终止状态前 EOF 会报告错误，不会把部分文本或工具参数伪造成成功。已观察到 `finish_reason`/`stop_reason` 后仍兼容缺失 `[DONE]`/`message_stop`；EOF 时会处理没有末尾分隔符的最后一条 SSE 数据；终止事件缺少完整数据时报告错误。收到 Messages `message_stop` 事件时，其 payload 必须包含 `type: message_stop`；Responses 要求事件类型匹配，嵌套响应具备非空 `id`、`object: response`、匹配的终止 `status` 和 `output` 数组。

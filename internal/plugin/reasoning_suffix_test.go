@@ -11,7 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
-	"github.com/dillonzq/api-translator/thinking"
+	"github.com/dillonzq/apix/reasoning"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 )
@@ -47,8 +47,8 @@ func assertField(t *testing.T, body map[string]any, key string, want any) {
 
 // testSuffix parses a model name the way a client would write it, so the cases
 // below exercise the same parser the executor uses.
-func testSuffix(model string) thinking.Suffix {
-	return thinking.ParseSuffix(model)
+func testSuffix(model string) reasoning.Suffix {
+	return reasoning.ParseSuffix(model)
 }
 
 func TestExecuteChatRouteThinkingSuffix(t *testing.T) {
@@ -100,24 +100,25 @@ func TestExecuteMessagesRouteThinkingSuffix(t *testing.T) {
 		format       string
 		body         string
 		wantThinking map[string]any // nil means absent
-		checkEffort  bool           // assert output_config.effort is gone
+		wantEffort   any            // output_config.effort; nil means absent
 	}{
 		{
 			// The claude source carries both an explicit budget and an
 			// adaptive effort: the suffix must replace both, and the
-			// display preference survives the enabled override.
-			name: "level replaces budget and adaptive effort", model: "opencode-go/minimax-m3(high)", format: "claude",
+			// display preference survives the adaptive override.
+			name: "level replaces budget and effort", model: "opencode-go/minimax-m3(high)", format: "claude",
 			body: `{"model":"minimax-m3(high)","max_tokens":65536,"messages":[{"role":"user","content":"hi"}],` +
 				`"thinking":{"type":"enabled","budget_tokens":3000,"display":"omitted"},"output_config":{"effort":"low"}}`,
-			wantThinking: map[string]any{"type": "enabled", "budget_tokens": float64(24576), "display": "omitted"},
-			checkEffort:  true,
+			wantThinking: map[string]any{"type": "adaptive", "display": "omitted"},
+			wantEffort:   "high",
 		},
 		{
-			// A numeric suffix keeps its exact budget (CPA ModeBudget)
-			// instead of re-deriving one from the level thresholds.
-			name: "numeric suffix keeps its exact budget", model: "opencode-go/minimax-m3(16384)", format: "claude",
+			// Adaptive thinking has no budget, so a numeric suffix maps to
+			// the level its budget falls in.
+			name: "numeric suffix maps to its level", model: "opencode-go/minimax-m3(16384)", format: "claude",
 			body:         `{"model":"minimax-m3(16384)","max_tokens":65536,"messages":[{"role":"user","content":"hi"}]}`,
-			wantThinking: map[string]any{"type": "enabled", "budget_tokens": float64(16384)},
+			wantThinking: map[string]any{"type": "adaptive"},
+			wantEffort:   "high",
 		},
 		{
 			// CPA drops display when thinking is disabled: display only
@@ -126,13 +127,11 @@ func TestExecuteMessagesRouteThinkingSuffix(t *testing.T) {
 			body: `{"model":"minimax-m3(none)","max_tokens":4096,"messages":[{"role":"user","content":"hi"}],` +
 				`"thinking":{"type":"adaptive","display":"summarized"},"output_config":{"effort":"high"}}`,
 			wantThinking: map[string]any{"type": "disabled"},
-			checkEffort:  true,
 		},
 		{
 			name: "auto removes the control", model: "opencode-go/minimax-m3(auto)", format: "claude",
 			body: `{"model":"minimax-m3(auto)","max_tokens":4096,"messages":[{"role":"user","content":"hi"}],` +
 				`"thinking":{"type":"enabled","budget_tokens":3000}}`,
-			checkEffort: true,
 		},
 		{
 			name: "unrecognized value leaves the control", model: "opencode-go/minimax-m3(turbo)", format: "claude",
@@ -141,9 +140,10 @@ func TestExecuteMessagesRouteThinkingSuffix(t *testing.T) {
 			wantThinking: map[string]any{"type": "enabled", "budget_tokens": float64(3000)},
 		},
 		{
-			name: "cross-protocol level reaches the budget table", model: "opencode-go/minimax-m3(high)", format: "openai",
+			name: "cross-protocol level becomes adaptive effort", model: "opencode-go/minimax-m3(high)", format: "openai",
 			body:         `{"model":"minimax-m3(high)","max_tokens":65536,"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low"}`,
-			wantThinking: map[string]any{"type": "enabled", "budget_tokens": float64(24576)},
+			wantThinking: map[string]any{"type": "adaptive"},
+			wantEffort:   "high",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -160,12 +160,8 @@ func TestExecuteMessagesRouteThinkingSuffix(t *testing.T) {
 			} else if !reflect.DeepEqual(got, tc.wantThinking) {
 				t.Fatalf("thinking = %v, want %v", got, tc.wantThinking)
 			}
-			if tc.checkEffort {
-				if oc, ok := body["output_config"].(map[string]any); ok {
-					if effort, has := oc["effort"]; has {
-						t.Fatalf("output_config.effort survived the suffix override: %v", effort)
-					}
-				}
+			if got := dig(t, body, "output_config.effort"); got != tc.wantEffort {
+				t.Fatalf("output_config.effort = %v, want %v", got, tc.wantEffort)
 			}
 		})
 	}
@@ -241,12 +237,12 @@ func TestExecuteThinkingSuffixSupersedesBodyControl(t *testing.T) {
 		{
 			name: "openai effort with no budget equivalent", model: messagesRoute, upstream: "minimax-m3", format: "openai",
 			body:      `{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"turbo"}`,
-			errorOnly: true, wantPath: "thinking.budget_tokens", want: float64(24576),
+			errorOnly: true, wantPath: "output_config.effort", want: "high",
 		},
 		{
 			name: "responses effort with no budget equivalent", model: messagesRoute, upstream: "minimax-m3", format: "openai-response",
 			body:      `{"model":"m","input":"hi","reasoning":{"effort":"turbo","summary":"auto"}}`,
-			errorOnly: true, wantPath: "thinking.budget_tokens", want: float64(8192),
+			errorOnly: true, wantPath: "output_config.effort", want: "medium",
 		},
 		{
 			name: "claude thinking type with no chat equivalent", model: chatRoute, upstream: "glm-5.3", format: "claude",
@@ -450,7 +446,7 @@ func TestExecuteStreamThinkingSuffix(t *testing.T) {
 		{
 			name: "messages route", model: "opencode-go/minimax-m3(high)", format: "claude",
 			body: `{"model":"minimax-m3(high)","stream":true,"max_tokens":65536,"messages":[{"role":"user","content":"hi"}],"thinking":{"type":"enabled","budget_tokens":1000}}`,
-			path: "thinking.budget_tokens", want: float64(24576), frames: messagesFrames,
+			path: "output_config.effort", want: "high", frames: messagesFrames,
 		},
 		{
 			name: "responses route", model: "opencode-go/gpt-5.6-luna(none)", format: "openai-response",
@@ -512,10 +508,10 @@ func TestApplyReasoningSuffixSeamBranches(t *testing.T) {
 	if got, eErr := applyReasoningSuffix(catalog.RouteResponses, []byte(`{"reasoning":{"effort":"low"}}`), testSuffix("m(auto)")); eErr != nil || strings.Contains(string(got), "reasoning") {
 		t.Fatalf("auto reasoning = %s, %v", got, eErr)
 	}
-	// Dropping the adaptive effort keeps every sibling field.
+	// Replacing the effort drops the budget and keeps every sibling field.
 	got, eErr := applyReasoningSuffix(catalog.RouteMessages,
 		[]byte(`{"thinking":{"type":"enabled","budget_tokens":1},"output_config":{"effort":"low","other":1}}`), testSuffix("m(high)"))
-	if eErr != nil || strings.Contains(string(got), `"effort"`) || !strings.Contains(string(got), `"other"`) {
+	if eErr != nil || strings.Contains(string(got), "budget_tokens") || !strings.Contains(string(got), `"effort":"high"`) || !strings.Contains(string(got), `"other"`) {
 		t.Fatalf("messages override = %s, %v", got, eErr)
 	}
 	// A superseded control is dropped only for the conversions that read it.

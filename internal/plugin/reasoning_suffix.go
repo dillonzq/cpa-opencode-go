@@ -1,7 +1,7 @@
 package plugin
 
 import (
-	"github.com/dillonzq/api-translator/thinking"
+	"github.com/dillonzq/apix/reasoning"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 	"github.com/dillonzq/cpa-opencode-go/internal/protocol"
@@ -38,14 +38,14 @@ func stripSupersededReasoning(route catalog.Route, source string, body []byte) [
 	if err != nil {
 		return body
 	}
-	return thinking.StripSupersededReasoning(target, from, body)
+	return reasoning.StripSupersededReasoning(target, from, body)
 }
 
-func applyReasoningSuffix(route catalog.Route, body []byte, suffix thinking.Suffix) ([]byte, *errclass.Error) {
+func applyReasoningSuffix(route catalog.Route, body []byte, suffix reasoning.Suffix) ([]byte, *errclass.Error) {
 	target, err := protocol.Route(route)
 	if err != nil {
 		return body, nil
 	}
-	out, e := thinking.ApplySuffix(target, body, suffix)
+	out, e := reasoning.ApplySuffix(target, body, suffix)
 	return out, protocol.Error(e)
 }

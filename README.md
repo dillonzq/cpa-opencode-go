@@ -21,7 +21,7 @@
   <a href="https://github.com/dillonzq/cpa-opencode-go"><img src="https://img.shields.io/github/stars/dillonzq/cpa-opencode-go?style=social" alt="GitHub stars"></a>
   <a href="https://github.com/dillonzq/cpa-opencode-go/releases"><img src="https://img.shields.io/github/v/release/dillonzq/cpa-opencode-go" alt="Latest release"></a>
   <a href="https://help.router-for.me/plugin/development"><img src="https://img.shields.io/badge/CLIProxyAPI-8.0.0%2B-555" alt="CLIProxyAPI 8.0.0+"></a>
-  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.26.7%2B-555" alt="Go 1.26.7+ for source builds"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.26.10%2B-555" alt="Go 1.26.10+ for source builds"></a>
 </p>
 
 ---
@@ -63,14 +63,14 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
   - OpenAI Responses (`/v1/responses`)
 - **Thinking & Reasoning Support**: Preserves native reasoning controls and uses fixed effort/budget conversion across formats. Capability metadata does not filter or clamp requests; upstream validates controls. Preserves explicit off and Claude adaptive effort; cross-format auto uses target defaults where no wire equivalent exists. Controls that cannot be converted fail explicitly.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs, optionally retains the last successful catalog during outages, and supports explicit model declarations and custom route overrides.
-- **Translation library**: pinned [api-translator v0.3.0](https://github.com/dillonzq/api-translator/tree/v0.3.0), with reasoning history replay, media input, local shell adaptation, cache hints, structured output, tool strict, representable URL citations, and Responses ↔ Messages hosted search. Target model support remains upstream-dependent. Native upstream cleaning and CPA streaming framing stay in the plugin.
+- **Translation library**: pinned [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0), with reasoning history replay, media input, local shell adaptation, cache hints, structured output, tool strict, representable URL citations, and Responses ↔ Messages hosted search. Target model support remains upstream-dependent. Native upstream cleaning and CPA streaming framing stay in the plugin.
 - **Multi-Key Auth Scheduling**: Pools multiple API keys with CLIProxyAPI's native scheduler for rotation, retries, and error cooldowns across all protocols.
 - **Native quotas**: Rolling, weekly, and monthly quotas use CLIProxyAPI's generic quota endpoints and the selected credential. The separate plugin page is removed.
 
 ## Requirements
 
 - **CLIProxyAPI**: `v8.0.0+`
-- **Source builds only**: Go 1.26.7+, CGO enabled, and a C compiler targeting the CPA host platform. Prebuilt release libraries do not require a Go toolchain or compiler.
+- **Source builds only**: Go 1.26.10+, CGO enabled, and a C compiler targeting the CPA host platform. Prebuilt release libraries do not require a Go toolchain or compiler.
 
 ## Request behavior
 
@@ -79,7 +79,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 - Cross-protocol requests retain original reasoning with its assistant text and tool calls. Synthesized Responses regular and streaming completion items carry replayable `content` (`reasoning_text`) alongside display summaries. Conversion to Messages omits unsigned thinking history by default; native Messages history is preserved.
 - Cross-protocol regular and streaming responses preserve visible reasoning as `reasoning_content`, `thinking`, or Responses reasoning content and display summaries. See the [protocol conversion guide](docs/protocol-conversion.md) for mappings and fields that are omitted.
 - Execute CLIProxyAPI's effective `Payload` in `SourceFormat`, including interceptor changes. Only omitted/null payloads fall back to `OriginalRequest`; an explicit empty payload is validated as empty input; `Format` selects the output protocol.
-- Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`): the suffix is stripped for catalog routing and its reasoning control replaces the body's own control with CPA's suffix priority — including a numeric value, which keeps its exact budget on Messages. Unrecognized values strip the suffix only, matching CPA. See the [protocol conversion guide](docs/protocol-conversion.md) for the per-protocol mapping and known limitations.
+- Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`): the suffix is stripped for catalog routing and its reasoning control replaces the body's own control with CPA's suffix priority — including a numeric value, which maps to a level by fixed thresholds. Unrecognized values strip the suffix only, matching CPA. See the [protocol conversion guide](docs/protocol-conversion.md) for the per-protocol mapping and known limitations.
 - Each upstream HTTP call owns a host operation and its request callback scope. Client disconnection, scope closure, `request-timeout`, and stopped catalog refreshes cancel actual HTTP work. The timeout covers stream opening and consumption together.
 - `plugin.quiesce` rejects new work, cancels active tasks, and drains callbacks. Shutdown waits for every callback to exit before the shared library can unload; a host callback that never returns can therefore delay shutdown indefinitely.
 - EOF before a protocol terminal state reports a stream error instead of success, including partial tool arguments. A known `finish_reason`/`stop_reason` may still end without `[DONE]`/`message_stop`; final SSE data without a trailing separator is processed, and incomplete terminal payloads report an error. When a Messages `message_stop` event is present, its payload must include `type: message_stop`; Responses requires the matching event type and a response with a nonempty `id`, `object: response`, matching terminal `status`, and an `output` array.

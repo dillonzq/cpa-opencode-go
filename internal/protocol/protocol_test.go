@@ -3,7 +3,8 @@ package protocol
 import (
 	"bytes"
 	"encoding/json"
-	translator "github.com/dillonzq/api-translator"
+	"github.com/dillonzq/apix"
+	"github.com/dillonzq/apix/sse"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 	"reflect"
@@ -39,7 +40,7 @@ func TestConversionMatrix(t *testing.T) {
 	for _, source := range fixtures {
 		for _, target := range fixtures {
 			t.Run(source.format+"/"+target.format, func(t *testing.T) {
-				state := translator.NewRequestState()
+				state := &State{}
 				request, err := ConvertRequest(target.route, "upstream", source.format, []byte(source.request), state)
 				if err != nil {
 					t.Fatal(err)
@@ -49,7 +50,7 @@ func TestConversionMatrix(t *testing.T) {
 					t.Fatalf("request=%s", request)
 				}
 				// Response source is the upstream route; the client's requested output is independent.
-				response, err := ConvertResponse(source.route, target.format, 200, []byte(source.response), state)
+				response, err := ConvertResponse(source.route, target.format, 200, []byte(source.response), nil)
 				if err != nil || !bytes.Contains(response, []byte("hello")) {
 					t.Fatalf("response=%s err=%v", response, err)
 				}
@@ -68,7 +69,7 @@ func TestConversionMatrix(t *testing.T) {
 				if usage[input] != 2 || usage[output] != 1 {
 					t.Fatalf("usage=%v", usage)
 				}
-				sc, err := NewStreamConverter(source.route, target.format, translator.NewRequestState())
+				sc, err := NewStreamConverter(source.route, target.format, &State{})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -99,7 +100,7 @@ func TestConversionMatrix(t *testing.T) {
 						t.Fatalf("duplicate host framing: %s", joined)
 					}
 				} else {
-					var decoder translator.SSEDecoder
+					var decoder sse.Decoder
 					seq := int64(-1)
 					for _, frame := range events {
 						decoded := decoder.Feed(frame)
@@ -123,6 +124,37 @@ func TestConversionMatrix(t *testing.T) {
 	}
 }
 
+func TestMessagesReasoningUsesAdaptiveThinking(t *testing.T) {
+	out, err := ConvertRequest(catalog.RouteMessages, "upstream", "openai", []byte(`{"model":"m","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Thinking     map[string]any `json:"thinking"`
+		OutputConfig map[string]any `json:"output_config"`
+	}
+	if json.Unmarshal(out, &doc) != nil || doc.Thinking["type"] != "adaptive" || doc.OutputConfig["effort"] != "high" {
+		t.Fatalf("request=%s", out)
+	}
+}
+
+func TestStateFixesOutputFormat(t *testing.T) {
+	state := &State{Output: "openai"}
+	if _, err := ConvertRequest(catalog.RouteMessages, "upstream", "claude", []byte(fixtures[1].request), state); err != nil {
+		t.Fatal(err)
+	}
+	out, err := ConvertResponse(catalog.RouteMessages, "openai", 200, []byte(fixtures[1].response), state)
+	if err != nil || !bytes.Contains(out, []byte(`"choices"`)) {
+		t.Fatalf("response=%s err=%v", out, err)
+	}
+	if _, err := ConvertResponse(catalog.RouteMessages, "claude", 200, []byte(fixtures[1].response), state); err == nil || err.Class != errclass.ClassUnsupported {
+		t.Fatalf("mismatched output = %v", err)
+	}
+	if _, err := NewStreamConverter(catalog.RouteResponses, "openai", state); err == nil || err.Class != errclass.ClassUnsupported {
+		t.Fatalf("mismatched route = %v", err)
+	}
+}
+
 func TestFormatAndErrorBridge(t *testing.T) {
 	if _, err := Format("responses"); err == nil || err.Class != errclass.ClassUnsupported {
 		t.Fatal(err)
@@ -133,7 +165,7 @@ func TestFormatAndErrorBridge(t *testing.T) {
 	if _, err := NewStreamConverter(catalog.RouteMessages, "unknown", nil); err == nil {
 		t.Fatal("invalid output accepted")
 	}
-	input := &translator.Error{Class: translator.ClassRateLimit, Message: "quota", StatusCode: 429, Retryable: true}
+	input := &apix.Error{Class: apix.ClassRateLimit, Message: "quota", StatusCode: 429, Retryable: true}
 	want := &errclass.Error{Class: errclass.ClassRateLimit, Message: "quota", StatusCode: 429, Retryable: true}
 	if !reflect.DeepEqual(Error(input), want) || Error(nil) != nil {
 		t.Fatal("error metadata lost")
