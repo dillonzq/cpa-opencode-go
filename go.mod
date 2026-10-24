@@ -1,9 +1,9 @@
 module github.com/dillonzq/cpa-opencode-go
 
-go 1.26.7
+go 1.26.10
 
 require (
-	github.com/dillonzq/api-translator v0.3.0
+	github.com/dillonzq/apix v0.1.0
 	github.com/router-for-me/CLIProxyAPI/v8 v8.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )

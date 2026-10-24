@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	translator "github.com/dillonzq/api-translator"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
+	"github.com/dillonzq/cpa-opencode-go/internal/protocol"
 )
 
 // TestNativeResponsesReasoningReplay preserves original parts, summaries,
@@ -132,7 +132,7 @@ func TestReasoningHistoryCrossProtocol(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertReasoningCalls(t, chat, map[string]string{"a": " raw one🙂 ", "b": " raw one🙂 ", "c": "raw two"})
-			state := translator.NewRequestState()
+			state := &protocol.State{}
 			messages, err := buildUpstreamRequest(catalog.RouteMessages, "messages-test", "openai-response", responses, nil, state)
 			if err != nil {
 				t.Fatal(err)

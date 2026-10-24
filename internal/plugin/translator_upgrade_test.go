@@ -7,8 +7,10 @@ import (
 	"reflect"
 	"testing"
 
-	translator "github.com/dillonzq/api-translator"
+	"github.com/dillonzq/apix"
+	"github.com/dillonzq/apix/sse"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
+	"github.com/dillonzq/cpa-opencode-go/internal/protocol"
 )
 
 // TestResponsesReasoningRoundTrip exercises the plugin's response wrappers and
@@ -22,7 +24,7 @@ func TestResponsesReasoningRoundTrip(t *testing.T) {
 				call := fmt.Sprintf("c%d", round)
 				thought := fmt.Sprintf(" round %d\n思考🙂 ", round)
 				want[call] = thought
-				state := translator.NewRequestState()
+				state := &protocol.State{}
 				if _, err := buildUpstreamRequest(catalog.RouteChatCompletions, "deepseek-test", "openai-response", mustJSON(map[string]any{"input": history}), nil, state); err != nil {
 					t.Fatal(err)
 				}
@@ -66,7 +68,7 @@ func TestResponsesReasoningRoundTrip(t *testing.T) {
 
 // completedStreamOutput verifies that bytewise SSE produces replayable item
 // completions identical to the final response snapshot through CPA's wrapper.
-func completedStreamOutput(t *testing.T, route catalog.Route, wire string, state *translator.RequestState) []json.RawMessage {
+func completedStreamOutput(t *testing.T, route catalog.Route, wire string, state *protocol.State) []json.RawMessage {
 	t.Helper()
 	sc, err := newStreamConverter(route, "openai-response", state)
 	if err != nil {
@@ -87,7 +89,7 @@ func completedStreamOutput(t *testing.T, route catalog.Route, wire string, state
 		t.Fatalf("done=%v err=%v", done, err)
 	}
 	frames = append(frames, tail...)
-	var decoder translator.SSEDecoder
+	var decoder sse.Decoder
 	var items, output []json.RawMessage
 	for _, event := range decoder.Feed(bytes.Join(frames, nil)) {
 		var doc struct {
@@ -117,7 +119,7 @@ func TestLocalShellRestoration(t *testing.T) {
 	const response = `{"id":"r","object":"response","status":"completed","output":[{"id":"fc","type":"function_call","call_id":"c","name":"shell","arguments":"{\"commands\":[\"pwd\"]}","status":"completed"}]}`
 	for _, streaming := range []bool{false, true} {
 		t.Run(fmt.Sprint(streaming), func(t *testing.T) {
-			state := translator.NewRequestState()
+			state := &protocol.State{}
 			out, err := buildUpstreamRequest(catalog.RouteResponses, "deepseek-test", "openai-response", []byte(request), nil, state)
 			if err != nil {
 				t.Fatal(err)
@@ -179,8 +181,8 @@ func TestMediaAndCacheRequestConversion(t *testing.T) {
 			`[{"type":"document","title":"a.pdf","source":{"type":"base64","media_type":"application/pdf","data":"JVBERg=="},"cache_control":{"type":"ephemeral","ttl":"1h","extension":9007199254740993}},{"type":"document","title":"a.txt","source":{"type":"text","media_type":"text/plain","data":"hi"},"cache_control":{"type":"ephemeral"}}]`, catalog.RouteMessages},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			state := translator.NewRequestState()
-			state.Options.LossPolicy = translator.LossPolicyStrict
+			state := &protocol.State{}
+			state.LossPolicy = apix.LossPolicyStrict
 			out, err := buildUpstreamRequest(tc.route, "upstream", tc.source, []byte(tc.body), nil, state)
 			if err != nil {
 				t.Fatal(err)

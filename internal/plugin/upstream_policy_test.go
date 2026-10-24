@@ -9,10 +9,11 @@ import (
 	"sync"
 	"testing"
 
-	translator "github.com/dillonzq/api-translator"
+	"github.com/dillonzq/apix/sse"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/config"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
+	"github.com/dillonzq/cpa-opencode-go/internal/protocol"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
@@ -68,7 +69,7 @@ func TestNativeToolStateIsolation(t *testing.T) {
 			if custom {
 				declaration = fmt.Sprintf(`{"type":"namespace","name":"ns","tools":[%s]}`, declaration)
 			}
-			state := translator.NewRequestState()
+			state := &protocol.State{}
 			request := []byte(`{"input":"hi","tools":[` + declaration + `]}`)
 			if _, err := buildUpstreamRequest(catalog.RouteResponses, "muse", "openai-response", request, nil, state); err != nil {
 				t.Error(err)
@@ -111,7 +112,7 @@ func TestNativeToolStateIsolation(t *testing.T) {
 }
 
 func TestNativeNormalizationRejectsCollisions(t *testing.T) {
-	state := translator.NewRequestState()
+	state := &protocol.State{}
 	body := []byte(`{"tools":[{"type":"namespace","name":"ns","tools":[{"type":"function","name":"run"}]},{"type":"function","name":"ns__run"}]}`)
 	if _, err := buildUpstreamRequest(catalog.RouteResponses, "muse", "openai-response", body, nil, state); err == nil {
 		t.Fatal("collision accepted")
@@ -242,7 +243,7 @@ func TestNativeCustomToolIncrementalLifecycle(t *testing.T) {
 	// Every chunking run prepares its own state through the plugin's native policy.
 	for _, chunkSize := range []int{1, 7, 4096} {
 		t.Run(fmt.Sprint(chunkSize), func(t *testing.T) {
-			state := translator.NewRequestState()
+			state := &protocol.State{}
 			prepared, err := buildUpstreamRequest(catalog.RouteResponses, "muse-spark-1.3-contributor", "openai-response", request, nil, state)
 			if err != nil {
 				t.Fatal(err)
@@ -346,7 +347,7 @@ func TestNativeCustomToolIncrementalLifecycle(t *testing.T) {
 			if err != nil || !done || len(repeated) != 0 {
 				t.Fatalf("completed stream emitted again: %q %v", repeated, err)
 			}
-			var decoder translator.SSEDecoder
+			var decoder sse.Decoder
 			counts := make(map[string]int)
 			var inputDeltas strings.Builder
 			for _, out := range events {

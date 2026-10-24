@@ -1,3 +1,73 @@
+# v0.3.0
+
+Minor release for **cpa-opencode-go**, based on v0.2.2 and requiring
+**CLIProxyAPI v8.0.0 or later**. Translation now uses **apix v0.1.0**, replacing
+api-translator v0.3.0. Configuration keys, credential records, and existing
+`opencode-go/<model>` IDs remain compatible, so upgrading only replaces the
+plugin library.
+
+## Translation library
+
+- Replace api-translator v0.3.0 with [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0)
+  for Chat Completions, Messages, and Responses requests, regular responses,
+  and streams. Each execution uses one apix exchange, so tool identities from
+  request conversion are restored in the response or stream. Native non-GPT
+  Responses tool normalization now runs inside that exchange.
+- Cross-protocol Responses streams without an upstream response ID use `apix`
+  instead of `api-translator` as the fallback ID.
+
+## Behavior changes
+
+- Reasoning sent to the Messages route now uses adaptive thinking:
+  `thinking.type` is `"adaptive"` and the level goes in `output_config.effort`,
+  instead of `"enabled"` with a fixed `budget_tokens`. This applies to reasoning
+  converted from Chat Completions or Responses and to model-name suffixes.
+  Native Messages thinking controls without a suffix pass through unchanged.
+- Numeric suffixes on Messages, such as `opencode-go/minimax-m3(16384)`, map to
+  an effort by fixed thresholds instead of keeping the exact budget. Chat
+  Completions and Responses mappings are unchanged.
+
+## Compatibility
+
+Source builds now require **Go 1.26.10+**. Prebuilt libraries do not need a Go
+toolchain. Adaptive thinking on OpenCode Go Messages models is verified by
+offline tests only; if an upstream rejects `thinking.type: "adaptive"` or
+`output_config.effort`, roll back to v0.2.2.
+
+## Installation and upgrade
+
+Download the ZIP matching the **CPA host's operating system and architecture**
+and `checksums.txt` from this release. Verify its SHA256, stop CPA, and back up
+its configuration, credential directory, and existing plugin library. Extract
+`cpa-opencode-go_0.3.0_<os>_<arch>.zip` into
+`<cliproxyapi_root>/plugins/<os>/<arch>/`, retaining the included `LICENSE`.
+
+| OS | Architectures | Library |
+| --- | --- | --- |
+| Linux | amd64, arm64 | `cpa-opencode-go.so` |
+| macOS (`darwin`) | amd64, arm64 | `cpa-opencode-go.dylib` |
+| Windows | amd64, arm64 | `cpa-opencode-go.dll` |
+| FreeBSD | amd64 | `cpa-opencode-go.so` |
+
+Both `plugins.enabled` and `plugins.configs.cpa-opencode-go.enabled` must be
+`true`. Restart CPA, verify `/v1/models` with a CPA client key, and make a request.
+For a new installation or migration from `opencode-go-cliproxyapi`, follow the
+[English installation guide](https://github.com/dillonzq/cpa-opencode-go/blob/v0.3.0/README.md#install)
+or [中文安装指南](https://github.com/dillonzq/cpa-opencode-go/blob/v0.3.0/README.zh-CN.md#安装).
+
+## Known limitations and rollback
+
+The [protocol conversion guide](https://github.com/dillonzq/cpa-opencode-go/blob/v0.3.0/docs/protocol-conversion.md)
+records supported mappings and remaining compatibility gaps; see the
+[apix LLM protocol guide](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/llm.md)
+for field-level limits. Target-model and protocol limitations from v0.2.2 still
+apply. Offline ABI tests and platform builds do not replace validation with a
+running CPA host and real upstream credentials.
+
+To roll back, stop CPA and restore the backed-up plugin library, configuration,
+and credential directory together. Restart CPA and verify model discovery and a
+request. Keep only one plugin registering the `opencode-go` provider installed.
+
 # v0.2.2
 
 Patch release for **cpa-opencode-go**, based on v0.2.1 and requiring

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 
-	translator "github.com/dillonzq/api-translator"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 	"github.com/dillonzq/cpa-opencode-go/internal/protocol"
@@ -167,7 +166,7 @@ func foldSystem(req map[string]json.RawMessage, folded []string) *errclass.Error
 
 // normalizeNativeRequest contains OpenCode Go compatibility rules, separate
 // from the library's protocol conversion and same-protocol passthrough.
-func normalizeNativeRequest(route catalog.Route, model, source string, body []byte, state *translator.RequestState) ([]byte, *errclass.Error) {
+func normalizeNativeRequest(route catalog.Route, model, source string, body []byte, state *protocol.State) ([]byte, *errclass.Error) {
 	switch {
 	case route == catalog.RouteChatCompletions && source == "openai":
 		return normalizeNativeChat(body)
@@ -237,7 +236,7 @@ func hasReasoningParts(raw json.RawMessage, wantType string) bool {
 
 // normalizeNativeResponses cleans foreign state while preserving readable
 // reasoning history, then normalizes tools using the execution's shared state.
-func normalizeNativeResponses(body []byte, state *translator.RequestState) ([]byte, *errclass.Error) {
+func normalizeNativeResponses(body []byte, state *protocol.State) ([]byte, *errclass.Error) {
 	var doc map[string]json.RawMessage
 	if json.Unmarshal(body, &doc) != nil || doc == nil {
 		return nil, errclass.Translation("malformed Responses request JSON")
@@ -288,13 +287,14 @@ func normalizeNativeResponses(body []byte, state *translator.RequestState) ([]by
 			doc["input"], _ = json.Marshal(kept)
 		}
 	}
-	prepared, _ := json.Marshal(doc)
-	out, err := translator.NormalizeResponsesRequest(prepared, state)
-	return out, protocol.Error(err)
+	// The exchange normalizes the remaining tools in its same-protocol conversion.
+	state.NormalizeTools = true
+	out, _ := json.Marshal(doc)
+	return out, nil
 }
 
 // Only native non-GPT Responses uses the legacy unsupported-tool filter.
-// Cross-protocol tools are handled by api-translator, including apply_patch.
+// Cross-protocol tools are handled by apix, including apply_patch.
 func filterNativeTools(raw json.RawMessage) (json.RawMessage, *errclass.Error) {
 	var tools []map[string]json.RawMessage
 	if json.Unmarshal(raw, &tools) != nil || tools == nil {

@@ -1,55 +1,131 @@
-// Package protocol bridges CPA format names and executor payloads to api-translator.
+// Package protocol bridges CPA format names and executor payloads to apix.
 package protocol
 
 import (
 	"strings"
 
-	translator "github.com/dillonzq/api-translator"
+	"github.com/dillonzq/apix"
+	"github.com/dillonzq/apix/protocol/anthropic"
+	"github.com/dillonzq/apix/protocol/openai"
+	"github.com/dillonzq/apix/sse"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 )
 
-func Format(format string) (string, *errclass.Error) {
+var registry = mustRegistry(openai.ChatCompletionsCodec(), openai.ResponsesCodec(), anthropic.MessagesCodec())
+
+func mustRegistry(codecs ...apix.Codec) *apix.Registry {
+	reg, err := apix.NewRegistry(codecs...)
+	if err != nil {
+		panic(err)
+	}
+	return reg
+}
+
+func Format(format string) (apix.Protocol, *errclass.Error) {
 	switch format {
 	case "openai":
-		return translator.FormatChatCompletions, nil
+		return openai.ChatCompletions, nil
 	case "claude":
-		return translator.FormatMessages, nil
+		return anthropic.Messages, nil
 	case "openai-response":
-		return translator.FormatResponses, nil
+		return openai.Responses, nil
 	default:
 		return "", &errclass.Error{Class: errclass.ClassUnsupported, Message: "unsupported protocol format: " + format}
 	}
 }
 
-func Route(route catalog.Route) (string, *errclass.Error) {
+func Route(route catalog.Route) (apix.Protocol, *errclass.Error) {
 	switch route {
 	case catalog.RouteChatCompletions:
-		return translator.FormatChatCompletions, nil
+		return openai.ChatCompletions, nil
 	case catalog.RouteMessages:
-		return translator.FormatMessages, nil
+		return anthropic.Messages, nil
 	case catalog.RouteResponses:
-		return translator.FormatResponses, nil
+		return openai.Responses, nil
 	default:
 		return "", &errclass.Error{Class: errclass.ClassUnsupported, Message: "unsupported route"}
 	}
 }
 
 // Error preserves the library classification when crossing the CPA envelope boundary.
-func Error(err *translator.Error) *errclass.Error {
-	if err == nil {
+func Error(err error) *errclass.Error {
+	e := apix.AsError(err)
+	if e == nil {
 		return nil
 	}
-	message := errclass.Redact(err.Message)
+	message := errclass.Redact(e.Message)
 	if strings.TrimSpace(message) == "" {
 		// CPA treats an empty stream-close error as success. Preserve failure
 		// even when the upstream error event provides no readable message.
 		message = "protocol conversion failed"
 	}
-	return &errclass.Error{Class: errclass.Class(err.Class), Message: message, StatusCode: err.StatusCode, Retryable: err.Retryable}
+	return &errclass.Error{Class: errclass.Class(e.Class), Message: message, StatusCode: e.StatusCode, Retryable: e.Retryable}
 }
 
-func ConvertRequest(route catalog.Route, model, source string, body []byte, state *translator.RequestState) ([]byte, *errclass.Error) {
+// State holds one execution's apix exchange. Its zero value is ready to use.
+// The first request conversion creates the exchange, which fixes the upstream
+// and output protocols that response conversion must then use.
+type State struct {
+	// LossPolicy applies to the request conversion.
+	LossPolicy apix.LossPolicy
+	// Output is the host format responses convert to; empty means the
+	// request's source format.
+	Output string
+	// NormalizeTools adapts native Responses requests for upstreams that only
+	// accept function tools.
+	NormalizeTools bool
+
+	ex               apix.Exchange
+	upstream, output apix.Protocol
+}
+
+func (s *State) Diagnostics() []apix.Diagnostic {
+	if s == nil || s.ex == nil {
+		return nil
+	}
+	return s.ex.Diagnostics()
+}
+
+func newExchange(upstream, client, output apix.Protocol, opts apix.ExchangeOptions) (apix.Exchange, *errclass.Error) {
+	opts.Output = output
+	ex, err := registry.NewExchange(client, upstream, opts)
+	return ex, Error(err)
+}
+
+func (s *State) start(upstream, client apix.Protocol) *errclass.Error {
+	output := client
+	if s.Output != "" {
+		var err *errclass.Error
+		if output, err = Format(s.Output); err != nil {
+			return err
+		}
+	}
+	opts := apix.ExchangeOptions{LossPolicy: s.LossPolicy}
+	if upstream == openai.Responses && s.NormalizeTools {
+		opts.Ext = openai.ResponsesOptions{NormalizeTools: true}
+	}
+	ex, err := newExchange(upstream, client, output, opts)
+	if err != nil {
+		return err
+	}
+	s.ex, s.upstream, s.output = ex, upstream, output
+	return nil
+}
+
+// exchange returns the state's exchange for responses from upstream to
+// output. Without a converted request, a stateless exchange serves them.
+func (s *State) exchange(upstream, output apix.Protocol) (apix.Exchange, *errclass.Error) {
+	if s == nil || s.ex == nil {
+		return newExchange(upstream, output, output, apix.ExchangeOptions{})
+	}
+	if s.upstream != upstream || s.output != output {
+		return nil, &errclass.Error{Class: errclass.ClassUnsupported, Message: "conversion state belongs to another route or output format"}
+	}
+	return s.ex, nil
+}
+
+func ConvertRequest(route catalog.Route, model, source string, body []byte, state *State) ([]byte, *errclass.Error) {
 	target, err := Route(route)
 	if err != nil {
 		return nil, err
@@ -58,11 +134,17 @@ func ConvertRequest(route catalog.Route, model, source string, body []byte, stat
 	if err != nil {
 		return nil, err
 	}
-	out, e := translator.ConvertRequest(target, model, from, body, state)
-	return out, Error(e)
+	if state == nil {
+		state = &State{}
+	}
+	if err := state.start(target, from); err != nil {
+		return nil, err
+	}
+	out, e := state.ex.ConvertRequest(apix.Payload{Body: body}, model)
+	return out.Body, Error(e)
 }
 
-func ConvertResponse(route catalog.Route, output string, status int, body []byte, state *translator.RequestState) ([]byte, *errclass.Error) {
+func ConvertResponse(route catalog.Route, output string, status int, body []byte, state *State) ([]byte, *errclass.Error) {
 	upstream, err := Route(route)
 	if err != nil {
 		return nil, err
@@ -71,8 +153,12 @@ func ConvertResponse(route catalog.Route, output string, status int, body []byte
 	if err != nil {
 		return nil, err
 	}
-	out, e := translator.ConvertResponse(upstream, to, status, body, state)
-	return out, Error(e)
+	ex, err := state.exchange(upstream, to)
+	if err != nil {
+		return nil, err
+	}
+	out, e := ex.ConvertResponse(status, apix.Payload{Body: body})
+	return out.Body, Error(e)
 }
 
 type StreamConverter interface {
@@ -81,12 +167,12 @@ type StreamConverter interface {
 }
 
 type stream struct {
-	converter translator.StreamConverter
+	converter apix.StreamConverter
 	chat      bool
-	decoder   translator.SSEDecoder
+	decoder   sse.Decoder
 }
 
-func NewStreamConverter(route catalog.Route, output string, state *translator.RequestState) (StreamConverter, *errclass.Error) {
+func NewStreamConverter(route catalog.Route, output string, state *State) (StreamConverter, *errclass.Error) {
 	upstream, err := Route(route)
 	if err != nil {
 		return nil, err
@@ -95,11 +181,15 @@ func NewStreamConverter(route catalog.Route, output string, state *translator.Re
 	if err != nil {
 		return nil, err
 	}
-	converter, e := translator.NewStreamConverter(upstream, to, state)
+	ex, err := state.exchange(upstream, to)
+	if err != nil {
+		return nil, err
+	}
+	converter, e := ex.NewStreamConverter()
 	if e != nil {
 		return nil, Error(e)
 	}
-	return &stream{converter: converter, chat: to == translator.FormatChatCompletions}, nil
+	return &stream{converter: converter, chat: to == openai.ChatCompletions}, nil
 }
 
 // CPA frames Chat JSON and writes DONE itself; other protocols accept complete SSE frames.

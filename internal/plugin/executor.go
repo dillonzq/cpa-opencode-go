@@ -16,8 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 
-	translator "github.com/dillonzq/api-translator"
-	"github.com/dillonzq/api-translator/thinking"
+	"github.com/dillonzq/apix/reasoning"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/config"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
@@ -43,8 +42,8 @@ type resolvedExecution struct {
 	cfg    config.Config
 	rec    catalog.ModelRecord
 	key    string
-	suffix thinking.Suffix
-	state  *translator.RequestState
+	suffix reasoning.Suffix
+	state  *protocol.State
 }
 
 // resolveExecution resolves the requested model against the snapshot and
@@ -67,7 +66,7 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 	// carry the suffix to the route override. A catalog ID that literally
 	// carries parentheses still resolves when the base does not, and then keeps
 	// its own identity with no suffix override.
-	suffix := thinking.ParseSuffix(req.Model)
+	suffix := reasoning.ParseSuffix(req.Model)
 	lookupID := req.Model
 	if suffix.HasSuffix && suffix.Model != "" {
 		lookupID = suffix.Model
@@ -79,7 +78,7 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 	}
 	if !found && lookupID != req.Model && mgr != nil {
 		if rec, found = mgr.Lookup(req.Model); found {
-			suffix = thinking.Suffix{}
+			suffix = reasoning.Suffix{}
 		}
 	}
 	if !found {
@@ -90,7 +89,7 @@ func (m *Manager) resolveExecution(req executorRequest) (*resolvedExecution, []b
 		})
 	}
 	debugTrace("executor resolved model lookup=%s suffix_raw=%q suffix_effort=%q", lookupID, suffix.Raw, suffix.Effort)
-	return &resolvedExecution{cfg: cfg, rec: rec, key: key, suffix: suffix, state: translator.NewRequestState()}, nil
+	return &resolvedExecution{cfg: cfg, rec: rec, key: key, suffix: suffix, state: &protocol.State{Output: req.outputFormat()}}, nil
 }
 
 // handleExecute implements executor.execute (non-stream). Stream-flagged
@@ -153,7 +152,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 
 // buildUpstreamRequest applies native policy before translation and image
 // compatibility to the translated upstream payload.
-func buildUpstreamRequest(route catalog.Route, model, source string, body []byte, _ *pluginapi.ThinkingSupport, states ...*translator.RequestState) ([]byte, *errclass.Error) {
+func buildUpstreamRequest(route catalog.Route, model, source string, body []byte, _ *pluginapi.ThinkingSupport, states ...*protocol.State) ([]byte, *errclass.Error) {
 	state := requestState(states)
 	body, err := normalizeNativeRequest(route, model, source, body, state)
 	if err != nil {
@@ -166,11 +165,11 @@ func buildUpstreamRequest(route catalog.Route, model, source string, body []byte
 	return normalizeUpstreamImageDetail(route, model, body), nil
 }
 
-func requestState(states []*translator.RequestState) *translator.RequestState {
+func requestState(states []*protocol.State) *protocol.State {
 	if len(states) > 0 && states[0] != nil {
 		return states[0]
 	}
-	return translator.NewRequestState()
+	return &protocol.State{}
 }
 
 func upstreamAuthHeaders(route catalog.Route, key, sessionID string) http.Header {
@@ -185,7 +184,7 @@ func upstreamAuthHeaders(route catalog.Route, key, sessionID string) http.Header
 	return h
 }
 
-func convertNonStream(route catalog.Route, output string, status int, body []byte, states ...*translator.RequestState) ([]byte, *errclass.Error) {
+func convertNonStream(route catalog.Route, output string, status int, body []byte, states ...*protocol.State) ([]byte, *errclass.Error) {
 	return protocol.ConvertResponse(route, output, status, body, requestState(states))
 }
 
@@ -199,7 +198,7 @@ func classEnvelope(e *errclass.Error) []byte {
 
 type streamConverter = protocol.StreamConverter
 
-func newStreamConverter(route catalog.Route, output string, state *translator.RequestState) (streamConverter, *errclass.Error) {
+func newStreamConverter(route catalog.Route, output string, state *protocol.State) (streamConverter, *errclass.Error) {
 	return protocol.NewStreamConverter(route, output, state)
 }
 

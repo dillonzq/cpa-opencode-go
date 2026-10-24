@@ -9,7 +9,7 @@ Submit issues and pull requests to [dillonzq/cpa-opencode-go](https://github.com
 ## Development Setup
 
 ### Prerequisites
-- Go 1.26.7+, CGO enabled, and a C compiler targeting the CPA host platform
+- Go 1.26.10+, CGO enabled, and a C compiler targeting the CPA host platform
 - Git
 
 ### Build & Test Commands
