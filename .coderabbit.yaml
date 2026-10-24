@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+inheritance: true
+reviews:
+  path_filters:
+    # Overlay compiled inside CLIProxyAPI's internal/pluginhost package by
+    # tests/native_host_test.go; it cannot type-check in this module.
+    - "!tests/testdata/pluginhost/**"
