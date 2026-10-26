@@ -138,6 +138,7 @@ A request uses the model's endpoint, then the top-level endpoint, then the defau
 
 ## Request behavior
 
+- DeepSeek requests routed to Chat Completions or Messages translate reasoning effort `none` (including `(none)` / `(0)` model suffixes) to `thinking.type: "disabled"` and remove the corresponding effort field. Responses keeps `reasoning.effort: "none"`; model suffixes retain priority over body controls.
 - DeepSeek requests sent through OpenCode Go map image `detail: "original"` to `"high"` in Chat Completions and Responses, including historical messages and tool output images. This avoids gateway validation errors; DeepSeek documents the two values as equivalent. Other models and detail values are unchanged.
 - Native non-GPT Responses requests preserve original reasoning content and summaries independently. Foreign encrypted state, reasoning items without non-whitespace reasoning_text content or summary_text summaries, and compaction are removed; summaries cannot reconstruct missing original reasoning.
 - Cross-protocol requests retain original reasoning with its assistant text and tool calls. Synthesized Responses regular and streaming completion items carry replayable `content` (`reasoning_text`) alongside display summaries. Conversion to Messages omits unsigned thinking history by default; native Messages history is preserved.

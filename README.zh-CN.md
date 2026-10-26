@@ -140,6 +140,7 @@ models:
 
 ## 请求行为
 
+- DeepSeek 请求路由到 Chat Completions 或 Messages 时，思考深度 `none`（包括模型名 `(none)` / `(0)` 后缀）转换为 `thinking.type: "disabled"`，并移除对应的 effort 字段。Responses 保留 `reasoning.effort: "none"`；模型名后缀仍优先于请求体参数。
 - 经 OpenCode Go 发送的 DeepSeek Chat Completions 和 Responses 请求会将图片的 `detail: "original"` 转为 `"high"`，覆盖历史消息及工具返回图片，避免网关参数校验失败。DeepSeek 官方文档说明两者等价；其他模型及 detail 值保持不变。
 - 非 GPT 原生 Responses 请求分别保留原始 reasoning content 和 summary，清理外来加密状态、没有非空白 reasoning_text 原文或 summary_text 摘要的 reasoning 项及 compaction；summary 无法补回缺失的原始思考。
 - 跨协议请求保留原始 reasoning 与 assistant 正文、工具调用的关联。合成的 Responses 普通与流式完成项包含可回传的 `content`（`reasoning_text`）及展示 summary。转入 Messages 默认省略无签名 thinking 历史；原生 Messages 历史保持保留。

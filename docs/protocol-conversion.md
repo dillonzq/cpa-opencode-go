@@ -52,6 +52,8 @@ Historical reasoning retains original text and its association with assistant te
 
 ## Thinking suffixes
 
+For DeepSeek upstream IDs (case-insensitive prefix), a final compatibility pass after conversion and suffix application maps Chat `reasoning_effort: "none"` and Messages `output_config.effort: "none"` to `thinking: {"type":"disabled"}`. It removes the corresponding effort field and any replaced thinking budget/display; other `output_config` fields survive, and an empty `output_config` is removed. Messages `none` is also normalized before conversion to Chat so a missing or manual thinking switch cannot hide it from the decoder. Suffix priority is preserved. Responses and other model families are unchanged. This applies to regular and streaming requests.
+
 The plugin strips trailing model(value) for catalog lookup, then tries the literal ID if lookup fails. Literal matches do not apply a suffix. CPA may reject a literal parenthesized ID before it reaches the plugin.
 
 Recognized suffixes remove superseded request controls before conversion and apply their control afterward, taking priority over the body. none/0 disables, auto/-1 uses upstream defaults, and levels range from minimal to max. Messages uses adaptive thinking with `output_config.effort`; numeric suffixes on Messages, Chat, and Responses map to an effort by fixed thresholds. Unknown suffixes are stripped without changing request controls. Budgets are not clamped to model capabilities or max_tokens.
