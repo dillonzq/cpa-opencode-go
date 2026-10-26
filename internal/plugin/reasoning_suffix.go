@@ -21,14 +21,24 @@ func buildUpstreamBody(res *resolvedExecution, req executorRequest) ([]byte, *er
 		// fail the conversion before the override below runs.
 		source = stripSupersededReasoning(res.route.Protocol, req.inputFormat(), source)
 	}
+	if res.suffix.Effort == "" && res.route.Protocol == catalog.RouteChatCompletions && req.inputFormat() == "claude" {
+		// The Messages decoder reads effort only with adaptive thinking.
+		// Make a standalone none explicit before conversion can discard it.
+		source = normalizeDeepSeekThinking(catalog.RouteMessages, res.rec.UpstreamID, source)
+	}
 	body, eErr := buildUpstreamRequest(res.route.Protocol, res.rec.UpstreamID, req.inputFormat(), source, res.rec.Thinking, res.state)
 	if eErr != nil {
 		return nil, eErr
 	}
-	return applyReasoningSuffix(res.route.Protocol, body, res.suffix)
+	body, eErr = applyReasoningSuffix(res.route.Protocol, body, res.suffix)
+	if eErr != nil {
+		return nil, eErr
+	}
+	return normalizeDeepSeekThinking(res.route.Protocol, res.rec.UpstreamID, body), nil
 }
 
-// Keep the host format bridge here; all reasoning transformations belong to the library.
+// Keep the host format bridge here; generic reasoning transformations belong
+// to the library, with DeepSeek gateway compatibility applied separately.
 func stripSupersededReasoning(route catalog.Route, source string, body []byte) []byte {
 	target, err := protocol.Route(route)
 	if err != nil {

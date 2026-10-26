@@ -38,11 +38,18 @@ removed `excluded-models` and `route-overrides` settings, the reworked
 
 ## Behavior changes
 
+- DeepSeek Chat Completions and Messages requests now render reasoning effort
+  `none` as `thinking.type: "disabled"`, removing the corresponding effort
+  field. This covers body controls, cross-protocol requests, and `(none)` / `(0)`
+  suffixes in regular and streaming execution. Suffix priority is preserved;
+  Responses and other model families are unchanged.
+
 - Reasoning sent to the Messages route now uses adaptive thinking:
   `thinking.type` is `"adaptive"` and the level goes in `output_config.effort`,
   instead of `"enabled"` with a fixed `budget_tokens`. This applies to reasoning
   converted from Chat Completions or Responses and to model-name suffixes.
-  Native Messages thinking controls without a suffix pass through unchanged.
+  Native Messages thinking controls without a suffix otherwise pass through
+  unchanged, apart from the DeepSeek `none` compatibility rule above.
 - Numeric suffixes on Messages, such as `opencode-go/minimax-m3(16384)`, map to
   an effort by fixed thresholds instead of keeping the exact budget. Chat
   Completions and Responses mappings are unchanged.

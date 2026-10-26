@@ -52,6 +52,8 @@ GPT 分支沿用 upstream ID 不区分大小写的 `gpt` 前缀判断。通用 c
 
 ## 思考后缀
 
+对 upstream ID 以 `deepseek` 开头（不区分大小写）的模型，协议转换及后缀处理完成后，将 Chat 的 `reasoning_effort: "none"` 和 Messages 的 `output_config.effort: "none"` 转成 `thinking: {"type":"disabled"}`。移除对应 effort 字段及被替换的 thinking budget/display；保留 `output_config` 其他字段，空对象则删除。Messages 转 Chat 前也会先规范化 `none`，避免缺少 thinking 开关或使用手动 budget 时解码器漏掉关闭意图。模型后缀优先级不变；Responses 及其他模型不受影响。普通与流式请求均适用。
+
 模型尾部 `model(value)` 先剥离用于目录 lookup，失败时尝试带括号的字面 ID；字面命中不应用后缀。CPA 可能在到达插件前拒绝字面括号 ID。
 
 识别到的后缀先移除被覆盖的请求控制，调用库转换后再应用后缀，因此优先于请求体。`none`/`0` 关闭，`auto`/`-1` 采用上游默认，档位为 minimal–max。Messages 使用 adaptive thinking 和 `output_config.effort`；Messages、Chat、Responses 的数字后缀都按固定阈值映射 effort。未知后缀只剥离，不改请求控制。budget 不按模型能力或 max_tokens 限幅。
