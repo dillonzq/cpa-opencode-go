@@ -1,3 +1,14 @@
+# v0.3.2
+
+## Fixes
+
+- DeepSeek models now publish the ability to disable thinking, including `none`
+  in known non-empty effort lists. This prevents newer CPA hosts from changing
+  `none` to the lowest enabled effort before the plugin can apply the v0.3.1
+  fix. Catalog and models.dev metadata retain their enabled effort levels;
+  explicit user thinking overrides keep priority. No manual model capability
+  overrides are required.
+
 # v0.3.1
 
 Patch release for **cpa-opencode-go**, based on v0.3.0 and requiring

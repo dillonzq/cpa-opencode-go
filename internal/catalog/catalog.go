@@ -386,6 +386,7 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			continue
 		}
 		metadata := modelmeta.Merge(fallback[e.ID], e.metadata())
+		metadata = deepSeekThinkingMetadata(e.ID, metadata, overrides[e.ID].Thinking)
 		metadata = modelmeta.Merge(metadata, overrides[e.ID].Metadata)
 		display := modelmeta.Value(metadata.DisplayName)
 		if metadata.DisplayName == nil {
