@@ -1,5 +1,9 @@
 # v0.3.2
 
+Patch release for **cpa-opencode-go**, based on v0.3.1 and requiring
+**CLIProxyAPI v8.0.0 or later**. Configuration, credential records, and existing
+`opencode-go/<model>` IDs remain compatible with v0.3.1.
+
 ## Fixes
 
 - DeepSeek models now publish the ability to disable thinking, including `none`
@@ -8,6 +12,15 @@
   fix. Catalog and models.dev metadata retain their enabled effort levels;
   explicit user thinking overrides keep priority. No manual model capability
   overrides are required.
+
+## Installation and upgrade
+
+Download `cpa-opencode-go_0.3.2_<os>_<arch>.zip` for the **CPA host's operating
+system and architecture** and `checksums.txt` from this release. Verify the ZIP's
+SHA256, stop CPA, and back up its configuration, credential directory, and
+existing plugin library. Replace the library in
+`<cliproxyapi_root>/plugins/<os>/<arch>/`, retaining the included `LICENSE`.
+Restart CPA, verify `/v1/models` with a CPA client key, and make a request.
 
 # v0.3.1
 
