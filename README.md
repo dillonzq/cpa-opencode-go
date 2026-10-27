@@ -309,6 +309,8 @@ plugins:
 
 Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. `models[].name` is the exact upstream ID: entries already in the catalog override metadata; entries missing from the catalog declare additional models. New models use their family's default switches plus their own `protocols`. Protocol switches, endpoint checks, and ID collision checks apply to both sources. Explicit declarations remain available when the catalog is empty or unavailable, including under `stale-while-unavailable: false`; removing a declaration removes it unless the upstream catalog still lists it. Models.dev alone never adds models. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
 
+DeepSeek models additionally advertise `thinking.zero-allowed: true` and add `none` to non-empty effort lists before user overrides are applied. This describes DeepSeek's separate thinking toggle, which metadata sources can omit when listing enabled efforts, and prevents CPA from changing `none` to the lowest enabled effort before plugin execution. Unknown or empty effort lists stay unchanged. An explicit user `zero-allowed: false` suppresses this compatibility default; user `levels` overrides remain authoritative.
+
 Add these settings under the plugin configuration:
 
 ```yaml

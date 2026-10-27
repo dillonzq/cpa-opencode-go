@@ -313,6 +313,8 @@ plugins:
 
 元数据按字段合并，优先级为 **用户 `models` 配置 > catalog 接口 > models.dev**。显式 `0`、`false` 和空数组都会覆盖低优先级数据，`thinking` 的各字段也独立合并。`models[].name` 使用上游原始 ID：目录中已有的模型覆盖元数据，目录中不存在的模型作为新增声明。新增模型沿用家族的默认开关，再叠加自身的 `protocols`；协议开关、端点检查和 ID 冲突检查均适用。显式声明的模型在目录为空或不可用时仍保留，包括 `stale-while-unavailable: false`；删除声明后模型移除，除非上游目录仍列出该 ID。models.dev 本身不会新增模型。覆盖字段沿用 CPA 供应商配置名称：`display-name`、`max-context-length`、`input-modalities`、`output-modalities` 和 `thinking`（`min`、`max`、`zero-allowed`、`dynamic-allowed`、`levels`）；`description` 和 `max-tokens` 是本插件新增的扩展。
 
+DeepSeek 模型还会在用户覆盖前补充 `thinking.zero-allowed: true`，并向非空推理档位列表添加 `none`。这表示 DeepSeek 独立的思考开关，避免元数据源只列出开启时的档位，导致 CPA 在插件执行前把 `none` 改成最低档。未知或空档位列表保持不变。用户显式设置 `zero-allowed: false` 时不应用这项兼容默认值；用户配置的 `levels` 仍优先。
+
 在插件配置中添加：
 
 ```yaml

@@ -22,6 +22,7 @@ import (
 	codexmodels "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/models"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers/openai"
@@ -32,6 +33,101 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
+
+// Exercise the real C-shared model publication and the host thinking validator,
+// rather than handing none directly to the plugin executor. Recent CPA hosts
+// apply this validation and consume model suffixes before plugin execution.
+func TestOpenCodeNativeDeepSeekThinking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			io.WriteString(w, `{"data":[{"id":"deepseek-v4.1-flash"},{"id":"deepseek-v4-pro"}]}`)
+		case "/metadata":
+			io.WriteString(w, `{"opencode-go":{"models":{"deepseek-v4.1-flash":{"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","high","max"]}]},"deepseek-v4-pro":{"reasoning":true,"reasoning_options":[{"type":"effort","values":["high","max"]}]}}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	host := New()
+	host.runtimeConfig = &config.Config{AuthDir: t.TempDir()}
+	file := pluginFile{ID: "cpa-opencode-go", Path: os.Getenv("CPA_NATIVE_PLUGIN")}
+	native, err := defaultPluginLoader().Open(file, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newGuardedPluginClient(native)
+	defer client.Shutdown()
+	plug, err := registerRPCPlugin(context.Background(), host, file.ID, client, pluginabi.MethodPluginRegister,
+		[]byte(fmt.Sprintf("api-keys:\n  - value: offline-test-key\nbase-url: %s\nallow-http: true\nmodels-dev:\n  url: %s/metadata\n", server.URL, server.URL)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forAuth := range []bool{false, true} {
+		var response pluginapi.ModelResponse
+		if forAuth {
+			response, err = plug.Capabilities.ModelProvider.ModelsForAuth(context.Background(), pluginapi.AuthModelRequest{})
+		} else {
+			response, err = plug.Capabilities.ModelProvider.StaticModels(context.Background(), pluginapi.StaticModelRequest{})
+		}
+		if err != nil || len(response.Models) != 2 {
+			t.Fatalf("DeepSeek model publication: %+v, %v", response, err)
+		}
+		for _, published := range response.Models {
+			model := pluginModelInfoToRegistryModelInfo(published)
+			wantLevels := []string{"none", "high", "max"}
+			if strings.HasSuffix(model.ID, "flash") {
+				wantLevels = []string{"none", "low", "high", "max"}
+			}
+			if model.Thinking == nil || !model.Thinking.ZeroAllowed || !reflect.DeepEqual(model.Thinking.Levels, wantLevels) {
+				t.Fatalf("host cannot disable DeepSeek thinking: %+v", model)
+			}
+			for _, format := range []string{"openai", "claude", "openai-response"} {
+				for _, tc := range []struct{ suffix, effort, want string }{
+					{"", "none", "none"}, {"(none)", "high", "none"}, {"(0)", "high", "none"}, {"(high)", "none", "high"},
+				} {
+					for _, stream := range []bool{false, true} {
+						t.Run(fmt.Sprintf("auth=%t/%s/%s/%s/stream=%t", forAuth, model.ID, format, tc.suffix, stream), func(t *testing.T) {
+							control := `"reasoning_effort":%q`
+							if format == "claude" {
+								control = `"thinking":{"type":"adaptive"},"output_config":{"effort":%q}`
+							} else if format == "openai-response" {
+								control = `"reasoning":{"effort":%q}`
+							}
+							body := []byte(fmt.Sprintf(`{"model":%q,"stream":%t,`+control+`}`, model.ID, stream, tc.effort))
+							out, err := thinking.ApplyThinkingWithModelInfo(body, body, model.ID+tc.suffix, format, format, "opencode-go", model)
+							if err != nil {
+								t.Fatal(err)
+							}
+							var got struct {
+								Effort    string `json:"reasoning_effort"`
+								Thinking  struct{ Type string }
+								Output    struct{ Effort string } `json:"output_config"`
+								Reasoning struct{ Effort string }
+							}
+							if err := json.Unmarshal(out, &got); err != nil {
+								t.Fatal(err)
+							}
+							effort := got.Effort
+							if format == "claude" {
+								effort = got.Output.Effort
+								if got.Thinking.Type == "disabled" {
+									effort = "none"
+								}
+							} else if format == "openai-response" {
+								effort = got.Reasoning.Effort
+							}
+							if effort != tc.want {
+								t.Fatalf("host changed %s to %s: %s", tc.want, effort, out)
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
 
 func TestOpenCodeNativeMetadata(t *testing.T) {
 	var fallbackCalls atomic.Int32
