@@ -1,3 +1,14 @@
+# v0.3.3
+
+## Fixes
+
+- Default upstream paths now match the official Go and Go Plus gateway:
+  `/openai/v1/chat/completions`, `/openai/v1/responses`, and
+  `/anthropic/v1/messages`. Gemini and model catalog paths are unchanged.
+  Explicit global and per-model endpoint overrides still take precedence;
+  update configured legacy paths to include the provider prefix when using
+  the official gateway.
+
 # v0.3.2
 
 Patch release for **cpa-opencode-go**, based on v0.3.1 and requiring

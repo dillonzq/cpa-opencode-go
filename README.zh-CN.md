@@ -39,7 +39,7 @@
 
 ## 解决的问题
 
-OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions（`/v1/chat/completions`）、Anthropic Messages（`/v1/messages`）、OpenAI Responses（`/v1/responses`）和 Gemini GenerateContent（`/google/v1beta/models/{model}`），部分模型同时支持多种协议。
+OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions（`/openai/v1/chat/completions`）、Anthropic Messages（`/anthropic/v1/messages`）、OpenAI Responses（`/openai/v1/responses`）和 Gemini GenerateContent（`/google/v1beta/models/{model}`），部分模型同时支持多种协议。
 
 直接在 CLIProxyAPI 中接入这些接口，需要分别配置不同协议的服务商，带来以下问题：
 
@@ -61,9 +61,9 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 - **统一服务商命名空间**：默认使用 `opencode-go` 模型前缀，例如 `opencode-go/glm-5.2`、`opencode-go/qwen3.7-max` 和 `opencode-go/gpt-5.6-luna`。
 - **转换实现**：固定使用 [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0)，支持推理历史回放、媒体输入、本地 shell 适配、缓存提示、结构化输出、工具 strict、可表示的 URL 引用和 Responses ↔ Messages 托管搜索；目标模型支持范围仍由上游验证。插件保留原生上游清洗和 CPA 流式包装适配。
 - **多协议转换**：转换以下客户端协议与上游协议之间的请求及流式响应：
-  - OpenAI Chat Completions（`/v1/chat/completions`）
-  - Anthropic Messages（`/v1/messages`）
-  - OpenAI Responses（`/v1/responses`）
+  - OpenAI Chat Completions（`/openai/v1/chat/completions`）
+  - Anthropic Messages（`/anthropic/v1/messages`）
+  - OpenAI Responses（`/openai/v1/responses`）
   - Gemini GenerateContent（`/google/v1beta/models/{model}:generateContent`），也接受 Gemini 客户端的原生请求
 - **按请求选择协议**：每个模型对每种协议各有一个开关。请求优先使用与客户端相同的协议，否则选择语义损失最小的协议，详见[协议选择](#协议选择)。
 - **思考与推理支持**：同格式保留推理参数，跨格式仅做固定档位/预算转换；模型能力元数据不参与过滤或限幅，由上游校验。保留关闭和 Claude adaptive 档位；跨格式自动模式无对应字段时使用目标接口默认行为，无法转换的其他值明确报错。
@@ -107,7 +107,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 - Chat Completions 无法表示只有 URI 的文档；
 - Gemini 的签名和 thinking 语义与其他协议差异最大，因此对其他客户端都排在最后。
 
-例如，`opencode-go/deepseek-v4-pro` 收到 Claude Code 的请求时直接走 `/v1/messages`，收到 Codex 的请求时直接走 `/v1/responses`，都无需转换。
+例如，`opencode-go/deepseek-v4-pro` 收到 Claude Code 的请求时直接走 `/anthropic/v1/messages`，收到 Codex 的请求时直接走 `/openai/v1/responses`，都无需转换。
 
 ### 协议配置
 
@@ -116,7 +116,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 ```yaml
 protocols:                       # 作用于所有模型，只能设置端点
   responses:
-    endpoint: /v1/responses
+    endpoint: /openai/v1/responses
 models:
   - name: deepseek-v4-pro
     protocols:                   # 只使用 Chat Completions 和 Messages
@@ -136,7 +136,7 @@ models:
 | `protocols.<协议>` | 只能包含 `endpoint` 的对象。这里不接受开关，开关需按模型设置。 |
 | `endpoint` | 可选，拼接在 `base-url` 之后，必须以 `/` 开头。`gemini` 的端点必须包含 `{model}`，执行时替换为上游模型 ID，并追加 `:generateContent`；流式请求追加 `:streamGenerateContent?alt=sse`。 |
 
-请求依次使用模型的端点、顶层端点和默认路径。各协议的默认路径依次为 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 和 `/google/v1beta/models/{model}`。Gemini 请求使用 `x-goog-api-key` 认证。
+请求依次使用模型的端点、顶层端点和默认路径。各协议的默认路径依次为 `/openai/v1/chat/completions`、`/anthropic/v1/messages`、`/openai/v1/responses` 和 `/google/v1beta/models/{model}`。这些上游路径遵循 Go 和 Go Plus 共用的[官方接入配置](https://opencode.ai/v2/docs/console/harnesses#base-urls)。显式配置的端点会原样使用；如果配置中仍有旧路径，请补上对应前缀。模型目录地址仍为 `{base-url}/v1/models`。Gemini 请求使用 `x-goog-api-key` 认证。
 
 ## 请求行为
 
@@ -268,14 +268,14 @@ plugins:
       # 按协议为所有模型设置端点路径；开关按模型设置
       protocols:
         responses:
-          endpoint: "/v1/responses"      # 必须以 / 开头（示例为默认值）
+          endpoint: "/openai/v1/responses"      # 必须以 / 开头（示例为默认值）
 
       # 模型声明；protocols 开启或关闭协议并覆盖端点
       models:
         - name: "custom-model"
           protocols:
             messages:                    # "chat-completions" | "messages" | "responses" | "gemini"
-              endpoint: "/v1/messages"   # 可选，必须以 / 开头
+              endpoint: "/anthropic/v1/messages"   # 可选，必须以 / 开头
         - name: "deepseek-v4-pro"
           protocols:
             responses:

@@ -265,7 +265,7 @@ func newMockOpenCode(t *testing.T) *mockOpenCode {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
 	})
-	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/openai/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var parsed map[string]any
 		_ = json.Unmarshal(body, &parsed)
@@ -293,7 +293,7 @@ func newMockOpenCode(t *testing.T) *mockOpenCode {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(integrationCompletion))
 	})
-	mux.HandleFunc("/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/anthropic/v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var parsed map[string]any
 		_ = json.Unmarshal(body, &parsed)
@@ -324,7 +324,7 @@ func newMockOpenCode(t *testing.T) *mockOpenCode {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(st.messagesBody))
 	})
-	mux.HandleFunc("/v1/responses", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/openai/v1/responses", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var parsed map[string]any
 		_ = json.Unmarshal(body, &parsed)
@@ -409,7 +409,7 @@ func (st *mockOpenCode) chatRequest(t *testing.T) (path, auth string, body map[s
 
 func integrationYAML(baseURL string) string {
 	// Endpoint paths carry the version segment, so the mock server root
-	// serves /v1/models and /v1/chat/completions. A base-url written the old
+	// serves /v1/models and /openai/v1/chat/completions. A base-url written the old
 	// way, ending in /v1, normalizes to that root.
 	return fmt.Sprintf("base-url: %s/v1\nallow-http: true\napi-keys:\n  - value: sk-test-1\nmodels-dev:\n  enabled: false\n", baseURL)
 }
@@ -501,7 +501,7 @@ func TestSessionPromptMarkerNotCapturedInLogs(t *testing.T) {
 }
 
 // TestChatNonStreamRoundTrip covers AC §B: a text+tools request reaches the
-// upstream /v1/chat/completions with rewritten model and Bearer auth, and
+// upstream /openai/v1/chat/completions with rewritten model and Bearer auth, and
 // the non-streaming response (tool_call + usage intact) passes back through.
 func TestChatNonStreamRoundTrip(t *testing.T) {
 	m, _, st, _ := newIntegrationManager(t)
@@ -515,7 +515,7 @@ func TestChatNonStreamRoundTrip(t *testing.T) {
 	}
 
 	path, auth, upstream := st.chatRequest(t)
-	if path != "/v1/chat/completions" {
+	if path != "/openai/v1/chat/completions" {
 		t.Fatalf("mock path = %q", path)
 	}
 	if auth != "Bearer sk-test-1" {
@@ -655,7 +655,7 @@ func assertCleanStreamClose(t *testing.T, f *fakeCaller) {
 }
 
 // TestMessagesNonStreamRoundTrip covers AC §C: a claude-format request with
-// system + tools reaches /v1/messages with x-api-key and anthropic-version
+// system + tools reaches /anthropic/v1/messages with x-api-key and anthropic-version
 // auth, rewritten model, folded system; the Anthropic response (text +
 // tool_use + usage) passes back natively.
 func TestMessagesNonStreamRoundTrip(t *testing.T) {
@@ -723,7 +723,7 @@ func TestMessagesNonStreamRoundTrip(t *testing.T) {
 }
 
 // TestResponsesNonStreamRoundTrip covers AC §D: an openai-response-format
-// request reaches /v1/responses with Bearer auth and rewritten model; the
+// request reaches /openai/v1/responses with Bearer auth and rewritten model; the
 // Responses result (output_text + function_call) passes back natively.
 func TestResponsesNonStreamRoundTrip(t *testing.T) {
 	m, _, st, _ := newIntegrationManager(t)
