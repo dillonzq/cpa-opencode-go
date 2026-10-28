@@ -379,7 +379,7 @@ go vet -tags debug ./... ./.github/scripts/...
 
 新文件名按大小写不敏感规则检查冲突，并追加编号，例如已有 `personal.json` 时生成 `Personal-2.json`。Windows 保留设备名会加上 `OpenCode-Go-` 前缀，例如 `CON` 生成 `OpenCode-Go-CON.json`。这些规则在所有平台生效，仅改变新文件名，不改变账户显示名称。
 
-通过 `GET /v0/management/quota/providers` 查询支持情况，再以 `{"auth_index":"<选中的索引>"}` 调用 `POST /v0/management/quota/fetch`。两者均需 CLIProxyAPI 管理密钥。标准响应包含 `groups[].buckets[].window`、`remainingFraction` 和 `resetTime`。额度接口未提供可核验的套餐档位，因此省略 `subscription`，不再将所有凭证标为 `Go`。分组名称 `OpenCode Go` 表示供应商，适用于 Go 和 Go Plus。缺失的时间窗口会被省略，无效数据会返回错误，不会填充为零。
+通过 `GET /v0/management/quota/providers` 查询支持情况，再以 `{"auth_index":"<选中的索引>"}` 调用 `POST /v0/management/quota/fetch`。两者均需 CLIProxyAPI 管理密钥。标准响应包含 `groups[].buckets[].window`、`remainingFraction` 和 `resetTime`。额度接口未提供可核验的套餐档位，因此省略 `subscription`，不再将所有凭证标为 `Go`。分组名称 `OpenCode Go` 表示供应商，适用于 Go 和 Go Plus。缺失的时间窗口会被省略；已返回的窗口若缺少百分比、百分比为 `null`，或存在其他无效数据，则返回错误，不会静默省略或填充为零。
 
 上游窗口标记为 `status: "rate-limited"` 时，即使用量未达 100%，也会返回 `remainingFraction: 0`，并保留重置时间。其他窗口继续按各自的用量百分比计算剩余额度。
 

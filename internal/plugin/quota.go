@@ -48,6 +48,9 @@ func (m *Manager) FetchQuota(ctx context.Context, req pluginapi.QuotaFetchReques
 	return normalizeQuota(resp.Body)
 }
 
+// normalizeQuota converts upstream usage windows to CPA quota buckets.
+// Only absent windows are omitted; present windows require a valid percentage.
+// Rate-limited windows report no remaining quota and retain their reset time.
 func normalizeQuota(body []byte) (pluginapi.QuotaFetchResponse, error) {
 	var decoded struct {
 		Usage map[string]quotaUpstreamWindow `json:"usage"`
@@ -58,8 +61,11 @@ func normalizeQuota(body []byte) (pluginapi.QuotaFetchResponse, error) {
 	buckets := []pluginapi.QuotaBucket{}
 	for _, name := range []string{"rolling", "weekly", "monthly"} {
 		window, exists := decoded.Usage[name]
-		if !exists || window.Percent == nil {
+		if !exists {
 			continue
+		}
+		if window.Percent == nil {
+			return pluginapi.QuotaFetchResponse{}, fmt.Errorf("quota percentage invalid")
 		}
 		percent := *window.Percent
 		if math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 || percent > 100 {

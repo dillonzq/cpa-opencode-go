@@ -140,6 +140,13 @@ func TestQuotaValidation(t *testing.T) {
 		`{"usage":{"rolling":{"status":"rate-limited","percent":101}}}`,
 		`{"usage":{"rolling":{"status":"rate-limited","percent":true}}}`,
 		`{"usage":{"rolling":{"status":"rate-limited","percent":1,"resetsAt":"invalid"}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","percent":null,"resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":{},"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":null,"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":{"percent":null},"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":{"percent":12.5},"weekly":{"status":"rate-limited"}}}`,
+		`{"usage":{"rolling":{"percent":12.5},"monthly":{"status":"rate-limited","percent":null}}}`,
 	} {
 		if _, err := normalizeQuota([]byte(body)); err == nil {
 			t.Fatalf("invalid response accepted: %s", body)

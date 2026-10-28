@@ -21,6 +21,8 @@
   refreshes, and quota queries, without extra configuration.
 - Quota windows marked `rate-limited` by the upstream now report zero remaining
   quota even when usage is below 100%, while preserving their reset times.
+  Present windows with missing or null percentages now return an error instead
+  of being silently omitted when another window has a valid reading.
 
 # v0.3.2
 
