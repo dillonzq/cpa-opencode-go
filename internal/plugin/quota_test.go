@@ -42,7 +42,7 @@ func TestQuotaSelectedCredential(t *testing.T) {
 		if method != pluginabi.MethodHostHTTPDo || req.Headers.Get("Authorization") != "Bearer selected" || req.URL != "https://quota.test/v1/usage" {
 			t.Fatal("wrong credential or URL")
 		}
-		return hostOK(pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"usage":{"rolling":{"percent":25,"resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":100},"monthly":{"percent":0}}}`)}), nil
+		return hostOK(pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"usage":{"rolling":{"status":"rate-limited","percent":25,"resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"status":"ok","percent":100},"monthly":{"status":"ok","percent":0}}}`)}), nil
 	}}
 	m := NewManager(NewHostBridge(f.call))
 	m.cfg = config.Config{BaseURL: "https://quota.test/", APIKeys: []config.APIKey{{Value: "not-selected"}}}
@@ -55,10 +55,13 @@ func TestQuotaSelectedCredential(t *testing.T) {
 	if len(got.Groups) != 1 || len(got.Groups[0].Buckets) != 3 {
 		t.Fatal("missing buckets")
 	}
-	for i, want := range []float64{0.75, 0, 1} {
+	for i, want := range []float64{0, 0, 1} {
 		if got.Groups[0].Buckets[i].RemainingFraction != want {
 			t.Fatal("wrong fraction")
 		}
+	}
+	if got.Groups[0].Buckets[0].ResetTime != "2026-10-01T00:00:00Z" {
+		t.Fatal("rate-limited window lost its reset time")
 	}
 	for _, req := range []pluginapi.QuotaFetchRequest{{Provider: "other", Attributes: map[string]string{"api_key": "selected"}}, {Provider: ProviderID}} {
 		if _, err := m.FetchQuota(context.Background(), req); err == nil {
@@ -91,8 +94,60 @@ func TestQuotaUnknownSubscription(t *testing.T) {
 		}
 	}
 }
+func TestQuotaWindowStatus(t *testing.T) {
+	for _, window := range []string{"rolling", "weekly", "monthly"} {
+		for _, tt := range []struct {
+			name      string
+			reading   string
+			remaining float64
+		}{
+			{"missing status", `"percent":12.5`, 0.875},
+			{"ok", `"status":"ok","percent":12.5`, 0.875},
+			{"unknown status", `"status":"unknown","percent":12.5`, 0.875},
+			{"limited below 100", `"status":"rate-limited","percent":12.5`, 0},
+			{"limited at zero", `"status":"rate-limited","percent":0`, 0},
+			{"limited at 100", `"status":"rate-limited","percent":100`, 0},
+		} {
+			t.Run(window+"/"+tt.name, func(t *testing.T) {
+				body := []byte(`{"usage":{"` + window + `":{` + tt.reading + `,"resetsAt":"2026-10-01T08:00:00+08:00"}}}`)
+				got, err := normalizeQuota(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(got.Groups) != 1 || len(got.Groups[0].Buckets) != 1 {
+					t.Fatalf("expected one quota window, got %+v", got.Groups)
+				}
+				bucket := got.Groups[0].Buckets[0]
+				if bucket.Window != window || bucket.RemainingFraction != tt.remaining || bucket.ResetTime != "2026-10-01T00:00:00Z" {
+					t.Fatalf("unexpected quota window: %+v; want window %q, remaining %v and UTC reset time", bucket, window, tt.remaining)
+				}
+			})
+		}
+	}
+}
 func TestQuotaValidation(t *testing.T) {
-	for _, body := range []string{`{}`, `{"usage":{"rolling":{}}}`, `{"usage":{"rolling":{"percent":null}}}`, `{"usage":{"rolling":{"percent":-1}}}`, `{"usage":{"rolling":{"percent":101}}}`, `{"usage":{"rolling":{"percent":true}}}`, `{"usage":{"rolling":{"percent":1,"resetsAt":"invalid"}}}`} {
+	for _, body := range []string{
+		`{}`,
+		`{"usage":{"rolling":{}}}`,
+		`{"usage":{"rolling":{"percent":null}}}`,
+		`{"usage":{"rolling":{"percent":-1}}}`,
+		`{"usage":{"rolling":{"percent":101}}}`,
+		`{"usage":{"rolling":{"percent":true}}}`,
+		`{"usage":{"rolling":{"percent":1,"resetsAt":"invalid"}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited"}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","percent":null}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","percent":-1}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","percent":101}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","percent":true}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","percent":1,"resetsAt":"invalid"}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":{"status":"rate-limited","percent":null,"resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":{},"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":null,"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":{"percent":null},"weekly":{"percent":12.5}}}`,
+		`{"usage":{"rolling":{"percent":12.5},"weekly":{"status":"rate-limited"}}}`,
+		`{"usage":{"rolling":{"percent":12.5},"monthly":{"status":"rate-limited","percent":null}}}`,
+	} {
 		if _, err := normalizeQuota([]byte(body)); err == nil {
 			t.Fatalf("invalid response accepted: %s", body)
 		}
