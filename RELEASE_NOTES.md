@@ -1,5 +1,12 @@
 # v0.3.3
 
+## Behavior changes
+
+- Quota responses no longer include `subscription`. Previously every
+  credential reported `subscription.plan` as `Go`, which mislabeled Go Plus;
+  the usage API does not identify the tier. Dashboards that display
+  `subscription.plan` must handle its absence. Quota windows are unchanged.
+
 ## Fixes
 
 - Default upstream paths now match the official Go and Go Plus gateway:

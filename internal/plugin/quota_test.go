@@ -49,6 +49,9 @@ func TestQuotaSelectedCredential(t *testing.T) {
 	body, _ := json.Marshal(pluginapi.QuotaFetchRequest{Provider: ProviderID, Attributes: map[string]string{"api_key": "selected"}})
 	var got pluginapi.QuotaFetchResponse
 	decodeResult(t, mustHandle(t, m, pluginabi.MethodQuotaFetch, body), &got)
+	if got.Subscription != nil {
+		t.Fatalf("inferred a subscription from usage readings: %+v", got.Subscription)
+	}
 	if len(got.Groups) != 1 || len(got.Groups[0].Buckets) != 3 {
 		t.Fatal("missing buckets")
 	}
@@ -60,6 +63,31 @@ func TestQuotaSelectedCredential(t *testing.T) {
 	for _, req := range []pluginapi.QuotaFetchRequest{{Provider: "other", Attributes: map[string]string{"api_key": "selected"}}, {Provider: ProviderID}} {
 		if _, err := m.FetchQuota(context.Background(), req); err == nil {
 			t.Fatal("invalid credential accepted")
+		}
+	}
+}
+func TestQuotaUnknownSubscription(t *testing.T) {
+	for _, body := range []string{
+		`{"usage":{"rolling":{"percent":25},"weekly":{"percent":100},"monthly":{"percent":0}}}`,
+		`{"usage":{"weekly":{"percent":12.5}}}`,
+	} {
+		got, err := normalizeQuota([]byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(wire, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := fields["subscription"]; exists {
+			t.Fatalf("unknown subscription must be omitted: %s", wire)
+		}
+		if len(got.Groups) != 1 || got.Groups[0].DisplayName != "OpenCode Go" || len(got.Groups[0].Buckets) == 0 {
+			t.Fatalf("provider name or quota readings lost: %+v", got.Groups)
 		}
 	}
 }
