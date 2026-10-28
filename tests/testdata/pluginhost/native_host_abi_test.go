@@ -143,7 +143,7 @@ func TestOpenCodeNativeMetadata(t *testing.T) {
 				t.Error("metadata service received credential")
 			}
 			io.WriteString(w, `{"opencode-go":{"models":{"glm-metadata-test":{"name":"Fallback name","description":"Fallback description","limit":{"context":100000,"output":32000},"modalities":{"input":["text","image"],"output":["text"]},"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","medium","high"]}]}}}}`)
-		case "/v1/responses":
+		case "/openai/v1/responses":
 			var request struct {
 				Model string `json:"model"`
 			}
@@ -300,7 +300,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 		observedMu.Lock()
 		observed = append(observed, body)
 		observedMu.Unlock()
-		if r.URL.Path == "/v1/responses" {
+		if r.URL.Path == "/openai/v1/responses" {
 			w.Header().Set("X-Test-Session", r.Header.Get("X-Opencode-Session"))
 			var req struct {
 				Stream bool `json:"stream"`
@@ -325,7 +325,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 			return
 		}
 		mode := req.Messages[0].Content
-		if r.URL.Path == "/v1/messages" && req.Stream {
+		if r.URL.Path == "/anthropic/v1/messages" && req.Stream {
 			w.Header().Set("Content-Type", "text/event-stream")
 			io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}\n\nevent: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\nevent: message_stop")
 			return
@@ -814,7 +814,7 @@ func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 		}
 		shape, ending, event := parts[0], parts[1], parts[2]
 		payload := ""
-		if r.URL.Path == "/v1/messages" {
+		if r.URL.Path == "/anthropic/v1/messages" {
 			switch shape {
 			case "empty":
 				payload = `{}`
@@ -841,7 +841,7 @@ func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		if r.URL.Path == "/v1/messages" {
+		if r.URL.Path == "/anthropic/v1/messages" {
 			io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\"}}\n\n")
 			if shape == "valid" {
 				io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
@@ -977,11 +977,11 @@ func TestOpenCodeNativeHTTPStreams(t *testing.T) {
 			}
 			name := "error"
 			payload := map[string]any{"type": "error"}
-			if r.URL.Path == "/v1/responses" {
+			if r.URL.Path == "/openai/v1/responses" {
 				payload["message"], payload["status_code"] = message, 500
 			} else {
 				payload["error"] = map[string]any{"type": "api_error", "message": message, "code": 500}
-				if r.URL.Path == "/v1/chat/completions" {
+				if r.URL.Path == "/openai/v1/chat/completions" {
 					name = ""
 					delete(payload, "type")
 				}
@@ -991,14 +991,14 @@ func TestOpenCodeNativeHTTPStreams(t *testing.T) {
 			return true
 		}
 		switch r.URL.Path {
-		case "/v1/chat/completions":
+		case "/openai/v1/chat/completions":
 			frame("", `{"id":"r","model":"glm-5.3","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}`)
 			if afterText() {
 				return
 			}
 			frame("", `{"id":"r","model":"glm-5.3","choices":[{"delta":{},"finish_reason":"stop"}]}`)
 			frame("", "[DONE]")
-		case "/v1/messages":
+		case "/anthropic/v1/messages":
 			frame("message_start", `{"type":"message_start","message":{"id":"r","model":"minimax-m3"}}`)
 			frame("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
 			frame("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)
@@ -1008,7 +1008,7 @@ func TestOpenCodeNativeHTTPStreams(t *testing.T) {
 			frame("content_block_stop", `{"type":"content_block_stop","index":0}`)
 			frame("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`)
 			frame("message_stop", `{"type":"message_stop"}`)
-		case "/v1/responses":
+		case "/openai/v1/responses":
 			frame("response.created", `{"type":"response.created","response":{"id":"r","model":"gpt-5.6-luna"}}`)
 			frame("response.output_item.added", `{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg","role":"assistant","content":[]}}`)
 			frame("response.output_text.delta", `{"type":"response.output_text.delta","item_id":"msg","output_index":0,"content_index":0,"delta":"hello"}`)

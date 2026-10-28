@@ -74,9 +74,9 @@ func TestExecuteDeepSeekServesEachSourceNatively(t *testing.T) {
 	cases := []struct {
 		format, body, path, response, marker string
 	}{
-		{"openai", ccRequestBody, "/v1/chat/completions", ccResponseBody, `"finish_reason":"stop"`},
-		{"claude", claudeRequestBody, "/v1/messages", claudeResponseBody, `"stop_reason":"end_turn"`},
-		{"openai-response", `{"model":"x","input":"hi"}`, "/v1/responses", responsesPassthrough, `"object":"response"`},
+		{"openai", ccRequestBody, "/openai/v1/chat/completions", ccResponseBody, `"finish_reason":"stop"`},
+		{"claude", claudeRequestBody, "/anthropic/v1/messages", claudeResponseBody, `"stop_reason":"end_turn"`},
+		{"openai-response", `{"model":"x","input":"hi"}`, "/openai/v1/responses", responsesPassthrough, `"object":"response"`},
 	}
 	for _, c := range cases {
 		t.Run(c.format, func(t *testing.T) {
@@ -220,7 +220,7 @@ func TestExecuteGeminiClient(t *testing.T) {
 		}
 		assertCleanStreamClose(t, f)
 		wire := lastWire(t, f, pluginabi.MethodHostHTTPDoStream)
-		if wire["url"] != "https://opencode.ai/inference/go/v1/chat/completions" {
+		if wire["url"] != "https://opencode.ai/inference/go/openai/v1/chat/completions" {
 			t.Fatalf("url = %v", wire["url"])
 		}
 		body := upstreamRequestBody(t, f, pluginabi.MethodHostHTTPDoStream)
@@ -260,7 +260,7 @@ func TestExecuteGeminiClient(t *testing.T) {
 		assertField(t, upstreamRequestBody(t, f, pluginabi.MethodHostHTTPDoStream), "stream", true)
 	})
 	t.Run("non-stream to a Chat model", func(t *testing.T) {
-		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3"}]}`, upstreamRouter(t, map[string]string{"/v1/chat/completions": ccResponseBody}))
+		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3"}]}`, upstreamRouter(t, map[string]string{"/openai/v1/chat/completions": ccResponseBody}))
 		env := mustExecute(t, m, "opencode-go/glm-5.3", "gemini", []byte(geminiRequestBody))
 		if !env.OK {
 			t.Fatalf("execute: %+v", env.Error)

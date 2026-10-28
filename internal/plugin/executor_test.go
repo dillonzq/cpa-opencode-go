@@ -183,9 +183,9 @@ func newExecManager(t *testing.T) (*Manager, *fakeCaller) {
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 	f.responder = wrapWithCatalog(multiRouteCatalog, upstreamRouter(t, map[string]string{
-		"/v1/chat/completions": ccResponseBody,
-		"/v1/messages":         claudeResponseBody,
-		"/v1/responses":        responsesPassthrough,
+		"/openai/v1/chat/completions": ccResponseBody,
+		"/anthropic/v1/messages":      claudeResponseBody,
+		"/openai/v1/responses":        responsesPassthrough,
 	}))
 	if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
 		t.Fatalf("register: %v", err)
@@ -264,10 +264,11 @@ func TestExecutorSessionHeaderMatrix(t *testing.T) {
 		name  string
 		model string
 		auth  string
+		path  string
 	}{
-		{"chat", "opencode-go/glm-5.3", "Bearer " + testKey},
-		{"messages", "opencode-go/minimax-m3", ""},
-		{"responses", "opencode-go/gpt-5.6-luna", "Bearer " + testKey},
+		{"chat", "opencode-go/glm-5.3", "Bearer " + testKey, "/openai/v1/chat/completions"},
+		{"messages", "opencode-go/minimax-m3", "", "/anthropic/v1/messages"},
+		{"responses", "opencode-go/gpt-5.6-luna", "Bearer " + testKey, "/openai/v1/responses"},
 	}
 	const wantSession = "6e00cd562cc2d88e238dfb81d9439de7ec843ee9d0c9879d549cb1436786f975"
 	for _, mode := range []string{"non-stream", "stream"} {
@@ -276,13 +277,14 @@ func TestExecutorSessionHeaderMatrix(t *testing.T) {
 				t.Run(mode+"/"+format.name+"/"+route.name, func(t *testing.T) {
 					var f *fakeCaller
 					var m *Manager
+					var wire map[string]any
 					if mode == "non-stream" {
 						m, f = newExecManager(t)
 						resp, err := m.HandleCall("executor.execute", execReqBody(route.model, format.name, format.body, false))
 						if err != nil || !decodeEnv(t, resp).OK {
 							t.Fatalf("execute: %v %s", err, resp)
 						}
-						assertSessionHeaders(t, lastWire(t, f, pluginabi.MethodHostHTTPDo), wantSession, route.auth)
+						wire = lastWire(t, f, pluginabi.MethodHostHTTPDo)
 					} else {
 						m, f = newStreamManager(t, streamScript{upstreamID: "matrix-up"})
 						resp, err := m.HandleCall("executor.execute_stream", execStreamReqBody(route.model, format.name, format.body, "matrix-down"))
@@ -293,8 +295,12 @@ func TestExecutorSessionHeaderMatrix(t *testing.T) {
 						if len(calls) != 1 {
 							t.Fatalf("do_stream calls = %d, want 1", len(calls))
 						}
-						assertSessionHeaders(t, decodePayload(t, calls[0]), wantSession, route.auth)
+						wire = decodePayload(t, calls[0])
 					}
+					if want := "https://opencode.ai/inference/go" + route.path; wire["url"] != want {
+						t.Fatalf("upstream URL = %v, want %s", wire["url"], want)
+					}
+					assertSessionHeaders(t, wire, wantSession, route.auth)
 				})
 			}
 		}
@@ -372,7 +378,7 @@ func TestExecutorSessionInputsPropagateInBothModes(t *testing.T) {
 
 func TestExecuteChatRoute(t *testing.T) {
 	f := &fakeCaller{responder: wrapWithCatalog(testCatalogJSON, upstreamRouter(t, map[string]string{
-		"/v1/chat/completions": ccResponseBody,
+		"/openai/v1/chat/completions": ccResponseBody,
 	}))}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
@@ -396,7 +402,7 @@ func TestExecuteChatRoute(t *testing.T) {
 	if wire["method"] != http.MethodPost {
 		t.Fatalf("bridged method = %v", wire["method"])
 	}
-	if wire["url"] != "https://opencode.ai/inference/go/v1/chat/completions" {
+	if wire["url"] != "https://opencode.ai/inference/go/openai/v1/chat/completions" {
 		t.Fatalf("bridged url = %v", wire["url"])
 	}
 	headers := wire["headers"].(map[string]any)
@@ -450,7 +456,7 @@ func TestExecuteMessagesRouteNativeClaudePassesThrough(t *testing.T) {
 		t.Fatalf("native passthrough altered body:\n%s\nwant\n%s", out.Payload, claudeResponseBody)
 	}
 	wire := lastWire(t, f, pluginabi.MethodHostHTTPDo)
-	if !strings.HasSuffix(wire["url"].(string), "/v1/messages") {
+	if !strings.HasSuffix(wire["url"].(string), "/anthropic/v1/messages") {
 		t.Fatalf("url = %v", wire["url"])
 	}
 	headers := wire["headers"].(map[string]any)
@@ -514,7 +520,7 @@ func TestExecuteResponsesRouteNativePassesThrough(t *testing.T) {
 		t.Fatalf("passthrough altered body: %s", out.Payload)
 	}
 	wire := lastWire(t, f, pluginabi.MethodHostHTTPDo)
-	if !strings.HasSuffix(wire["url"].(string), "/v1/responses") {
+	if !strings.HasSuffix(wire["url"].(string), "/openai/v1/responses") {
 		t.Fatalf("url = %v", wire["url"])
 	}
 	headers := wire["headers"].(map[string]any)
@@ -1331,7 +1337,7 @@ func TestExecuteMaxResponseBytesGuard(t *testing.T) {
 	bigBody := `{"id":"r2","choices":[{"index":0,"message":{"role":"assistant","content":"` +
 		strings.Repeat("x", 150) + `"},"finish_reason":"stop"}]}`
 	f.responder = wrapWithCatalog(tinyCatalog, upstreamRouter(t, map[string]string{
-		"/v1/chat/completions": bigBody,
+		"/openai/v1/chat/completions": bigBody,
 	}))
 	if _, err := m.HandleCall("plugin.register",
 		lifecycleRequestBody(testValidYAML+"max-response-bytes: 100\n")); err != nil {
@@ -1562,7 +1568,7 @@ func TestExecuteStreamInvalidAuthRejection(t *testing.T) {
 func TestExecuteUsesSelectedAuthKeyWithoutFallback(t *testing.T) {
 	customKey := "sk-cpa-selected-unique-key"
 	f := &fakeCaller{responder: wrapWithCatalog(testCatalogJSON, upstreamRouter(t, map[string]string{
-		"/v1/chat/completions": ccResponseBody,
+		"/openai/v1/chat/completions": ccResponseBody,
 	}))}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
@@ -1741,9 +1747,9 @@ func TestExecutorResponsesToolsRoundTripNonStream(t *testing.T) {
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 	f.responder = wrapWithCatalog(multiRouteCatalog, upstreamRouter(t, map[string]string{
-		"/v1/chat/completions": responsesToolsUpstreamCC,
-		"/v1/messages":         claudeResponseBody,
-		"/v1/responses":        responsesPassthrough,
+		"/openai/v1/chat/completions": responsesToolsUpstreamCC,
+		"/anthropic/v1/messages":      claudeResponseBody,
+		"/openai/v1/responses":        responsesPassthrough,
 	}))
 	if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
 		t.Fatalf("register: %v", err)

@@ -116,9 +116,9 @@ func TestRouteEndpointPath(t *testing.T) {
 		route Route
 		want  string
 	}{
-		{RouteChatCompletions, "/v1/chat/completions"},
-		{RouteMessages, "/v1/messages"},
-		{RouteResponses, "/v1/responses"},
+		{RouteChatCompletions, "/openai/v1/chat/completions"},
+		{RouteMessages, "/anthropic/v1/messages"},
+		{RouteResponses, "/openai/v1/responses"},
 		{RouteGemini, "/google/v1beta/models/{model}"},
 		{Route("bogus"), ""},
 	}
@@ -203,7 +203,7 @@ func TestRefreshSuccess(t *testing.T) {
 	if glm.DisplayName != "glm-5.2" {
 		t.Errorf("DisplayName fallback = %q, want upstream id", glm.DisplayName)
 	}
-	if !reflect.DeepEqual(glm.Routes, []Target{{RouteChatCompletions, "/v1/chat/completions"}}) {
+	if !reflect.DeepEqual(glm.Routes, []Target{{RouteChatCompletions, "/openai/v1/chat/completions"}}) {
 		t.Errorf("glm route wrong: %+v", glm)
 	}
 	mm := findModel(t, models, "minimax-m3")
@@ -250,7 +250,7 @@ func TestRoutePriorityMatrix(t *testing.T) {
 	if got := primary(findModel(t, models, "qwen3.8-max")); got != RouteMessages {
 		t.Errorf("compat route wrong: got %q", got)
 	}
-	if got := findModel(t, models, "grok-4.5").Routes; !reflect.DeepEqual(got, []Target{{RouteChatCompletions, "/v1/chat/completions"}}) {
+	if got := findModel(t, models, "grok-4.5").Routes; !reflect.DeepEqual(got, []Target{{RouteChatCompletions, "/openai/v1/chat/completions"}}) {
 		t.Errorf("declaration should switch compat protocols: got %+v", got)
 	}
 	unsup := m.Unsupported()
@@ -849,8 +849,8 @@ func TestGlobalProtocolEndpoints(t *testing.T) {
 		"glm-5.1": {{RouteChatCompletions, "/v1/own-chat"}},
 		"deepseek-v4-pro": {
 			{RouteChatCompletions, "/v1/global-chat"},
-			{RouteResponses, "/v1/responses"},
-			{RouteMessages, "/v1/messages"},
+			{RouteResponses, "/openai/v1/responses"},
+			{RouteMessages, "/anthropic/v1/messages"},
 		},
 		"gemini-4-argon-contributor": {{RouteGemini, "/gemini/models/{model}"}},
 	}
@@ -889,7 +889,7 @@ func TestOverrideApplicationRecordedInWarnings(t *testing.T) {
 
 	warns := m.Warnings()
 	if len(warns) != 1 || !strings.Contains(warns[0], `model "weird-model" routed via user configuration`) ||
-		!strings.Contains(warns[0], "chat-completions /v1/custom, messages /v1/messages") {
+		!strings.Contains(warns[0], "chat-completions /v1/custom, messages /anthropic/v1/messages") {
 		t.Fatalf("override warning wrong: %+v", warns)
 	}
 }
@@ -1048,7 +1048,7 @@ func TestEndpointEscapeExcludedFromRoutableSet(t *testing.T) {
 		mustRefresh(t, m)
 
 		rec := findModel(t, m.Models(), "mystery-model")
-		if !reflect.DeepEqual(rec.Routes, []Target{{RouteMessages, "/v1/messages"}}) {
+		if !reflect.DeepEqual(rec.Routes, []Target{{RouteMessages, "/anthropic/v1/messages"}}) {
 			t.Fatalf("Routes = %+v, want only messages", rec.Routes)
 		}
 		if len(m.Unsupported()) != 0 {

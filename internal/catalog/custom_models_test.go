@@ -33,7 +33,7 @@ func TestConfiguredModelsAddAndOverride(t *testing.T) {
 		t.Fatalf("family-routed declaration: %+v", custom)
 	}
 	custom = findModel(t, m.Models(), "custom-model")
-	if !custom.UserDefined || len(custom.Routes) != 1 || custom.Routes[0] != (Target{RouteResponses, "/v1/responses"}) || custom.OutputLimit != 64000 {
+	if !custom.UserDefined || len(custom.Routes) != 1 || custom.Routes[0] != (Target{RouteResponses, "/openai/v1/responses"}) || custom.OutputLimit != 64000 {
 		t.Fatalf("explicit route: %+v", custom)
 	}
 	for _, id := range []string{"custom-model", "opencode-go/custom-model"} {

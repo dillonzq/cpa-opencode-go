@@ -48,11 +48,12 @@ const (
 var protocolOrder = []Route{RouteChatCompletions, RouteMessages, RouteResponses, RouteGemini}
 
 // routeEndpoints maps each route to its default endpoint path below base-url.
+// Provider prefixes follow https://opencode.ai/v2/docs/console/harnesses#base-urls.
 // The Gemini path names the model resource; Target.URL appends the operation.
 var routeEndpoints = map[Route]string{
-	RouteChatCompletions: "/v1/chat/completions",
-	RouteMessages:        "/v1/messages",
-	RouteResponses:       "/v1/responses",
+	RouteChatCompletions: "/openai/v1/chat/completions",
+	RouteMessages:        "/anthropic/v1/messages",
+	RouteResponses:       "/openai/v1/responses",
 	RouteGemini:          "/google/v1beta/models/" + config.ModelPlaceholder,
 }
 

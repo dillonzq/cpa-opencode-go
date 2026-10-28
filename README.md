@@ -39,7 +39,7 @@ The OpenCode mark in `assets/logo.svg` is the plugin icon. Register it in the CL
 
 ## The Problem
 
-OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/v1/chat/completions`, Anthropic Messages `/v1/messages`, OpenAI Responses `/v1/responses`, and Gemini GenerateContent `/google/v1beta/models/{model}`), and some models serve more than one.
+OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/openai/v1/chat/completions`, Anthropic Messages `/anthropic/v1/messages`, OpenAI Responses `/openai/v1/responses`, and Gemini GenerateContent `/google/v1beta/models/{model}`), and some models serve more than one.
 
 Without this plugin, using OpenCode Go in CLIProxyAPI requires configuring separate provider blocks for each protocol family. This leads to:
 - **Duplicated configuration & keys**: The same API keys must be configured across multiple provider blocks.
@@ -58,9 +58,9 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 
 - **Single Provider Namespace**: Exposes models under the `opencode-go` provider prefix (e.g. `opencode-go/glm-5.2`, `opencode-go/qwen3.7-max`, `opencode-go/gpt-5.6-luna`).
 - **Multi-Protocol Translation**: Translates requests and streaming responses between client formats and upstream endpoints:
-  - OpenAI Chat Completions (`/v1/chat/completions`)
-  - Anthropic Messages (`/v1/messages`)
-  - OpenAI Responses (`/v1/responses`)
+  - OpenAI Chat Completions (`/openai/v1/chat/completions`)
+  - Anthropic Messages (`/anthropic/v1/messages`)
+  - OpenAI Responses (`/openai/v1/responses`)
   - Gemini GenerateContent (`/google/v1beta/models/{model}:generateContent`), also accepted natively from Gemini clients
 - **Per-request protocol selection**: Each model has a switch per protocol. A request uses the client's own protocol when the model serves it, otherwise the protocol with the least semantic loss; see [Protocol selection](#protocol-selection).
 - **Thinking & Reasoning Support**: Preserves native reasoning controls and uses fixed effort/budget conversion across formats. Capability metadata does not filter or clamp requests; upstream validates controls. Preserves explicit off and Claude adaptive effort; cross-format auto uses target defaults where no wire equivalent exists. Controls that cannot be converted fail explicitly.
@@ -105,7 +105,7 @@ The client's own protocol comes first and needs no conversion. The rest are orde
 - Chat Completions cannot carry URI-only documents.
 - Gemini differs most in signatures and thinking, so it comes last for every other client.
 
-For example, `opencode-go/deepseek-v4-pro` reaches `/v1/messages` from Claude Code and `/v1/responses` from Codex without conversion.
+For example, `opencode-go/deepseek-v4-pro` reaches `/anthropic/v1/messages` from Claude Code and `/openai/v1/responses` from Codex without conversion.
 
 ### Protocol configuration
 
@@ -114,7 +114,7 @@ For example, `opencode-go/deepseek-v4-pro` reaches `/v1/messages` from Claude Co
 ```yaml
 protocols:                       # every model; endpoints only
   responses:
-    endpoint: /v1/responses
+    endpoint: /openai/v1/responses
 models:
   - name: deepseek-v4-pro
     protocols:                   # Chat Completions and Messages only
@@ -134,7 +134,7 @@ models:
 | `protocols.<protocol>` | An object with only `endpoint`. Switches are rejected here; set them per model. |
 | `endpoint` | Optional path joined to `base-url`. It must start with `/`. A `gemini` endpoint must contain `{model}`, which is replaced with the upstream model ID; the plugin appends `:generateContent`, or `:streamGenerateContent?alt=sse` for streams. |
 
-A request uses the model's endpoint, then the top-level endpoint, then the default path: `/v1/chat/completions`, `/v1/messages`, `/v1/responses`, or `/google/v1beta/models/{model}`. Gemini requests authenticate with `x-goog-api-key`.
+A request uses the model's endpoint, then the top-level endpoint, then the default path: `/openai/v1/chat/completions`, `/anthropic/v1/messages`, `/openai/v1/responses`, or `/google/v1beta/models/{model}`. These upstream paths follow the [official harness configuration](https://opencode.ai/v2/docs/console/harnesses#base-urls) for Go and Go Plus. Explicit endpoint overrides are used verbatim; update any old paths in your configuration to use these prefixes. Catalog discovery remains at `{base-url}/v1/models`. Gemini requests authenticate with `x-goog-api-key`.
 
 ## Request behavior
 
@@ -264,14 +264,14 @@ plugins:
       # Endpoint paths for every model, keyed by protocol; switches are per model
       protocols:
         responses:
-          endpoint: "/v1/responses"      # must start with / (default shown)
+          endpoint: "/openai/v1/responses"      # must start with / (default shown)
 
       # Model declarations; protocols switches protocols on or off and overrides endpoints
       models:
         - name: "custom-model"
           protocols:
             messages:                    # "chat-completions" | "messages" | "responses" | "gemini"
-              endpoint: "/v1/messages"   # optional; must start with /
+              endpoint: "/anthropic/v1/messages"   # optional; must start with /
         - name: "deepseek-v4-pro"
           protocols:
             responses:

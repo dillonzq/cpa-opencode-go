@@ -60,9 +60,9 @@ func TestExecuteDeepSeekThinkingNone(t *testing.T) {
 		} {
 			for _, stream := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/stream=%t", route, tc.name, stream), func(t *testing.T) {
-					path, response, frames := "/v1/chat/completions", ccResponseBody, chatSSEFrames
+					path, response, frames := "/openai/v1/chat/completions", ccResponseBody, chatSSEFrames
 					if route == "messages" {
-						path, response, frames = "/v1/messages", claudeResponseBody, messagesSSEFrames
+						path, response, frames = "/anthropic/v1/messages", claudeResponseBody, messagesSSEFrames
 					}
 					yaml := testValidYAML + "\nmodels:\n  - name: deepseek-v4-pro\n    protocols:\n" +
 						fmt.Sprintf("      chat-completions: {enabled: %t}\n      messages: {enabled: %t}\n      responses: {enabled: false}\n", route == "chat-completions", route == "messages")

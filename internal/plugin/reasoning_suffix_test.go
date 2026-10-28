@@ -304,7 +304,7 @@ func TestExecuteThinkingSuffixWithPrefixDisabled(t *testing.T) {
 	// With the provider prefix off the client sends the bare upstream ID plus
 	// the suffix; routing and the override must work identically.
 	f := &fakeCaller{responder: wrapWithCatalog(multiRouteCatalog, upstreamRouter(t, map[string]string{
-		"/v1/chat/completions": ccResponseBody,
+		"/openai/v1/chat/completions": ccResponseBody,
 	}))}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
@@ -332,7 +332,7 @@ func TestExecuteThinkingSuffixLiteralIDCollidesWithBaseModel(t *testing.T) {
 	// the recognized suffix is applied instead of reaching the literal ID.
 	const catalogBody = `{"data":[{"id":"glm-5.3"},{"id":"glm-5.3(low)"},{"id":"glm-5.3(kid)"}]}`
 	f := &fakeCaller{responder: wrapWithCatalog(catalogBody, upstreamRouter(t, map[string]string{
-		"/v1/chat/completions": ccResponseBody,
+		"/openai/v1/chat/completions": ccResponseBody,
 	}))}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
@@ -368,7 +368,7 @@ func TestExecuteThinkingSuffixKeepsLiteralCatalogID(t *testing.T) {
 	// against its auth registry before the plugin sees it.
 	const catalogBody = `{"data":[{"id":"glm-weird(kid)"}]}`
 	f := &fakeCaller{responder: wrapWithCatalog(catalogBody, upstreamRouter(t, map[string]string{
-		"/v1/chat/completions": ccResponseBody,
+		"/openai/v1/chat/completions": ccResponseBody,
 	}))}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
