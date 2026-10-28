@@ -390,6 +390,9 @@ apply on every platform and affect filenames only, preserving the configured acc
 Discover support with `GET /v0/management/quota/providers`, then call
 `POST /v0/management/quota/fetch` with `{"auth_index":"<selected index>"}`.
 These endpoints require the CLIProxyAPI management key. The normalized response contains
-`subscription.plan`, `groups[].buckets[].window`, `remainingFraction`, and `resetTime`.
+`groups[].buckets[].window`, `remainingFraction`, and `resetTime`.
+The usage API does not provide a verified subscription tier, so `subscription` is
+omitted instead of labeling every credential as `Go`. The `OpenCode Go` group name
+identifies the provider and covers both Go and Go Plus.
 Missing windows are omitted. Invalid readings return an error, not an invented zero.
 Quota reset is unsupported. The old plugin quota route and resource page are removed. The management dashboard must support the generic quota API to display plugin quota refresh controls.

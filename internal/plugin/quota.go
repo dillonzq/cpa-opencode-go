@@ -77,5 +77,7 @@ func normalizeQuota(body []byte) (pluginapi.QuotaFetchResponse, error) {
 	if len(buckets) == 0 {
 		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("quota response has no readings")
 	}
-	return pluginapi.QuotaFetchResponse{Subscription: &pluginapi.QuotaSubscription{Plan: "Go"}, Groups: []pluginapi.QuotaGroup{{DisplayName: "OpenCode Go", Buckets: buckets}}}, nil
+	// Usage readings do not identify the subscription tier. Leave it unset
+	// rather than mislabeling Go Plus credentials as Go.
+	return pluginapi.QuotaFetchResponse{Groups: []pluginapi.QuotaGroup{{DisplayName: "OpenCode Go", Buckets: buckets}}}, nil
 }
