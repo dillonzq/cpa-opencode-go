@@ -395,4 +395,7 @@ The usage API does not provide a verified subscription tier, so `subscription` i
 omitted instead of labeling every credential as `Go`. The `OpenCode Go` group name
 identifies the provider and covers both Go and Go Plus.
 Missing windows are omitted. Invalid readings return an error, not an invented zero.
+An upstream window with `status: "rate-limited"` reports `remainingFraction: 0`
+even when its usage is below 100%, while preserving its reset time. Other windows
+continue to use their reported percentages.
 Quota reset is unsupported. The old plugin quota route and resource page are removed. The management dashboard must support the generic quota API to display plugin quota refresh controls.

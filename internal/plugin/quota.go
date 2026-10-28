@@ -15,6 +15,7 @@ import (
 )
 
 type quotaUpstreamWindow struct {
+	Status   string   `json:"status"`
 	Percent  *float64 `json:"percent"`
 	ResetsAt string   `json:"resetsAt"`
 }
@@ -64,6 +65,10 @@ func normalizeQuota(body []byte) (pluginapi.QuotaFetchResponse, error) {
 		if math.IsNaN(percent) || math.IsInf(percent, 0) || percent < 0 || percent > 100 {
 			return pluginapi.QuotaFetchResponse{}, fmt.Errorf("quota percentage invalid")
 		}
+		remaining := 1 - percent/100
+		if window.Status == "rate-limited" {
+			remaining = 0
+		}
 		reset := ""
 		if window.ResetsAt != "" {
 			parsed, err := time.Parse(time.RFC3339Nano, window.ResetsAt)
@@ -72,7 +77,7 @@ func normalizeQuota(body []byte) (pluginapi.QuotaFetchResponse, error) {
 			}
 			reset = parsed.UTC().Format(time.RFC3339Nano)
 		}
-		buckets = append(buckets, pluginapi.QuotaBucket{Window: name, RemainingFraction: 1 - percent/100, ResetTime: reset})
+		buckets = append(buckets, pluginapi.QuotaBucket{Window: name, RemainingFraction: remaining, ResetTime: reset})
 	}
 	if len(buckets) == 0 {
 		return pluginapi.QuotaFetchResponse{}, fmt.Errorf("quota response has no readings")
