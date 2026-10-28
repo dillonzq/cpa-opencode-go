@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,69 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
+
+func TestBridgeUserAgent(t *testing.T) {
+	originalVersion := pluginVersion
+	defer func() { pluginVersion = originalVersion }()
+	for _, version := range []string{"0.0.0-dev", "1.2.3"} {
+		pluginVersion = version
+		for _, method := range []string{pluginabi.MethodHostHTTPDo, pluginabi.MethodHostHTTPDoStream} {
+			for _, tc := range []struct {
+				name    string
+				headers http.Header
+			}{
+				{"nil headers", nil},
+				{"auth and session", http.Header{"Authorization": {"Bearer " + testKey}, "X-Opencode-Session": {"test-session"}}},
+				{"generic user agent", http.Header{"User-Agent": {"generic-sdk/1.0"}}},
+				{"lowercase user agent", http.Header{"user-agent": {"generic-sdk/1.0"}}},
+				{"duplicate user agents", http.Header{"User-Agent": {"generic-sdk/1.0"}, "uSeR-aGeNt": {"other-sdk/2.0"}}},
+			} {
+				t.Run(version+"/"+method+"/"+tc.name, func(t *testing.T) {
+					before := tc.headers.Clone()
+					f := &fakeCaller{responder: func(string, []byte) ([]byte, error) {
+						return hostOK(hostStreamStartResp{StatusCode: http.StatusOK}), nil
+					}}
+					bridge := NewHostBridge(f.call)
+					req := pluginapi.HTTPRequest{Method: http.MethodGet, URL: "https://up.test/v1/models", Headers: tc.headers}
+					var err error
+					if method == pluginabi.MethodHostHTTPDo {
+						_, err = bridge.Do(context.Background(), req)
+					} else {
+						_, _, _, err = bridge.DoStream(context.Background(), req)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					calls := f.callsOf(method)
+					if len(calls) != 1 {
+						t.Fatalf("HTTP callbacks = %d, want 1", len(calls))
+					}
+					var wire hostHTTPReq
+					if err := json.Unmarshal(calls[0].payload, &wire); err != nil {
+						t.Fatal(err)
+					}
+					var userAgents []string
+					for name, values := range wire.Headers {
+						if strings.EqualFold(name, "User-Agent") {
+							userAgents = append(userAgents, values...)
+						}
+					}
+					if len(userAgents) != 1 || userAgents[0] != "cpa-opencode-go/"+version {
+						t.Fatalf("User-Agent = %v, want cpa-opencode-go/%s", userAgents, version)
+					}
+					for _, name := range []string{"Authorization", "X-Opencode-Session"} {
+						if !reflect.DeepEqual(wire.Headers.Values(name), before.Values(name)) {
+							t.Fatalf("%s header changed", name)
+						}
+					}
+					if !reflect.DeepEqual(tc.headers, before) {
+						t.Fatal("caller headers were mutated")
+					}
+				})
+			}
+		}
+	}
+}
 
 // TestBridgeCallTimeout pins the F-watchdog contract: a black-holed host
 // callback returns a timeout-classified error within the ctx budget while

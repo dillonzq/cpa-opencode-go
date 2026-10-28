@@ -127,6 +127,9 @@ func assertGeminiHeaders(t *testing.T, wire map[string]any) {
 	if headers["X-Opencode-Session"] == nil {
 		t.Fatalf("session header missing: %v", headers)
 	}
+	if got, ok := headers["User-Agent"].([]any); !ok || len(got) != 1 || got[0] != "cpa-opencode-go/"+pluginVersion {
+		t.Fatalf("User-Agent = %v, want cpa-opencode-go/%s", headers["User-Agent"], pluginVersion)
+	}
 }
 
 func TestExecuteChatClientOnGeminiModel(t *testing.T) {
