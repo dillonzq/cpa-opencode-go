@@ -1,5 +1,11 @@
 # v0.3.3
 
+Patch release for **cpa-opencode-go**, based on v0.3.2 and requiring
+**CLIProxyAPI v8.0.0 or later**. Configuration, credential records, and existing
+`opencode-go/<model>` IDs remain compatible with v0.3.2. Users with explicit
+endpoint overrides or dashboards that read `subscription.plan` should review
+the changes below before upgrading.
+
 ## Behavior changes
 
 - Quota responses no longer include `subscription`. Previously every
@@ -24,6 +30,16 @@
   while preserving their reset times. Other present windows with missing or
   null percentages now return an error instead of being silently omitted when
   another window has a valid reading.
+
+## Installation and upgrade
+
+Download `cpa-opencode-go_0.3.3_<os>_<arch>.zip` for the **CPA host's operating
+system and architecture** and `checksums.txt` from this release. Verify the ZIP's
+SHA256, stop CPA, and back up its configuration, credential directory, and
+existing plugin library. Update any configured legacy endpoint paths as
+described above. Replace the library in
+`<cliproxyapi_root>/plugins/<os>/<arch>/`, retaining the included `LICENSE`.
+Restart CPA, verify `/v1/models` with a CPA client key, and make a request.
 
 # v0.3.2
 
