@@ -107,6 +107,8 @@ func TestQuotaWindowStatus(t *testing.T) {
 			{"limited below 100", `"status":"rate-limited","percent":12.5`, 0},
 			{"limited at zero", `"status":"rate-limited","percent":0`, 0},
 			{"limited at 100", `"status":"rate-limited","percent":100`, 0},
+			{"limited without percent", `"status":"rate-limited"`, 0},
+			{"limited with null percent", `"status":"rate-limited","percent":null`, 0},
 		} {
 			t.Run(window+"/"+tt.name, func(t *testing.T) {
 				body := []byte(`{"usage":{"` + window + `":{` + tt.reading + `,"resetsAt":"2026-10-01T08:00:00+08:00"}}}`)
@@ -134,19 +136,13 @@ func TestQuotaValidation(t *testing.T) {
 		`{"usage":{"rolling":{"percent":101}}}`,
 		`{"usage":{"rolling":{"percent":true}}}`,
 		`{"usage":{"rolling":{"percent":1,"resetsAt":"invalid"}}}`,
-		`{"usage":{"rolling":{"status":"rate-limited"}}}`,
-		`{"usage":{"rolling":{"status":"rate-limited","percent":null}}}`,
 		`{"usage":{"rolling":{"status":"rate-limited","percent":-1}}}`,
 		`{"usage":{"rolling":{"status":"rate-limited","percent":101}}}`,
 		`{"usage":{"rolling":{"status":"rate-limited","percent":true}}}`,
 		`{"usage":{"rolling":{"status":"rate-limited","percent":1,"resetsAt":"invalid"}}}`,
-		`{"usage":{"rolling":{"status":"rate-limited","resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":12.5}}}`,
-		`{"usage":{"rolling":{"status":"rate-limited","percent":null,"resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":12.5}}}`,
 		`{"usage":{"rolling":{},"weekly":{"percent":12.5}}}`,
 		`{"usage":{"rolling":null,"weekly":{"percent":12.5}}}`,
 		`{"usage":{"rolling":{"percent":null},"weekly":{"percent":12.5}}}`,
-		`{"usage":{"rolling":{"percent":12.5},"weekly":{"status":"rate-limited"}}}`,
-		`{"usage":{"rolling":{"percent":12.5},"monthly":{"status":"rate-limited","percent":null}}}`,
 	} {
 		if _, err := normalizeQuota([]byte(body)); err == nil {
 			t.Fatalf("invalid response accepted: %s", body)
@@ -155,6 +151,10 @@ func TestQuotaValidation(t *testing.T) {
 	got, err := normalizeQuota([]byte(`{"usage":{"weekly":{"percent":12.5}}}`))
 	if err != nil || len(got.Groups[0].Buckets) != 1 || got.Groups[0].Buckets[0].RemainingFraction != 0.875 {
 		t.Fatal("partial/fractional response failed")
+	}
+	got, err = normalizeQuota([]byte(`{"usage":{"rolling":{"status":"rate-limited","percent":null,"resetsAt":"2026-10-01T00:00:00Z"},"weekly":{"percent":12.5}}}`))
+	if err != nil || len(got.Groups[0].Buckets) != 2 || got.Groups[0].Buckets[0].RemainingFraction != 0 || got.Groups[0].Buckets[0].ResetTime != "2026-10-01T00:00:00Z" || got.Groups[0].Buckets[1].RemainingFraction != 0.875 {
+		t.Fatalf("rate-limited window without percent failed: %+v, %v", got, err)
 	}
 }
 func TestQuotaErrorsRedacted(t *testing.T) {
