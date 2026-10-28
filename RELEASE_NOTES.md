@@ -8,6 +8,10 @@
   Explicit global and per-model endpoint overrides still take precedence;
   update configured legacy paths to include the provider prefix when using
   the official gateway.
+- All outbound HTTP requests now send `User-Agent: cpa-opencode-go/<version>`
+  using the plugin build version, identifying the client for Go and Go Plus.
+  This includes regular and streaming inference, catalog and metadata
+  refreshes, and quota queries, without extra configuration.
 
 # v0.3.2
 

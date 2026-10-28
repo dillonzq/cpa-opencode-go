@@ -286,6 +286,22 @@ func (b *HostBridge) invoke(ctx context.Context, method string, payload any, wha
 	return env, nil
 }
 
+// pluginHTTPHeaders identifies every outbound request with the plugin's build
+// version without mutating the caller's headers.
+func pluginHTTPHeaders(headers http.Header) http.Header {
+	headers = headers.Clone()
+	if headers == nil {
+		headers = make(http.Header)
+	}
+	for name := range headers {
+		if strings.EqualFold(name, "User-Agent") {
+			delete(headers, name)
+		}
+	}
+	headers.Set("User-Agent", pluginName+"/"+pluginVersion)
+	return headers
+}
+
 // Do issues an upstream HTTP request through the host callback
 // "host.http.do"; transport-level failures surface as errors whose text is
 // safe for logs (no keys, no response bodies).
@@ -296,7 +312,7 @@ func (b *HostBridge) Do(ctx context.Context, req pluginapi.HTTPRequest) (plugina
 	}
 	defer op.finish()
 	env, err := b.invoke(ctx, pluginabi.MethodHostHTTPDo, hostHTTPReq{
-		Method: req.Method, URL: req.URL, Headers: req.Headers, Body: req.Body,
+		Method: req.Method, URL: req.URL, Headers: pluginHTTPHeaders(req.Headers), Body: req.Body,
 		HostCallbackID: op.callbackID, OperationID: op.id,
 	}, "host http do")
 	if err != nil {
@@ -331,7 +347,7 @@ func (b *HostBridge) DoStream(ctx context.Context, req pluginapi.HTTPRequest) (s
 		}
 	}()
 	payloadBytes, _ := json.Marshal(hostHTTPReq{
-		Method: req.Method, URL: req.URL, Headers: req.Headers, Body: req.Body,
+		Method: req.Method, URL: req.URL, Headers: pluginHTTPHeaders(req.Headers), Body: req.Body,
 		HostCallbackID: op.callbackID, OperationID: op.id,
 	})
 	raw, late, err := b.callWithTimeoutResult(ctx, pluginabi.MethodHostHTTPDoStream, payloadBytes, streamTimeoutGrace, b.closeLateStream)

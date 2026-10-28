@@ -242,7 +242,10 @@ func assertSessionHeaders(t *testing.T, wire map[string]any, wantSession, wantAu
 	} else if got, ok := headers["X-Api-Key"]; !ok || got.([]any)[0].(string) != testKey {
 		t.Fatalf("x-api-key missing: %v", headers)
 	}
-	for _, forbidden := range []string{"X-Opencode-Client", "X-Opencode-Request", "X-Opencode-Project", "User-Agent"} {
+	if got, ok := headers["User-Agent"].([]any); !ok || len(got) != 1 || got[0] != "cpa-opencode-go/"+pluginVersion {
+		t.Fatalf("User-Agent = %v, want cpa-opencode-go/%s", headers["User-Agent"], pluginVersion)
+	}
+	for _, forbidden := range []string{"X-Opencode-Client", "X-Opencode-Request", "X-Opencode-Project"} {
 		if _, ok := headers[forbidden]; ok {
 			t.Fatalf("forbidden header %q present: %v", forbidden, headers)
 		}

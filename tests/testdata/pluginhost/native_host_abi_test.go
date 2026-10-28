@@ -286,6 +286,11 @@ func TestOpenCodeNativeABI(t *testing.T) {
 	var observedMu sync.Mutex
 	var observed [][]byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Values("User-Agent"); len(got) != 1 || got[0] != "cpa-opencode-go/0.0.0-dev" {
+			t.Errorf("upstream User-Agent = %v, want cpa-opencode-go/0.0.0-dev", got)
+			http.Error(w, "missing plugin identity", http.StatusBadRequest)
+			return
+		}
 		if r.URL.Path == "/v1/models" {
 			if blockCatalog.Load() {
 				started <- "catalog"
