@@ -15,6 +15,9 @@ the changes below before upgrading.
 
 ## Fixes
 
+- Registration metadata now publishes `OpenCode Go` as the display name, so
+  management clients using `metadata.name` show the brand name. The plugin ID,
+  configuration key, provider ID, and model prefix are unchanged.
 - Default upstream paths now match the official Go and Go Plus gateway:
   `/openai/v1/chat/completions`, `/openai/v1/responses`, and
   `/anthropic/v1/messages`. Gemini and model catalog paths are unchanged.

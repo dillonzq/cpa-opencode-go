@@ -440,7 +440,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	if reg.SchemaVersion != pluginabi.SchemaVersion {
 		t.Fatalf("schema_version = %d, want %d", reg.SchemaVersion, pluginabi.SchemaVersion)
 	}
-	if reg.Metadata.Name != "cpa-opencode-go" || reg.Metadata.Version != pluginVersion ||
+	if reg.Metadata.Name != "OpenCode Go" || reg.Metadata.Version != pluginVersion ||
 		reg.Metadata.Author != "dillonzq" || reg.Metadata.GitHubRepository != "https://github.com/dillonzq/cpa-opencode-go" ||
 		len(reg.Metadata.ConfigFields) != 11 {
 		t.Fatalf("metadata wrong: %+v", reg.Metadata)
