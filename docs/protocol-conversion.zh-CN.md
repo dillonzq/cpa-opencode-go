@@ -2,7 +2,7 @@
 
 [English](protocol-conversion.md) · [返回 README](../README.zh-CN.md)
 
-请求、普通响应和流式响应使用固定版本的 [apix v0.1.0](https://github.com/dillonzq/apix/tree/v0.1.0)。支持 Chat Completions、Messages、Responses、Gemini GenerateContent 的十二个跨协议方向及同协议处理。详细字段映射和限制见[库的 LLM 协议说明](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/llm.zh-CN.md)和 [Gemini 协议说明](https://github.com/dillonzq/apix/blob/v0.1.0/docs/protocols/gemini.zh-CN.md)。本文补充插件的宿主和上游兼容行为。
+请求、普通响应和流式响应使用固定版本的 [apix v0.2.0](https://github.com/dillonzq/apix/tree/v0.2.0)。支持 Chat Completions、Messages、Responses、Gemini GenerateContent 的十二个跨协议方向及同协议处理。详细字段映射和限制见[库的 LLM 协议说明](https://github.com/dillonzq/apix/blob/v0.2.0/docs/protocols/llm.zh-CN.md)和 [Gemini 协议说明](https://github.com/dillonzq/apix/blob/v0.2.0/docs/protocols/gemini.zh-CN.md)。本文补充插件的宿主和上游兼容行为。
 
 ## 插件接入
 

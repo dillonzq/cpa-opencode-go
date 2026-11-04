@@ -8,6 +8,10 @@ the changes below before upgrading.
 
 ## Behavior changes
 
+- Upgrade the protocol translation library to apix v0.2.0. Edited JSON requests
+  and selected SSE payloads can now preserve untouched field order, whitespace,
+  and number spelling. JSON semantics and supported protocol directions are
+  unchanged; integrations comparing exact payload bytes should review fixtures.
 - Quota responses no longer include `subscription`. Previously every
   credential reported `subscription.plan` as `Go`, which mislabeled Go Plus;
   the usage API does not identify the tier. Dashboards that display
