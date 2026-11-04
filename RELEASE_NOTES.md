@@ -1,3 +1,32 @@
+# v0.4.0
+
+Minor release for **cpa-opencode-go**, based on v0.3.3 and requiring
+**CLIProxyAPI v8.0.0 or later**. Configuration, credential records, and existing
+`opencode-go/<model>` IDs remain compatible with v0.3.3.
+
+## Behavior changes
+
+- Upgrade the protocol translation library to apix v0.2.0, adding the indirect
+  dependency `github.com/MoeForge/moego v0.1.0-alpha.1`. Edited JSON requests
+  and selected SSE payloads can now preserve untouched field order, whitespace,
+  and number spelling. JSON semantics and supported protocol directions are
+  unchanged; integrations comparing exact payload bytes should review fixtures.
+
+## Fixes
+
+- Registration metadata now publishes `OpenCode Go` as the display name, so
+  management clients using `metadata.name` show the brand name. The plugin ID,
+  configuration key, provider ID, and model prefix are unchanged.
+
+## Installation and upgrade
+
+Download `cpa-opencode-go_0.4.0_<os>_<arch>.zip` for the **CPA host's operating
+system and architecture** and `checksums.txt` from this release. Verify the ZIP's
+SHA256, stop CPA, and back up its configuration, credential directory, and
+existing plugin library. Replace the library in
+`<cliproxyapi_root>/plugins/<os>/<arch>/`, retaining the included `LICENSE`.
+Restart CPA, verify `/v1/models` with a CPA client key, and make a request.
+
 # v0.3.3
 
 Patch release for **cpa-opencode-go**, based on v0.3.2 and requiring
@@ -8,10 +37,6 @@ the changes below before upgrading.
 
 ## Behavior changes
 
-- Upgrade the protocol translation library to apix v0.2.0. Edited JSON requests
-  and selected SSE payloads can now preserve untouched field order, whitespace,
-  and number spelling. JSON semantics and supported protocol directions are
-  unchanged; integrations comparing exact payload bytes should review fixtures.
 - Quota responses no longer include `subscription`. Previously every
   credential reported `subscription.plan` as `Go`, which mislabeled Go Plus;
   the usage API does not identify the tier. Dashboards that display
@@ -19,9 +44,6 @@ the changes below before upgrading.
 
 ## Fixes
 
-- Registration metadata now publishes `OpenCode Go` as the display name, so
-  management clients using `metadata.name` show the brand name. The plugin ID,
-  configuration key, provider ID, and model prefix are unchanged.
 - Default upstream paths now match the official Go and Go Plus gateway:
   `/openai/v1/chat/completions`, `/openai/v1/responses`, and
   `/anthropic/v1/messages`. Gemini and model catalog paths are unchanged.
