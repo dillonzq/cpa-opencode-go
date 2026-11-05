@@ -1,6 +1,33 @@
+# v0.4.1
+
+Patch release for **cpa-opencode-go**, based on v0.4.0 and requiring
+**CLIProxyAPI v8.0.0 or later**. Configuration, credential records, and existing
+`opencode-go/<model>` IDs remain compatible with v0.4.0.
+
+## New features
+
+- `models[].alias` replaces the upstream `name` in the published model ID,
+  following CPA's `name`/`alias` convention. The model prefix still applies,
+  and requests still send `name` upstream. CPA does not apply
+  `oauth-model-alias` to plugin API key credentials, so this field is the way
+  to rename plugin models, for example publishing `minimax-m3` as `MiniMax-M3`
+  to share one model pool with another provider. Once aliased, the original
+  public ID no longer routes; the bare upstream `name` still does. Aliases must
+  be unique without surrounding whitespace, and an alias that collides with
+  another model's ID excludes the later model with a diagnostic.
+
+## Installation and upgrade
+
+Download `cpa-opencode-go_0.4.1_<os>_<arch>.zip` for the **CPA host's operating
+system and architecture** and `checksums.txt` from this release. Verify the ZIP's
+SHA256, stop CPA, and back up its configuration, credential directory, and
+existing plugin library. Replace the library in
+`<cliproxyapi_root>/plugins/<os>/<arch>/`, retaining the included `LICENSE`.
+Restart CPA, verify `/v1/models` with a CPA client key, and make a request.
+
 # v0.4.0
 
-Minor release for **cpa-opencode-go**, based on v0.3.3 and requiring
+Patch release for **cpa-opencode-go**, based on v0.3.3 and requiring
 **CLIProxyAPI v8.0.0 or later**. Configuration, credential records, and existing
 `opencode-go/<model>` IDs remain compatible with v0.3.3.
 
