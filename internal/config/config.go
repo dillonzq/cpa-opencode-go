@@ -57,6 +57,9 @@ type Config struct {
 
 type ModelOverride struct {
 	Name string `yaml:"name"`
+	// Alias replaces the upstream name in the published model ID; the
+	// model prefix still applies. Requests still send Name upstream.
+	Alias string `yaml:"alias"`
 	// Protocols patches the built-in protocol set, keyed by protocol: an
 	// entry switches its protocol on unless Enabled is false, and a
 	// non-empty Endpoint overrides the global path.
@@ -213,11 +216,18 @@ func (c Config) validate() error {
 		return err
 	}
 	seenModels := map[string]bool{}
+	seenAliases := map[string]bool{}
 	for i, model := range c.Models {
 		if strings.TrimSpace(model.Name) == "" || seenModels[model.Name] {
 			return fmt.Errorf("models[%d].name: must be non-empty and unique", i)
 		}
 		seenModels[model.Name] = true
+		if model.Alias != "" {
+			if strings.TrimSpace(model.Alias) != model.Alias || seenAliases[model.Alias] {
+				return fmt.Errorf("models[%d].alias: must be unique without surrounding whitespace", i)
+			}
+			seenAliases[model.Alias] = true
+		}
 		if model.Context != nil && *model.Context < 0 || model.Output != nil && *model.Output < 0 {
 			return fmt.Errorf("models[%d]: token limits must be non-negative", i)
 		}

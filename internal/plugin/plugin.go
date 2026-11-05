@@ -216,7 +216,7 @@ type registrationResult struct {
 // through the registration metadata.
 func pluginConfigFields() []pluginapi.ConfigField {
 	return []pluginapi.ConfigField{
-		{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Model declarations and metadata overrides using CPA provider fields: name, display-name, max-context-length, input-modalities, output-modalities, thinking; plus description, max-tokens, and protocols (`chat-completions|messages|responses|gemini: {enabled, endpoint}`), which switches protocols on or off on top of the built-in set and overrides endpoints. New IDs use family routing or protocols."},
+		{Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "Model declarations and metadata overrides using CPA provider fields: name, alias (published model name; the prefix still applies), display-name, max-context-length, input-modalities, output-modalities, thinking; plus description, max-tokens, and protocols (`chat-completions|messages|responses|gemini: {enabled, endpoint}`), which switches protocols on or off on top of the built-in set and overrides endpoints. New IDs use family routing or protocols."},
 		{Name: "models-dev", Type: pluginapi.ConfigFieldTypeObject, Description: "Fallback metadata source (enabled, url, refresh-interval); priority: models > catalog > models.dev."},
 		{
 			Name:        "api-keys",

@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/dillonzq/cpa-opencode-go/internal/config"
@@ -115,5 +117,52 @@ func TestConfiguredModelFallbackWithFailedCatalog(t *testing.T) {
 	model := findModel(t, m.Models(), "glm-extra")
 	if !model.UserDefined || model.DisplayName != "Do not publish" || model.OutputLimit != 64000 || len(m.Models()) != 1 {
 		t.Fatalf("custom fallback/priority: %+v", model)
+	}
+}
+
+func TestModelAliasPublishesAliasAndSendsUpstreamName(t *testing.T) {
+	for _, c := range []struct {
+		prefix bool
+		want   string
+	}{{true, "opencode-go/MiniMax-M3"}, {false, "MiniMax-M3"}} {
+		cfg := testCfg()
+		cfg.ModelPrefix.Enabled = c.prefix
+		cfg.Models = []config.ModelOverride{{Name: "minimax-m3", Alias: "MiniMax-M3"}}
+		fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"minimax-m3"}]}`)}}
+		m := New(cfg, fc)
+		mustRefresh(t, m)
+		rec := findModel(t, m.Models(), "minimax-m3")
+		if rec.PublicID != c.want || rec.UserDefined {
+			t.Fatalf("prefix %v: record = %+v, want PublicID %q", c.prefix, rec, c.want)
+		}
+		for _, id := range []string{c.want, "minimax-m3"} {
+			if got, ok := m.Lookup(id); !ok || got.UpstreamID != "minimax-m3" {
+				t.Errorf("prefix %v: Lookup(%q) = %+v, %v", c.prefix, id, got, ok)
+			}
+		}
+		if _, ok := m.Lookup("opencode-go/minimax-m3"); ok {
+			t.Errorf("prefix %v: original public ID still routes after aliasing", c.prefix)
+		}
+	}
+}
+
+func TestModelAliasCollidingWithAnotherModelIsExcluded(t *testing.T) {
+	cfg := testCfg()
+	cfg.Models = []config.ModelOverride{{Name: "glm-5.2", Alias: "glm-5.3"}}
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-5.3"},{"id":"glm-5.2"}]}`)}}
+	m := New(cfg, fc)
+	mustRefresh(t, m)
+	var got []string
+	for _, rec := range m.Models() {
+		got = append(got, rec.PublicID)
+	}
+	if !slices.Equal(got, []string{"opencode-go/glm-5.3"}) {
+		t.Fatalf("models = %v", got)
+	}
+	if u := m.Unsupported(); len(u) != 1 || u[0].UpstreamID != "glm-5.2" || !strings.Contains(u[0].Reason, "collides") {
+		t.Fatalf("unsupported = %+v", u)
+	}
+	if rec, ok := m.Lookup("opencode-go/glm-5.3"); !ok || rec.UpstreamID != "glm-5.3" {
+		t.Fatalf("contested key resolves to %+v (%v)", rec, ok)
 	}
 }

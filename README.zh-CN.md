@@ -273,6 +273,8 @@ plugins:
 
       # 模型声明；protocols 开启或关闭协议并覆盖端点
       models:
+        - name: "minimax-m3"
+          alias: "MiniMax-M3"            # 对外发布为 "opencode-go/MiniMax-M3"，上游仍收到 "minimax-m3"
         - name: "custom-model"
           protocols:
             messages:                    # "chat-completions" | "messages" | "responses" | "gemini"
@@ -303,10 +305,24 @@ plugins:
 | `request-timeout` | `duration` | `5m` | 上游连接建立及完整流的总超时；到期取消宿主 operation，必须大于零。 |
 | `max-response-bytes` | `int64` | `67108864`（64 MiB） | 非流式响应体的字节数上限。 |
 | `allow-http` | `bool` | `false` | 允许 `base-url`、`catalog-url` 和 `models-dev.url` 使用 `http://`，用于本地测试。 |
-| `models` | `[]object` | `[]` | 按上游 `name` 覆盖已有模型元数据或声明新增模型，详见[模型目录能力扩展](#模型目录能力扩展)。`protocols` 开启或关闭模型的协议并覆盖端点，详见[协议配置](#协议配置)。 |
+| `models` | `[]object` | `[]` | 按上游 `name` 覆盖已有模型元数据或声明新增模型，详见[模型目录能力扩展](#模型目录能力扩展)。`alias` 替换对外发布 ID 中的 `name`，详见[模型别名](#模型别名)。`protocols` 开启或关闭模型的协议并覆盖端点，详见[协议配置](#协议配置)。 |
 | `models-dev.enabled` | `bool` | `true` | 启用 models.dev 元数据兜底，本身不会新增目录模型。 |
 | `models-dev.url` | `string` | `https://models.dev/api.json` | 元数据来源地址，采用与 `base-url` 相同的 URL 校验规则。 |
 | `models-dev.refresh-interval` | `duration` | `24h` | 成功获取元数据后的缓存间隔，最短 `1m`；失败时在后续目录刷新中重试。 |
+
+### 模型别名
+
+`models[].alias` 沿用 CPA 的 `name`/`alias` 约定，用别名替换对外发布 ID 中的上游 `name`。前缀仍会叠加，请求上游时仍发送 `name`。原对外 ID 不再可路由，裸上游 `name` 仍可使用。别名必须唯一且首尾不含空白；若别名与其他模型的 ID 冲突，按目录顺序排除后出现的模型，原因记录在诊断信息中。
+
+CPA 自身的 `oauth-model-alias` 不作用于插件的 API Key 凭据，因此给插件模型改名请使用此字段。例如把 `minimax-m3` 发布为 `MiniMax-M3`，与另一个发布同名模型的提供方合为同一个模型池：
+
+```yaml
+model-prefix:
+  enabled: false
+models:
+  - name: minimax-m3
+    alias: MiniMax-M3
+```
 
 ### 模型目录能力扩展
 

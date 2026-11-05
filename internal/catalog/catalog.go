@@ -394,7 +394,7 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			display = e.ID
 		}
 		rec := ModelRecord{
-			PublicID:     config.PublicID(m.cfg, e.ID),
+			PublicID:     config.PublicID(m.cfg, cmp.Or(overrides[e.ID].Alias, e.ID)),
 			UpstreamID:   e.ID,
 			DisplayName:  display,
 			Description:  modelmeta.Value(metadata.Description),
@@ -410,10 +410,9 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 		// record's UpstreamID (upstream "foo" and "opencode-go/foo" both
 		// claim index key "<prefix>/foo"); last-write-wins would silently
 		// misroute. First in catalog order wins (same dedup rule as
-		// duplicate IDs); the later record is excluded. Same-role clashes
-		// are impossible — distinct upstream IDs and an injective public
-		// mapping — so the slot owner always holds the key via its other
-		// role, and a record's own public==upstream rewrite is not a clash.
+		// duplicate IDs); the later record is excluded. An alias can also
+		// claim another record's public ID; the same first-wins rule
+		// applies. A record's own public==upstream rewrite is not a clash.
 		if other, ok := index[rec.PublicID]; ok {
 			reason := fmt.Sprintf("public id %q collides with upstream id %q", rec.PublicID, other.UpstreamID)
 			warns = append(warns, reason)

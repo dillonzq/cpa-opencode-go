@@ -269,6 +269,8 @@ plugins:
 
       # Model declarations; protocols switches protocols on or off and overrides endpoints
       models:
+        - name: "minimax-m3"
+          alias: "MiniMax-M3"            # published as "opencode-go/MiniMax-M3"; upstream still receives "minimax-m3"
         - name: "custom-model"
           protocols:
             messages:                    # "chat-completions" | "messages" | "responses" | "gemini"
@@ -299,10 +301,24 @@ plugins:
 | `request-timeout` | `duration` | `5m` | Deadline for upstream HTTP opening and the entire stream; expiry cancels the host operation. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` in `base-url`, `catalog-url`, and `models-dev.url` for local testing. |
-| `models` | `[]object` | `[]` | Override discovered model metadata or declare additional models by upstream `name`; see [Catalog capability extensions](#catalog-capability-extensions). `protocols` switches the model's protocols and overrides endpoints; see [Protocol configuration](#protocol-configuration). |
+| `models` | `[]object` | `[]` | Override discovered model metadata or declare additional models by upstream `name`; see [Catalog capability extensions](#catalog-capability-extensions). `alias` replaces `name` in the published model ID; see [Model aliases](#model-aliases). `protocols` switches the model's protocols and overrides endpoints; see [Protocol configuration](#protocol-configuration). |
 | `models-dev.enabled` | `bool` | `true` | Enable fallback metadata from models.dev; does not add models to the catalog. |
 | `models-dev.url` | `string` | `https://models.dev/api.json` | Metadata source URL; follows the same URL validation rules as `base-url`. |
 | `models-dev.refresh-interval` | `duration` | `24h` | Successful metadata cache interval, minimum `1m`; failed fetches retry on subsequent catalog refreshes. |
+
+### Model aliases
+
+`models[].alias` replaces the upstream `name` in the published model ID, following CPA's `name`/`alias` convention. The prefix still applies, and requests still send `name` upstream. The original public ID no longer routes; the bare upstream `name` still does. Aliases must be unique without surrounding whitespace. An alias that collides with another model's ID excludes the later model in catalog order, with the reason reported in diagnostics.
+
+CPA does not apply its own `oauth-model-alias` to plugin API key credentials, so use this field to rename plugin models. For example, to publish `minimax-m3` as `MiniMax-M3` so it shares one model pool with another provider that publishes that name:
+
+```yaml
+model-prefix:
+  enabled: false
+models:
+  - name: minimax-m3
+    alias: MiniMax-M3
+```
 
 ### Catalog capability extensions
 
