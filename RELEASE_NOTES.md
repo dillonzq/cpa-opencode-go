@@ -11,7 +11,8 @@ Patch release for **cpa-opencode-go**, based on v0.4.1 and requiring
   non-streaming request, and for a stream only the opening, until the upstream
   status arrives. Two new settings govern open streams:
   `stream-idle-timeout` (default `5m`) ends a stream that receives no chunk for
-  that long, restarting on every chunk; `max-stream-duration` (default `1h`)
+  that long, restarting on every chunk and excluding time spent delivering
+  chunks downstream; `max-stream-duration` (default `1h`)
   caps one stream's lifetime from the start of opening. Both must be positive.
   A `request-timeout` raised only to keep long streams alive can return to its
   default; set `max-stream-duration` instead if streams may last over an hour.

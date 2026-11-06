@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 
+	"github.com/dillonzq/cpa-opencode-go/internal/config"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 )
 
@@ -146,5 +148,76 @@ func TestStreamStopMessage(t *testing.T) {
 		if got := streamStopMessage(ctx); got != tc.want {
 			t.Errorf("cause %v: message = %q, want %q", tc.cause, got, tc.want)
 		}
+	}
+}
+
+func newTestLimits(idle time.Duration) (*streamLimits, context.Context) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	return startStreamLimits(cancel, config.Config{
+		RequestTimeout:    time.Hour,
+		StreamIdleTimeout: idle,
+		MaxStreamDuration: time.Hour,
+	}), ctx
+}
+
+func TestStreamLimitsLateOpenTimerIgnoredAfterOpen(t *testing.T) {
+	l, ctx := newTestLimits(time.Hour)
+	defer l.stop()
+	l.opened()
+	l.openExpired() // a callback already running when the stream opened
+	if err := context.Cause(ctx); err != nil {
+		t.Fatalf("open timer canceled an opened stream: %v", err)
+	}
+}
+
+func TestStreamLimitsIdleExcludesDownstreamDelivery(t *testing.T) {
+	l, ctx := newTestLimits(30 * time.Millisecond)
+	defer l.stop()
+	l.opened()
+	l.readStarted()
+	l.readDone(true)
+	time.Sleep(80 * time.Millisecond) // delivering the chunk downstream
+	if err := context.Cause(ctx); err != nil {
+		t.Fatalf("idle limit fired while no read was waiting: %v", err)
+	}
+	l.readStarted() // the chunk restarts the limit for this wait
+	l.idleExpired() // a stale callback must not cancel a fresh wait
+	if err := context.Cause(ctx); err != nil {
+		t.Fatalf("stale idle callback canceled a fresh wait: %v", err)
+	}
+	time.Sleep(80 * time.Millisecond)
+	if err := context.Cause(ctx); !errors.Is(err, errStreamIdleTimeout) {
+		t.Fatalf("cause = %v, want idle timeout", err)
+	}
+}
+
+func TestStreamLimitsEmptyReadKeepsIdleDeadline(t *testing.T) {
+	l, ctx := newTestLimits(60 * time.Millisecond)
+	defer l.stop()
+	l.opened()
+	deadline := time.Now().Add(time.Second)
+	for context.Cause(ctx) == nil && time.Now().Before(deadline) {
+		l.readStarted()
+		time.Sleep(10 * time.Millisecond)
+		l.readDone(false) // reads without data are not activity
+	}
+	if err := context.Cause(ctx); !errors.Is(err, errStreamIdleTimeout) {
+		t.Fatalf("cause = %v, want idle timeout", err)
+	}
+}
+
+func TestExecuteStreamSlowDownstreamIsNotUpstreamIdle(t *testing.T) {
+	// Each emit takes longer than stream-idle-timeout while the upstream
+	// always has the next chunk ready.
+	upstream := tickingUpstream(0, 4)
+	responder := func(method string, payload []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostStreamEmit {
+			time.Sleep(60 * time.Millisecond)
+		}
+		return upstream(method, payload)
+	}
+	_, closePayload := runLimitedStream(t, "stream-idle-timeout: 30ms\n", responder)
+	if strings.Contains(closePayload, `"error"`) {
+		t.Fatalf("slow downstream closed the stream with error: %s", closePayload)
 	}
 }

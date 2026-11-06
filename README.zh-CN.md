@@ -305,7 +305,7 @@ plugins:
 | `catalog.stale-while-unavailable` | `bool` | `true` | 刷新失败时，继续使用上次成功获取的模型目录。 |
 | `protocols.<协议>.endpoint` | `string` | 协议默认路径 | 所有模型在该协议上的端点路径，详见[协议配置](#协议配置)。 |
 | `request-timeout` | `duration` | `5m` | 完整非流式请求的超时，或流式请求建立连接（收到上游状态码前）的超时；不限制已建立的流。到期取消宿主 operation，必须大于零。 |
-| `stream-idle-timeout` | `duration` | `5m` | 流建立后两个上游数据块之间的最长静默，每收到一块重新计时；到期以错误结束流。必须大于零。 |
+| `stream-idle-timeout` | `duration` | `5m` | 流建立后两个上游数据块之间的最长静默，每收到一块重新计时，向下游投递数据块的耗时不计入；到期以错误结束流。必须大于零。 |
 | `max-stream-duration` | `duration` | `1h` | 单个流的最长时长，从开始建立算起，不论是否活跃。必须大于零。 |
 | `max-response-bytes` | `int64` | `67108864`（64 MiB） | 非流式响应体的字节数上限。 |
 | `allow-http` | `bool` | `false` | 允许 `base-url`、`catalog-url` 和 `models-dev.url` 使用 `http://`，用于本地测试。 |

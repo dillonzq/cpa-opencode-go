@@ -301,7 +301,7 @@ plugins:
 | `catalog.stale-while-unavailable` | `bool` | `true` | When `true`, serves the last valid catalog snapshot if an update fails. |
 | `protocols.<protocol>.endpoint` | `string` | Protocol default | Endpoint path for every model on that protocol; see [Protocol configuration](#protocol-configuration). |
 | `request-timeout` | `duration` | `5m` | Deadline for a whole non-streaming request, or for opening a stream (until the upstream status arrives). It does not limit an open stream. Expiry cancels the host operation. Must be positive. |
-| `stream-idle-timeout` | `duration` | `5m` | Maximum silence between upstream stream chunks, starting once the stream opens; each chunk restarts it. Expiry ends the stream with an error. Must be positive. |
+| `stream-idle-timeout` | `duration` | `5m` | Maximum silence between upstream stream chunks, starting once the stream opens; each chunk restarts it, and time spent delivering a chunk downstream does not count. Expiry ends the stream with an error. Must be positive. |
 | `max-stream-duration` | `duration` | `1h` | Maximum lifetime of one stream, counted from the start of opening, however active it is. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` in `base-url`, `catalog-url`, and `models-dev.url` for local testing. |
