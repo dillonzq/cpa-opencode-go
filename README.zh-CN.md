@@ -217,7 +217,7 @@ go build -tags debug -buildmode=c-shared -o plugins/darwin/arm64/cpa-opencode-go
 
 ## 配置
 
-在 CLIProxyAPI 的 `config.yaml` 中，通过 `plugins.configs.cpa-opencode-go` 配置插件。全局插件开关和此插件的开关都需设置为 `enabled: true`。
+在 CLIProxyAPI 的 `config.yaml` 中，通过 `plugins.configs.cpa-opencode-go` 配置插件。全局插件开关和此插件的开关都需设置为 `enabled: true`。未知配置项会被拒绝，拼错的键会直接加载失败，而不是静默回退到默认值。
 
 ### 最小配置
 

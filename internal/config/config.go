@@ -1,9 +1,11 @@
-// Package config loads and validates the opencode-go plugin configuration
-// per spec 04 (configuration) and spec 05 §2 (HTTPS/timeouts).
+// Package config loads and validates the opencode-go plugin configuration.
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net/url"
 	"os"
@@ -17,7 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Defaults (spec 04 §2/§4).
+// Defaults.
 const (
 	DefaultBaseURL          = "https://opencode.ai/inference/go"
 	DefaultModelPrefix      = "opencode-go"
@@ -97,8 +99,11 @@ type ModelsDev struct {
 
 // rawConfig mirrors the YAML shape; pointer fields distinguish "unset"
 // (apply default) from explicitly-set values including "" (validate as-is).
-// Unknown fields are ignored (host may pass extra keys).
+// Host-owned plugin controls are accepted alongside plugin settings.
 type rawConfig struct {
+	Enabled   *bool           `yaml:"enabled"`
+	Priority  int             `yaml:"priority"`
+	Store     map[string]any  `yaml:"store"`
 	Models    []ModelOverride `yaml:"models"`
 	ModelsDev struct {
 		Enabled         *bool   `yaml:"enabled"`
@@ -108,7 +113,7 @@ type rawConfig struct {
 	BaseURL          *string                     `yaml:"base-url"`
 	CatalogURL       *string                     `yaml:"catalog-url"`
 	ModelPrefix      rawPrefix                   `yaml:"model-prefix"`
-	APIKeys          []rawKey                    `yaml:"api-keys"`
+	APIKeys          []rawAPIKey                 `yaml:"api-keys"`
 	Catalog          rawCatalog                  `yaml:"catalog"`
 	Protocols        map[string]ProtocolOverride `yaml:"protocols"`
 	AllowHTTP        bool                        `yaml:"allow-http"`
@@ -116,6 +121,11 @@ type rawConfig struct {
 	StreamIdle       *string                     `yaml:"stream-idle-timeout"`
 	MaxStream        *string                     `yaml:"max-stream-duration"`
 	MaxResponseBytes *int64                      `yaml:"max-response-bytes"`
+	// Removed settings stay accepted and ignored so older configurations
+	// keep loading; release notes promise this.
+	Routing        any `yaml:"routing"`
+	ExcludedModels any `yaml:"excluded-models"`
+	RouteOverrides any `yaml:"route-overrides"`
 }
 
 type rawPrefix struct {
@@ -123,9 +133,11 @@ type rawPrefix struct {
 	Value   *string `yaml:"value"`
 }
 
-type rawKey struct {
+type rawAPIKey struct {
 	Name  string `yaml:"name"`
 	Value string `yaml:"value"`
+	// Priority was removed with the plugin scheduler; it is ignored.
+	Priority any `yaml:"priority"`
 }
 
 type rawCatalog struct {
@@ -137,21 +149,28 @@ var (
 	validProtocols = map[string]bool{"chat-completions": true, "messages": true, "responses": true, "gemini": true}
 )
 
-// Load decodes YAML, expands ${VAR} references in api-key values only,
-// applies defaults, and validates (spec 04 §6). Decode errors never echo
-// decoded node values — a malformed entry (e.g. a bare-scalar API key)
-// must not leak into the invalid_config envelope the host logs.
+// Load decodes YAML, expands ${VAR} references in api-keys[].value only,
+// applies defaults, and validates. Unknown settings are rejected. Decode
+// errors never echo decoded node values — a malformed entry (e.g. a
+// bare-scalar API key) must not leak into the invalid_config envelope the
+// host logs.
 func Load(yamlBytes []byte) (Config, error) {
 	var raw rawConfig
-	if err := yaml.Unmarshal(yamlBytes, &raw); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(yamlBytes))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&raw); err != nil && !errors.Is(err, io.EOF) {
 		if n := regexp.MustCompile(`line (\d+)`).FindStringSubmatch(err.Error()); n != nil {
 			return Config{}, fmt.Errorf("decode config: invalid YAML structure near line %s", n[1])
 		}
 		return Config{}, fmt.Errorf("decode config: invalid YAML structure")
 	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return Config{}, fmt.Errorf("decode config: expected one YAML document")
+	}
 	keys := make([]APIKey, len(raw.APIKeys))
 	for i, k := range raw.APIKeys {
-		keys[i] = APIKey{Value: os.ExpandEnv(k.Value), Name: strings.TrimSpace(k.Name)}
+		keys[i] = APIKey{Value: strings.TrimSpace(os.ExpandEnv(k.Value)), Name: strings.TrimSpace(k.Name)}
 	}
 	refreshInterval, err := parseDuration("catalog.refresh-interval", raw.Catalog.RefreshInterval, DefaultRefreshInterval)
 	if err != nil {
@@ -213,7 +232,7 @@ func normalizeBaseURL(raw string) string {
 	return strings.TrimSuffix(strings.TrimRight(raw, "/"), "/v1")
 }
 
-// PublicID returns the client-facing model ID (FR-003).
+// PublicID returns the client-facing model ID.
 func PublicID(c Config, upstreamID string) string {
 	if c.ModelPrefix.Enabled {
 		return c.ModelPrefix.Value + "/" + upstreamID
@@ -269,6 +288,9 @@ func (c Config) validate() error {
 	for i, k := range c.APIKeys {
 		if k.Value == "" {
 			return fmt.Errorf("api-keys[%d].value: expanded to empty", i)
+		}
+		if strings.ContainsAny(k.Value, "\r\n") {
+			return fmt.Errorf("api-keys[%d]: headers must not contain newlines", i)
 		}
 	}
 	seen := make(map[string]bool, len(c.APIKeys))
@@ -330,7 +352,7 @@ func validateURL(name, raw string, allowHTTP bool) error {
 	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
 		return fmt.Errorf("%s: must not contain query, fragment, or userinfo", name)
 	}
-	// Scheme allowlist (spec 05 §2): https always; http only behind
+	// Scheme allowlist: https always; http only behind
 	// allow-http; anything else (ftp://, file://, custom schemes) is
 	// rejected at load instead of failing at transport time.
 	switch u.Scheme {

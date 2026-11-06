@@ -17,7 +17,7 @@ func requireErrContains(t *testing.T, err error, want string) {
 	}
 }
 
-// withKey satisfies the at-least-one-key rule (spec 04 §3) for fixtures
+// withKey satisfies the at-least-one-key rule for fixtures
 // that target a later validation check.
 const withKey = "api-keys:\n  - value: sk-dummy\n"
 
@@ -120,7 +120,9 @@ func TestLoadFullConfigHonorsEveryField(t *testing.T) {
 	t.Setenv("TEST_OG_KEY", "test-secret-value")
 	doc := `
 enabled: true
-future-key: 1
+priority: 3
+store:
+  source: local
 base-url: http://localhost:9090/api
 catalog-url: https://example.com/models
 model-prefix:
@@ -493,5 +495,30 @@ func TestValidateURLRejectsQueryFragmentUserinfo(t *testing.T) {
 				t.Errorf("error echoes credentials: %q", err.Error())
 			}
 		})
+	}
+}
+
+func TestLoadRejectsUnknownSettings(t *testing.T) {
+	for name, doc := range map[string]string{
+		"top level":  withKey + "request-timout: 5m\n",
+		"nested":     withKey + "catalog:\n  refresh: 1m\n",
+		"api key":    "api-keys:\n  - value: sk-dummy\n    label: x\n",
+		"model":      withKey + "models:\n  - name: m\n    max-token: 1\n",
+		"second doc": withKey + "---\n" + withKey,
+	} {
+		if _, err := Load([]byte(doc)); err == nil {
+			t.Errorf("%s: Load accepted %q", name, doc)
+		}
+	}
+}
+
+func TestLoadTrimsKeyAndRejectsNewlines(t *testing.T) {
+	c, err := Load([]byte("api-keys:\n  - value: '  sk-dummy  '\n"))
+	if err != nil || c.APIKeys[0].Value != "sk-dummy" {
+		t.Fatalf("Load = %+v, %v; want trimmed key", c.APIKeys, err)
+	}
+	t.Setenv("TEST_OG_SPLIT_KEY", "sk-a\nsk-b")
+	if _, err := Load([]byte("api-keys:\n  - value: ${TEST_OG_SPLIT_KEY}\n")); err == nil || !strings.Contains(err.Error(), "newlines") {
+		t.Fatalf("Load error = %v, want newline rejection", err)
 	}
 }

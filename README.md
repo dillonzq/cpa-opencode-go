@@ -213,7 +213,7 @@ If the old plugin was installed through Plugin Store, its configuration may cont
 
 ## Configuration
 
-Configure the plugin in your CLIProxyAPI `config.yaml` under `plugins.configs.cpa-opencode-go`. Both the global plugin switch and this plugin's switch must be enabled.
+Configure the plugin in your CLIProxyAPI `config.yaml` under `plugins.configs.cpa-opencode-go`. Both the global plugin switch and this plugin's switch must be enabled. Unknown settings are rejected, so a misspelled key fails to load instead of falling back to its default.
 
 ### Minimal configuration
 
