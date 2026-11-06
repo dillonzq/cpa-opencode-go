@@ -251,7 +251,17 @@ func pluginConfigFields() []pluginapi.ConfigField {
 		{
 			Name:        "request-timeout",
 			Type:        pluginapi.ConfigFieldTypeString,
-			Description: "Upstream HTTP request timeout (default: 5m).",
+			Description: "Upstream request timeout: a whole non-streaming request, or opening a stream (default: 5m).",
+		},
+		{
+			Name:        "stream-idle-timeout",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "Max silence between upstream stream chunks; each chunk restarts it (default: 5m).",
+		},
+		{
+			Name:        "max-stream-duration",
+			Type:        pluginapi.ConfigFieldTypeString,
+			Description: "Max lifetime of one stream, opening included (default: 1h).",
 		},
 		{
 			Name:        "max-response-bytes",

@@ -9,9 +9,12 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -250,11 +253,16 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	}
 	url := res.route.URL(res.cfg.BaseURL, res.rec.UpstreamID, true)
 	debugTrace("executor sending stream url=%s body_len=%d", url, len(upstreamBody))
-	ctx, cancel := context.WithTimeout(withHostCallbackScope(m.workContext(), req.HostCallbackID), res.cfg.RequestTimeout)
+	// The context passed to DoStream owns the host HTTP operation for the
+	// whole stream, so it cannot carry the opening deadline: each limit
+	// cancels it with its own cause instead.
+	ctx, cancel := context.WithCancelCause(withHostCallbackScope(m.workContext(), req.HostCallbackID))
+	limits := startStreamLimits(cancel, res.cfg)
 	owned := false
 	defer func() {
 		if !owned {
-			cancel()
+			limits.stop()
+			cancel(nil)
 		}
 	}()
 	st, _, id, err := m.bridge.DoStream(ctx, pluginapi.HTTPRequest{
@@ -265,6 +273,9 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	})
 	debugTrace("executor stream DoStream status=%d upstreamID=%s err=%v", st, id, err)
 	if err != nil {
+		if cause := context.Cause(ctx); errors.Is(cause, errStreamOpenTimeout) || errors.Is(cause, errMaxStreamDuration) {
+			err = fmt.Errorf("%w: %w", cause, err)
+		}
 		return classEnvelope(errclass.FromNetwork(err)), nil
 	}
 	if st >= 400 {
@@ -295,18 +306,90 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 	if m.bridge != nil {
 		m.bridge.inFlight.Add(1)
 	}
+	limits.opened()
 	go func() {
 		defer m.work.Done()
-		defer cancel()
+		defer cancel(nil)
+		defer limits.stop()
 		if m.bridge != nil {
 			defer m.bridge.inFlight.Done()
 		}
-		m.pumpStreamContext(ctx, downID, id, res, conv)
+		m.pumpStreamContext(ctx, downID, id, res, conv, limits.touch)
 	}()
 	return okEnvelope(struct{}{}), nil
 }
 
-func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID string, res *resolvedExecution, conv streamConverter) {
+var (
+	errStreamOpenTimeout = errors.New("stream did not open within request-timeout")
+	errStreamIdleTimeout = errors.New("stream exceeded stream-idle-timeout")
+	errMaxStreamDuration = errors.New("stream exceeded max-stream-duration")
+)
+
+// streamLimits cancels a stream's context with the cause of the limit it
+// hit: request-timeout until the upstream stream opens, then
+// stream-idle-timeout between chunks, and max-stream-duration throughout.
+type streamLimits struct {
+	cancel  context.CancelCauseFunc
+	idleFor time.Duration
+	open    *time.Timer
+	ceiling *time.Timer
+
+	mu      sync.Mutex
+	idle    *time.Timer
+	stopped bool
+}
+
+func startStreamLimits(cancel context.CancelCauseFunc, cfg config.Config) *streamLimits {
+	return &streamLimits{
+		cancel:  cancel,
+		idleFor: cfg.StreamIdleTimeout,
+		open:    time.AfterFunc(cfg.RequestTimeout, func() { cancel(errStreamOpenTimeout) }),
+		ceiling: time.AfterFunc(cfg.MaxStreamDuration, func() { cancel(errMaxStreamDuration) }),
+	}
+}
+
+// opened ends the opening phase and starts the idle limit.
+func (l *streamLimits) opened() {
+	l.open.Stop()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.stopped {
+		l.idle = time.AfterFunc(l.idleFor, func() { l.cancel(errStreamIdleTimeout) })
+	}
+}
+
+// touch records upstream activity, restarting the idle limit.
+func (l *streamLimits) touch() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.idle != nil && !l.stopped {
+		l.idle.Reset(l.idleFor)
+	}
+}
+
+func (l *streamLimits) stop() {
+	l.open.Stop()
+	l.ceiling.Stop()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stopped = true
+	if l.idle != nil {
+		l.idle.Stop()
+	}
+}
+
+// streamStopMessage is the downstream error for a stream whose context ended.
+func streamStopMessage(ctx context.Context) string {
+	cause := context.Cause(ctx)
+	for _, limit := range []error{errStreamOpenTimeout, errStreamIdleTimeout, errMaxStreamDuration} {
+		if errors.Is(cause, limit) {
+			return limit.Error()
+		}
+	}
+	return "stream canceled"
+}
+
+func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID string, res *resolvedExecution, conv streamConverter, touch func()) {
 	var closeOnce sync.Once
 	closeStreams := func(downErrMsg string) {
 		closeOnce.Do(func() {
@@ -322,7 +405,7 @@ func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID stri
 		defer close(watchExited)
 		select {
 		case <-ctx.Done():
-			closeStreams("stream canceled or exceeded request-timeout")
+			closeStreams(streamStopMessage(ctx))
 		case <-watchDone:
 		}
 	}()
@@ -338,7 +421,7 @@ func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID stri
 		debugTrace("executor stream read chunk_len=%d closed=%t readErrMsg=%q err=%v", len(payload), closed, readErrMsg, err)
 		upstreamClosed = closed
 		if ctx.Err() != nil {
-			closeStreams("stream canceled or exceeded request-timeout")
+			closeStreams(streamStopMessage(ctx))
 			return
 		}
 		if err != nil {
@@ -348,6 +431,9 @@ func (m *Manager) pumpStreamContext(ctx context.Context, downID, upstreamID stri
 		if readErrMsg != "" {
 			closeStreams(errclass.Redact(readErrMsg))
 			return
+		}
+		if len(payload) > 0 && touch != nil {
+			touch()
 		}
 		total += int64(len(payload))
 		if total > res.cfg.MaxResponseBytes {
