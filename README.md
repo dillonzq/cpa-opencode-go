@@ -145,7 +145,7 @@ A request uses the model's endpoint, then the top-level endpoint, then the defau
 - Cross-protocol regular and streaming responses preserve visible reasoning as `reasoning_content`, `thinking`, or Responses reasoning content and display summaries. See the [protocol conversion guide](docs/protocol-conversion.md) for mappings and fields that are omitted.
 - Execute CLIProxyAPI's effective `Payload` in `SourceFormat`, including interceptor changes. Only omitted/null payloads fall back to `OriginalRequest`; an explicit empty payload is validated as empty input; `Format` selects the output protocol.
 - Honor CLIProxyAPI model-name thinking suffixes (`opencode-go/glm-5.2(high)`): the suffix is stripped for catalog routing and its reasoning control replaces the body's own control with CPA's suffix priority — including a numeric value, which maps to a level by fixed thresholds. Unrecognized values strip the suffix only, matching CPA. See the [protocol conversion guide](docs/protocol-conversion.md) for the per-protocol mapping and known limitations.
-- Each upstream HTTP call owns a host operation and its request callback scope. Client disconnection, scope closure, `request-timeout`, and stopped catalog refreshes cancel actual HTTP work. The timeout covers stream opening and consumption together.
+- Each upstream HTTP call owns a host operation and its request callback scope. Client disconnection, scope closure, the timeouts below, and stopped catalog refreshes cancel actual HTTP work. `request-timeout` covers a whole non-streaming request but only the opening of a stream. An open stream is ended when no chunk arrives for `stream-idle-timeout`, or when it reaches `max-stream-duration`, which counts from the start of opening; a stream that keeps receiving data is not cut off by `request-timeout`.
 - `plugin.quiesce` rejects new work, cancels active tasks, and drains callbacks. Shutdown waits for every callback to exit before the shared library can unload; a host callback that never returns can therefore delay shutdown indefinitely.
 - EOF before a protocol terminal state reports a stream error instead of success, including partial tool arguments. A known `finish_reason`/`stop_reason` may still end without `[DONE]`/`message_stop`; final SSE data without a trailing separator is processed, and incomplete terminal payloads report an error. When a Messages `message_stop` event is present, its payload must include `type: message_stop`; Responses requires the matching event type and a response with a nonempty `id`, `object: response`, matching terminal `status`, and an `output` array.
 - Session identity uses `canonical_session_id`, then explicit session headers, then the initial user content of the effective input. Existing text/image/tool-result hashes stay compatible. Files, image file references, and unknown native content use stable JSON hashing, without translation validation or content logging. An interceptor changing the initial user content also changes the fallback hash; explicit identity takes precedence. See [session ID compatibility](docs/session-id.md) for header precedence, hashing rules, and limitations.
@@ -281,7 +281,9 @@ plugins:
               enabled: false             # switches off a default protocol
 
       # Execution settings
-      request-timeout: "5m"              # upstream request timeout (default: "5m")
+      request-timeout: "5m"              # non-streaming request, or stream opening (default: "5m")
+      stream-idle-timeout: "5m"          # max silence between stream chunks; each chunk restarts it (default: "5m")
+      max-stream-duration: "1h"          # max lifetime of one stream (default: "1h")
       max-response-bytes: 67108864       # max non-streaming response body size in bytes (default: 64 MiB)
       allow-http: false                  # allow http:// scheme for local mock/testing (default: false)
 ```
@@ -298,7 +300,9 @@ plugins:
 | `catalog.refresh-interval` | `duration` | `15m` | Interval between catalog polling refreshes (e.g. `15m`, `1h`). Minimum is `1m`. |
 | `catalog.stale-while-unavailable` | `bool` | `true` | When `true`, serves the last valid catalog snapshot if an update fails. |
 | `protocols.<protocol>.endpoint` | `string` | Protocol default | Endpoint path for every model on that protocol; see [Protocol configuration](#protocol-configuration). |
-| `request-timeout` | `duration` | `5m` | Deadline for upstream HTTP opening and the entire stream; expiry cancels the host operation. Must be positive. |
+| `request-timeout` | `duration` | `5m` | Deadline for a whole non-streaming request, or for opening a stream (until the upstream status arrives). It does not limit an open stream. Expiry cancels the host operation. Must be positive. |
+| `stream-idle-timeout` | `duration` | `5m` | Maximum silence between upstream stream chunks, starting once the stream opens; each chunk restarts it, and time spent delivering a chunk downstream does not count. Expiry ends the stream with an error. Must be positive. |
+| `max-stream-duration` | `duration` | `1h` | Maximum lifetime of one stream, counted from the start of opening, however active it is. Must be positive. |
 | `max-response-bytes` | `int64` | `67108864` (64 MiB) | Maximum non-streaming response body size in bytes. |
 | `allow-http` | `bool` | `false` | When `true`, permits `http://` in `base-url`, `catalog-url`, and `models-dev.url` for local testing. |
 | `models` | `[]object` | `[]` | Override discovered model metadata or declare additional models by upstream `name`; see [Catalog capability extensions](#catalog-capability-extensions). `alias` replaces `name` in the published model ID; see [Model aliases](#model-aliases). `protocols` switches the model's protocols and overrides endpoints; see [Protocol configuration](#protocol-configuration). |

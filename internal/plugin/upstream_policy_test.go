@@ -141,7 +141,7 @@ func TestPumpEmitsEventsBeforeConversionError(t *testing.T) {
 		t.Run(fmt.Sprint(finish), func(t *testing.T) {
 			f := &fakeCaller{responder: streamResponder(streamScript{frames: []string{"payload"}})}
 			m := NewManager(NewHostBridge(f.call))
-			m.pumpStreamContext(context.Background(), "down", "up", &resolvedExecution{cfg: config.Config{MaxResponseBytes: 1024}}, errorTailConverter{finish: finish})
+			m.pumpStreamContext(context.Background(), "down", "up", &resolvedExecution{cfg: config.Config{MaxResponseBytes: 1024}}, errorTailConverter{finish: finish}, nil)
 			emits := f.callsOf(pluginabi.MethodHostStreamEmit)
 			if len(emits) != 1 {
 				t.Fatalf("events discarded: %+v", emits)

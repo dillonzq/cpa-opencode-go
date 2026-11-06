@@ -442,7 +442,7 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	}
 	if reg.Metadata.Name != "OpenCode Go" || reg.Metadata.Version != pluginVersion ||
 		reg.Metadata.Author != "dillonzq" || reg.Metadata.GitHubRepository != "https://github.com/dillonzq/cpa-opencode-go" ||
-		len(reg.Metadata.ConfigFields) != 11 {
+		len(reg.Metadata.ConfigFields) != 13 {
 		t.Fatalf("metadata wrong: %+v", reg.Metadata)
 	}
 	if !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider {
@@ -514,6 +514,8 @@ func TestRegistrationConfigFields(t *testing.T) {
 		{"catalog", pluginapi.ConfigFieldTypeObject},
 		{"protocols", pluginapi.ConfigFieldTypeObject},
 		{"request-timeout", pluginapi.ConfigFieldTypeString},
+		{"stream-idle-timeout", pluginapi.ConfigFieldTypeString},
+		{"max-stream-duration", pluginapi.ConfigFieldTypeString},
 		{"max-response-bytes", pluginapi.ConfigFieldTypeInteger},
 		{"allow-http", pluginapi.ConfigFieldTypeBoolean},
 	}

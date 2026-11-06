@@ -1,3 +1,41 @@
+# v0.4.2
+
+Patch release for **cpa-opencode-go**, based on v0.4.1 and requiring
+**CLIProxyAPI v8.0.0 or later**. Configuration, credential records, and existing
+`opencode-go/<model>` IDs remain compatible with v0.4.1. Users who raised
+`request-timeout` to keep long streams alive should review the changes below.
+
+## Behavior changes
+
+- `request-timeout` no longer limits an open stream. It covers a whole
+  non-streaming request, and for a stream only the opening, until the upstream
+  status arrives. Two new settings govern open streams:
+  `stream-idle-timeout` (default `5m`) ends a stream that receives no chunk for
+  that long, restarting on every chunk and excluding time spent delivering
+  chunks downstream; `max-stream-duration` (default `1h`)
+  caps one stream's lifetime from the start of opening. Both must be positive.
+  A `request-timeout` raised only to keep long streams alive can return to its
+  default; set `max-stream-duration` instead if streams may last over an hour.
+
+## Fixes
+
+- Long but active streams, such as large outputs or long reasoning, are no
+  longer cut off after `request-timeout` (default `5m`) while the upstream is
+  still sending data.
+- A stream ended by a limit now reports which one it hit:
+  `stream did not open within request-timeout`,
+  `stream exceeded stream-idle-timeout`, or
+  `stream exceeded max-stream-duration`.
+
+## Installation and upgrade
+
+Download `cpa-opencode-go_0.4.2_<os>_<arch>.zip` for the **CPA host's operating
+system and architecture** and `checksums.txt` from this release. Verify the ZIP's
+SHA256, stop CPA, and back up its configuration, credential directory, and
+existing plugin library. Replace the library in
+`<cliproxyapi_root>/plugins/<os>/<arch>/`, retaining the included `LICENSE`.
+Restart CPA, verify `/v1/models` with a CPA client key, and make a request.
+
 # v0.4.1
 
 Patch release for **cpa-opencode-go**, based on v0.4.0 and requiring

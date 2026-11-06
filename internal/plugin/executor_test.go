@@ -1038,8 +1038,8 @@ func TestExecuteStreamExceedsMaxResponseBytes(t *testing.T) {
 
 func TestExecuteStreamWatchdogClosesIdleUpstream(t *testing.T) {
 	// F6: the wire format has no deadline field, so an idle upstream would
-	// block stream_read forever; the request-timeout watchdog must close the
-	// upstream (unblocking the read) and fail with a timeout-class error.
+	// block stream_read forever; the stream-idle-timeout watchdog must close
+	// the upstream (unblocking the read) and fail with a timeout-class error.
 	f := &fakeCaller{}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
@@ -1061,7 +1061,7 @@ func TestExecuteStreamWatchdogClosesIdleUpstream(t *testing.T) {
 		}
 	})
 	if _, err := m.HandleCall("plugin.register",
-		lifecycleRequestBody(testValidYAML+"request-timeout: 50ms\n")); err != nil {
+		lifecycleRequestBody(testValidYAML+"stream-idle-timeout: 50ms\n")); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	resp, err := m.HandleCall("executor.execute_stream",
@@ -1079,8 +1079,8 @@ func TestExecuteStreamWatchdogClosesIdleUpstream(t *testing.T) {
 		t.Fatalf("watchdog must close up-idle first, closes = %v", upCloses)
 	}
 	downCloses := f.callsOf(pluginabi.MethodHostStreamClose)
-	if len(downCloses) != 1 || !strings.Contains(string(downCloses[0].payload), `"error"`) {
-		t.Fatalf("downstream must close with error: %v", downCloses)
+	if len(downCloses) != 1 || !strings.Contains(string(downCloses[0].payload), "stream exceeded stream-idle-timeout") {
+		t.Fatalf("downstream must close with idle error: %v", downCloses)
 	}
 }
 

@@ -147,7 +147,7 @@ models:
 - 跨协议普通和流式响应保留可读推理，映射为 `reasoning_content`、`thinking` 或 Responses reasoning content 与展示 summary；其他字段的映射与丢弃详见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
 - 按 `SourceFormat` 执行 CLIProxyAPI 的有效 `Payload`，保留拦截器修改。只有缺省或 null Payload 的旧调用才回退到 `OriginalRequest`；显式空 Payload 按空输入校验；`Format` 决定输出协议。
 - 支持 CLIProxyAPI 的模型名思考后缀（`opencode-go/glm-5.2(high)`）：后缀只用于选择推理强度，不参与目录路由，并按 CPA 的后缀优先级取代请求体自带参数；数字值按固定阈值映射为档位。无法识别的值只剥离后缀，与 CPA 行为一致。各协议字段映射与已知限制见[协议转换说明](docs/protocol-conversion.zh-CN.md)。
-- 每次上游 HTTP 调用独立持有宿主 operation 与请求 callback scope。客户端断开、scope 结束、`request-timeout` 和目录刷新停止会取消实际 HTTP；流式超时覆盖建立连接与消费流的总时长。
+- 每次上游 HTTP 调用独立持有宿主 operation 与请求 callback scope。客户端断开、scope 结束、下列超时和目录刷新停止会取消实际 HTTP。`request-timeout` 覆盖完整的非流式请求，对流式请求只覆盖建立连接；流建立后，连续 `stream-idle-timeout` 未收到数据块，或从开始建立算起达到 `max-stream-duration`，流会被结束。持续收到数据的流不会因 `request-timeout` 被切断。
 - `plugin.quiesce` 拒绝新工作、取消活动任务并等待回调退出。Shutdown 等待所有回调结束后才允许卸载动态库，因此永不返回的宿主回调会一直延迟关闭。
 - 流在协议终止状态前 EOF 会报告错误，不会把部分文本或工具参数伪造成成功。已观察到 `finish_reason`/`stop_reason` 后仍兼容缺失 `[DONE]`/`message_stop`；EOF 时会处理没有末尾分隔符的最后一条 SSE 数据；终止事件缺少完整数据时报告错误。收到 Messages `message_stop` 事件时，其 payload 必须包含 `type: message_stop`；Responses 要求事件类型匹配，嵌套响应具备非空 `id`、`object: response`、匹配的终止 `status` 和 `output` 数组。
 - 会话标识依次采用 `canonical_session_id`、显式会话 header、有效输入中的初始用户内容。已有文本、图片和工具结果的哈希保持兼容；文件、图像文件引用与未知原生内容采用稳定 JSON 哈希，不参与转换校验，也不记录内容。拦截器改变初始用户内容时，fallback 哈希随之改变；显式标识仍优先。header 优先级、哈希规则与限制见 [session ID 兼容说明](docs/session-id.zh-CN.md)。
@@ -285,7 +285,9 @@ plugins:
               enabled: false             # 关闭一个默认开启的协议
 
       # 请求执行设置
-      request-timeout: "5m"              # 上游请求超时（默认："5m"）
+      request-timeout: "5m"              # 非流式请求或流建立的超时（默认："5m"）
+      stream-idle-timeout: "5m"          # 流式数据块之间的最长静默，每收到一块重新计时（默认："5m"）
+      max-stream-duration: "1h"          # 单个流的最长时长（默认："1h"）
       max-response-bytes: 67108864       # 非流式响应体的字节数上限（默认：64 MiB）
       allow-http: false                  # 允许本地模拟或测试使用 http://（默认：false）
 ```
@@ -302,7 +304,9 @@ plugins:
 | `catalog.refresh-interval` | `duration` | `15m` | 模型目录刷新间隔，例如 `15m`、`1h`，最短为 `1m`。 |
 | `catalog.stale-while-unavailable` | `bool` | `true` | 刷新失败时，继续使用上次成功获取的模型目录。 |
 | `protocols.<协议>.endpoint` | `string` | 协议默认路径 | 所有模型在该协议上的端点路径，详见[协议配置](#协议配置)。 |
-| `request-timeout` | `duration` | `5m` | 上游连接建立及完整流的总超时；到期取消宿主 operation，必须大于零。 |
+| `request-timeout` | `duration` | `5m` | 完整非流式请求的超时，或流式请求建立连接（收到上游状态码前）的超时；不限制已建立的流。到期取消宿主 operation，必须大于零。 |
+| `stream-idle-timeout` | `duration` | `5m` | 流建立后两个上游数据块之间的最长静默，每收到一块重新计时，向下游投递数据块的耗时不计入；到期以错误结束流。必须大于零。 |
+| `max-stream-duration` | `duration` | `1h` | 单个流的最长时长，从开始建立算起，不论是否活跃。必须大于零。 |
 | `max-response-bytes` | `int64` | `67108864`（64 MiB） | 非流式响应体的字节数上限。 |
 | `allow-http` | `bool` | `false` | 允许 `base-url`、`catalog-url` 和 `models-dev.url` 使用 `http://`，用于本地测试。 |
 | `models` | `[]object` | `[]` | 按上游 `name` 覆盖已有模型元数据或声明新增模型，详见[模型目录能力扩展](#模型目录能力扩展)。`alias` 替换对外发布 ID 中的 `name`，详见[模型别名](#模型别名)。`protocols` 开启或关闭模型的协议并覆盖端点，详见[协议配置](#协议配置)。 |

@@ -105,6 +105,12 @@ func TestLoadMinimalAppliesAllDefaults(t *testing.T) {
 	if c.RequestTimeout != 5*time.Minute {
 		t.Errorf("RequestTimeout = %v", c.RequestTimeout)
 	}
+	if c.StreamIdleTimeout != 5*time.Minute {
+		t.Errorf("StreamIdleTimeout = %v", c.StreamIdleTimeout)
+	}
+	if c.MaxStreamDuration != time.Hour {
+		t.Errorf("MaxStreamDuration = %v", c.MaxStreamDuration)
+	}
 	if c.MaxResponseBytes != 67108864 {
 		t.Errorf("MaxResponseBytes = %d", c.MaxResponseBytes)
 	}
@@ -142,6 +148,8 @@ models:
         enabled: false
 allow-http: true
 request-timeout: 5m
+stream-idle-timeout: 90s
+max-stream-duration: 2h
 max-response-bytes: 1024
 `
 	c, err := Load([]byte(doc))
@@ -185,6 +193,12 @@ max-response-bytes: 1024
 	}
 	if c.RequestTimeout != 5*time.Minute {
 		t.Errorf("RequestTimeout = %v", c.RequestTimeout)
+	}
+	if c.StreamIdleTimeout != 90*time.Second {
+		t.Errorf("StreamIdleTimeout = %v", c.StreamIdleTimeout)
+	}
+	if c.MaxStreamDuration != 2*time.Hour {
+		t.Errorf("MaxStreamDuration = %v", c.MaxStreamDuration)
 	}
 	if c.MaxResponseBytes != 1024 {
 		t.Errorf("MaxResponseBytes = %d", c.MaxResponseBytes)
@@ -382,6 +396,10 @@ func TestLoadRejections(t *testing.T) {
 		{"request-timeout unparsable", "request-timeout: bogus\n", "request-timeout: invalid duration"},
 		{"request-timeout explicitly empty", `request-timeout: ""`, "request-timeout: invalid duration"},
 		{"request-timeout zero rejected", "request-timeout: 0s\n" + withKey, "request-timeout: must be positive"},
+		{"stream-idle-timeout unparsable", "stream-idle-timeout: bogus\n", "stream-idle-timeout: invalid duration"},
+		{"stream-idle-timeout zero rejected", "stream-idle-timeout: 0s\n" + withKey, "stream-idle-timeout: must be positive"},
+		{"max-stream-duration unparsable", "max-stream-duration: 5\n", "max-stream-duration: invalid duration"},
+		{"max-stream-duration negative rejected", "max-stream-duration: -1m\n" + withKey, "max-stream-duration: must be positive"},
 		{"userinfo credentials never echoed", "base-url: https://user:sekret@/v1", "base-url: invalid URL https://"},
 		{"max-response-bytes zero rejected", "max-response-bytes: 0\n" + withKey, "max-response-bytes: must be positive"},
 		{"max-response-bytes negative rejected", "max-response-bytes: -5\n" + withKey, "max-response-bytes: must be positive"},
