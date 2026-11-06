@@ -2,7 +2,8 @@
 
 Patch release for **cpa-opencode-go**, based on v0.4.1 and requiring
 **CLIProxyAPI v8.0.0 or later**. Configuration, credential records, and existing
-`opencode-go/<model>` IDs remain compatible with v0.4.1. Users who raised
+`opencode-go/<model>` IDs remain compatible with v0.4.1, except that unknown
+settings are now rejected. Users who raised
 `request-timeout` to keep long streams alive should review the changes below.
 
 ## Behavior changes
@@ -16,6 +17,13 @@ Patch release for **cpa-opencode-go**, based on v0.4.1 and requiring
   caps one stream's lifetime from the start of opening. Both must be positive.
   A `request-timeout` raised only to keep long streams alive can return to its
   default; set `max-stream-duration` instead if streams may last over an hour.
+- Unknown settings now fail with `invalid_config` instead of being ignored, so
+  a misspelled key such as `request-timout` no longer falls back silently to its
+  default. CPA's `enabled`, `priority`, and `store` keys and the removed
+  `routing`, `excluded-models`, `route-overrides`, and `api-keys[].priority`
+  settings are still accepted and ignored. A configuration with more than one
+  YAML document is rejected, `api-keys[].value` is trimmed, and a key containing
+  a line break is rejected.
 
 ## Fixes
 
