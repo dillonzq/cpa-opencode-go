@@ -59,7 +59,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 ## 功能
 
 - **统一服务商命名空间**：默认使用 `opencode-go` 模型前缀，例如 `opencode-go/glm-5.2`、`opencode-go/qwen3.7-max` 和 `opencode-go/gpt-5.6-luna`。
-- **转换实现**：固定使用 [apix v0.2.0](https://github.com/dillonzq/apix/tree/v0.2.0)，支持推理历史回放、媒体输入、本地 shell 适配、缓存提示、结构化输出、工具 strict、可表示的 URL 引用和 Responses ↔ Messages 托管搜索；目标模型支持范围仍由上游验证。插件保留原生上游清洗和 CPA 流式包装适配。
+- **转换实现**：固定使用 [apix v0.4.0](https://github.com/dillonzq/apix/tree/v0.4.0)，支持推理历史回放、媒体输入、本地 shell 适配、缓存提示、结构化输出、工具 strict、可表示的 URL 引用和 Responses ↔ Messages 托管搜索；目标模型支持范围仍由上游验证。插件保留原生上游清洗和 CPA 流式包装适配。
 - **多协议转换**：转换以下客户端协议与上游协议之间的请求及流式响应：
   - OpenAI Chat Completions（`/openai/v1/chat/completions`）
   - Anthropic Messages（`/anthropic/v1/messages`）

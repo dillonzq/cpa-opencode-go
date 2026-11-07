@@ -213,7 +213,12 @@ func TestNativeChatThinkingSanitization(t *testing.T) {
 				}
 				var doc map[string]json.RawMessage
 				json.Unmarshal(out, &doc)
-				if string(doc["thinking"]) != thinking || model == "m" && !bytes.Equal(body, out) {
+				// Streams also gain stream_options.include_usage; nothing else may change.
+				want := body
+				if stream {
+					want = append(bytes.TrimSuffix(body, []byte("}")), `,"stream_options":{"include_usage":true}}`...)
+				}
+				if string(doc["thinking"]) != thinking || model == "m" && !bytes.Equal(want, out) {
 					t.Fatalf("valid thinking changed: %s", out)
 				}
 			}

@@ -2,7 +2,7 @@
 
 [简体中文](protocol-conversion.zh-CN.md) · [Back to README](../README.md)
 
-Requests, regular responses, and streaming responses use pinned [apix v0.2.0](https://github.com/dillonzq/apix/tree/v0.2.0). All twelve cross-protocol directions and same-protocol processing are supported for Chat Completions, Messages, Responses, and Gemini GenerateContent. See the library's [LLM protocol guide](https://github.com/dillonzq/apix/blob/v0.2.0/docs/protocols/llm.md) and [Gemini protocol guide](https://github.com/dillonzq/apix/blob/v0.2.0/docs/protocols/gemini.md) for field mappings and limits. This document describes the plugin's host and upstream policies.
+Requests, regular responses, and streaming responses use pinned [apix v0.4.0](https://github.com/dillonzq/apix/tree/v0.4.0). All twelve cross-protocol directions and same-protocol processing are supported for Chat Completions, Messages, Responses, and Gemini GenerateContent. See the library's [LLM protocol guide](https://github.com/dillonzq/apix/blob/v0.4.0/docs/protocols/llm.md), which also covers Gemini GenerateContent, for field mappings and limits. This document describes the plugin's host and upstream policies.
 
 ## Integration
 

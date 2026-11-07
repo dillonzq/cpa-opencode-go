@@ -6,14 +6,14 @@ import (
 
 	"github.com/dillonzq/apix"
 	"github.com/dillonzq/apix/protocol/anthropic"
-	"github.com/dillonzq/apix/protocol/gemini"
+	"github.com/dillonzq/apix/protocol/google"
 	"github.com/dillonzq/apix/protocol/openai"
 	"github.com/dillonzq/apix/sse"
 	"github.com/dillonzq/cpa-opencode-go/internal/catalog"
 	"github.com/dillonzq/cpa-opencode-go/internal/errclass"
 )
 
-var registry = mustRegistry(openai.ChatCompletionsCodec(), openai.ResponsesCodec(), anthropic.MessagesCodec(), gemini.GenerateContentCodec())
+var registry = mustRegistry(openai.ChatCompletionsCodec(), openai.ResponsesCodec(), anthropic.MessagesCodec(), google.GenerateContentCodec())
 
 func mustRegistry(codecs ...apix.Codec) *apix.Registry {
 	reg, err := apix.NewRegistry(codecs...)
@@ -32,7 +32,7 @@ func Format(format string) (apix.Protocol, *errclass.Error) {
 	case "openai-response":
 		return openai.Responses, nil
 	case "gemini":
-		return gemini.GenerateContent, nil
+		return google.GenerateContent, nil
 	default:
 		return "", &errclass.Error{Class: errclass.ClassUnsupported, Message: "unsupported protocol format: " + format}
 	}
@@ -47,7 +47,7 @@ func Route(route catalog.Route) (apix.Protocol, *errclass.Error) {
 	case catalog.RouteResponses:
 		return openai.Responses, nil
 	case catalog.RouteGemini:
-		return gemini.GenerateContent, nil
+		return google.GenerateContent, nil
 	default:
 		return "", &errclass.Error{Class: errclass.ClassUnsupported, Message: "unsupported route"}
 	}
@@ -111,8 +111,13 @@ func (s *State) start(upstream, client apix.Protocol) *errclass.Error {
 		}
 	}
 	opts := apix.ExchangeOptions{LossPolicy: s.LossPolicy}
-	if upstream == openai.Responses && s.NormalizeTools {
+	switch {
+	case upstream == openai.Responses && s.NormalizeTools:
 		opts.Ext = openai.ResponsesOptions{NormalizeTools: true}
+	case upstream == openai.ChatCompletions:
+		// Chat Completions streams carry usage only on request. Ask for it
+		// so every client format, and CPA's usage records, see real counts.
+		opts.Ext = openai.ChatCompletionsOptions{StreamUsage: true}
 	}
 	ex, err := newExchange(upstream, client, output, opts)
 	if err != nil {
@@ -150,7 +155,7 @@ func ConvertRequest(route catalog.Route, model, source string, body []byte, stat
 		return nil, err
 	}
 	payload := apix.Payload{Body: body}
-	if from == gemini.GenerateContent {
+	if from == google.GenerateContent {
 		payload.Metadata.Stream = &state.Stream
 	}
 	out, e := state.ex.ConvertRequest(payload, model)
@@ -202,7 +207,7 @@ func NewStreamConverter(route catalog.Route, output string, state *State) (Strea
 	if e != nil {
 		return nil, Error(e)
 	}
-	return &stream{converter: converter, bareJSON: to == openai.ChatCompletions || to == gemini.GenerateContent}, nil
+	return &stream{converter: converter, bareJSON: to == openai.ChatCompletions || to == google.GenerateContent}, nil
 }
 
 // CPA frames Chat and Gemini JSON itself (and writes the Chat DONE); other

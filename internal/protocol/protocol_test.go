@@ -320,3 +320,40 @@ func TestEmptyStreamErrorRemainsFailure(t *testing.T) {
 		})
 	}
 }
+
+// Chat Completions upstreams send usage on streams only when asked, so every
+// client format must request it; non-streamed requests stay untouched.
+func TestChatUpstreamStreamsRequestUsage(t *testing.T) {
+	sources := []struct{ format, body string }{
+		{"openai", `{"model":"c","stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+		{"claude", `{"model":"c","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+		{"openai-response", `{"model":"c","stream":true,"input":"hi"}`},
+		{"gemini", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`},
+	}
+	for _, src := range sources {
+		for _, stream := range []bool{true, false} {
+			body := src.body
+			if !stream {
+				body = strings.Replace(body, `"stream":true,`, "", 1)
+			}
+			out, err := ConvertRequest(catalog.RouteChatCompletions, "m", src.format, []byte(body), &State{Stream: stream})
+			if err != nil {
+				t.Fatalf("%s stream=%v: %v", src.format, stream, err)
+			}
+			var got struct {
+				StreamOptions *struct {
+					IncludeUsage bool `json:"include_usage"`
+				} `json:"stream_options"`
+			}
+			if e := json.Unmarshal(out, &got); e != nil {
+				t.Fatalf("%s stream=%v: %v", src.format, stream, e)
+			}
+			if stream && (got.StreamOptions == nil || !got.StreamOptions.IncludeUsage) {
+				t.Errorf("%s stream: include_usage missing: %s", src.format, out)
+			}
+			if !stream && got.StreamOptions != nil {
+				t.Errorf("%s non-stream: unexpected stream_options: %s", src.format, out)
+			}
+		}
+	}
+}
