@@ -35,10 +35,9 @@ settings are now rejected. Users who raised
 
 ## Fixes
 
-- Messages, Responses, and GenerateContent clients routed to a Chat Completions upstream
-  now receive real token usage on streams, and CPA usage records count them,
-  instead of reporting zero.
-
+- Messages, Responses, and GenerateContent clients routed to a Chat
+  Completions upstream now receive real token usage on streams, and CPA usage
+  records count them, instead of reporting zero.
 - Long but active streams, such as large outputs or long reasoning, are no
   longer cut off after `request-timeout` (default `5m`) while the upstream is
   still sending data.
