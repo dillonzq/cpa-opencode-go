@@ -6,7 +6,7 @@
 
 ## 插件接入
 
-CPA 的 `openai`、`claude`、`openai-response`、`gemini` 分别映射为库的 `chat-completions`、`messages`、`responses`、`gemini`。输入使用宿主有效 `Payload` 和 `SourceFormat`；仅缺省/null Payload 回退到 `OriginalRequest`，显式空 payload 不回放原始请求。`Format` 决定输出协议，可以与输入不同。未知格式在请求上游前报错。
+CPA 的 `openai`、`claude`、`openai-response`、`gemini` 分别映射为路由 `chat-completions`、`messages`、`responses`、`gemini`（即配置键），对应 apix 协议 `openai.chat-completions`、`anthropic.messages`、`openai.responses`、`google.generate-content`。输入使用宿主有效 `Payload` 和 `SourceFormat`；仅缺省/null Payload 回退到 `OriginalRequest`，显式空 payload 不回放原始请求。`Format` 决定输出协议，可以与输入不同。未知格式在请求上游前报错。
 
 上游协议按请求从模型的协议集合中选择：模型支持 `SourceFormat` 对应的协议时直接使用；否则按该格式的最小损失顺序，取模型支持的第一个协议（见[协议选择](../README.zh-CN.md#协议选择)）。GenerateContent 的模型和流式模式都在 URL 中，因此 GenerateContent 请求的流式模式取自宿主的 `Stream` 标志，转换时写入目标请求体的 `stream: true`。GenerateContent 上游地址为 `{base-url}/google/v1beta/models/{model}:generateContent`，流式请求为 `:streamGenerateContent?alt=sse`。
 

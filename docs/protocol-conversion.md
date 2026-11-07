@@ -6,7 +6,7 @@ Requests, regular responses, and streaming responses use pinned [apix v0.4.0](ht
 
 ## Integration
 
-CPA formats `openai`, `claude`, `openai-response`, and `gemini` map to `chat-completions`, `messages`, `responses`, and `gemini`. The plugin executes effective `Payload` in `SourceFormat`; only omitted/null Payload falls back to OriginalRequest. Explicit empty payload never replays the original. `Format` independently selects the output protocol. Unknown formats fail before contacting upstream.
+CPA formats `openai`, `claude`, `openai-response`, and `gemini` map to the routes `chat-completions`, `messages`, `responses`, and `gemini` used as configuration keys, which are the apix protocols `openai.chat-completions`, `anthropic.messages`, `openai.responses`, and `google.generate-content`. The plugin executes effective `Payload` in `SourceFormat`; only omitted/null Payload falls back to OriginalRequest. Explicit empty payload never replays the original. `Format` independently selects the output protocol. Unknown formats fail before contacting upstream.
 
 The upstream protocol is chosen per request from the model's protocol set: the `SourceFormat` protocol when the model serves it, otherwise the first served protocol in that format's least-loss order (see [Protocol selection](../README.md#protocol-selection)). GenerateContent carries the model and streaming mode in its URL, so a GenerateContent request takes its streaming mode from the host's `Stream` flag; conversion writes `stream: true` into the target body. A GenerateContent upstream URL is `{base-url}/google/v1beta/models/{model}:generateContent`, or `:streamGenerateContent?alt=sse` for streams.
 
