@@ -24,8 +24,20 @@ settings are now rejected. Users who raised
   settings are still accepted and ignored. A configuration with more than one
   YAML document is rejected, `api-keys[].value` is trimmed, and a key containing
   a line break is rejected.
+- Upgrade the protocol translation library to apix v0.4.0. Conversion output is
+  unchanged; generated GenerateContent tool call IDs now use `call_google_N`
+  instead of `call_gemini_N`, and an upstream SSE frame over 64 MiB now fails
+  the stream.
+- Streamed requests to Chat Completions upstreams now always set
+  `stream_options.include_usage`, so the upstream ends each stream with a usage
+  chunk. Native Chat Completions clients receive that chunk (with empty
+  `choices`) even when they did not ask for it.
 
 ## Fixes
+
+- Messages, Responses, and GenerateContent clients routed to a Chat Completions upstream
+  now receive real token usage on streams, and CPA usage records count them,
+  instead of reporting zero.
 
 - Long but active streams, such as large outputs or long reasoning, are no
   longer cut off after `request-timeout` (default `5m`) while the upstream is

@@ -320,3 +320,78 @@ func TestEmptyStreamErrorRemainsFailure(t *testing.T) {
 		})
 	}
 }
+
+// Chat Completions upstreams send usage on streams only when asked, so every
+// client format must request it; non-streamed requests stay untouched.
+func TestChatUpstreamStreamsRequestUsage(t *testing.T) {
+	sources := []struct{ format, body string }{
+		{"openai", `{"model":"c","stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+		{"claude", `{"model":"c","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}`},
+		{"openai-response", `{"model":"c","stream":true,"input":"hi"}`},
+		{"gemini", `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`},
+	}
+	for _, src := range sources {
+		for _, stream := range []bool{true, false} {
+			body := src.body
+			if !stream {
+				body = strings.Replace(body, `"stream":true,`, "", 1)
+			}
+			out, err := ConvertRequest(catalog.RouteChatCompletions, "m", src.format, []byte(body), &State{Stream: stream})
+			if err != nil {
+				t.Fatalf("%s stream=%v: %v", src.format, stream, err)
+			}
+			var got struct {
+				StreamOptions *struct {
+					IncludeUsage bool `json:"include_usage"`
+				} `json:"stream_options"`
+			}
+			if e := json.Unmarshal(out, &got); e != nil {
+				t.Fatalf("%s stream=%v: %v", src.format, stream, e)
+			}
+			if stream && (got.StreamOptions == nil || !got.StreamOptions.IncludeUsage) {
+				t.Errorf("%s stream: include_usage missing: %s", src.format, out)
+			}
+			if !stream && got.StreamOptions != nil {
+				t.Errorf("%s non-stream: unexpected stream_options: %s", src.format, out)
+			}
+		}
+	}
+}
+
+// With include_usage, a Chat Completions upstream ends the stream with a
+// usage-only chunk (empty choices) after finish_reason. Every client format
+// must receive those counts.
+func TestChatUsageOnlyChunkReachesClients(t *testing.T) {
+	upstream := "data: {\"id\":\"r\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"r\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"id\":\"r\",\"model\":\"m\",\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":5,\"total_tokens\":12}}\n\n" +
+		"data: [DONE]\n\n"
+	want := map[string][]string{
+		"openai":          {`"prompt_tokens":7`, `"completion_tokens":5`},
+		"claude":          {`"input_tokens":7`, `"output_tokens":5`},
+		"openai-response": {`"input_tokens":7`, `"output_tokens":5`},
+		"gemini":          {`"promptTokenCount":7`, `"candidatesTokenCount":5`},
+	}
+	for format, needles := range want {
+		t.Run(format, func(t *testing.T) {
+			sc, err := NewStreamConverter(catalog.RouteChatCompletions, format, &State{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, _, err := sc.Feed([]byte(upstream))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tail, err := sc.Finish()
+			if err != nil {
+				t.Fatal(err)
+			}
+			joined := string(bytes.Join(append(events, tail...), []byte("\n")))
+			for _, needle := range needles {
+				if !strings.Contains(joined, needle) {
+					t.Errorf("missing %s in stream:\n%s", needle, joined)
+				}
+			}
+		})
+	}
+}

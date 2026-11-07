@@ -54,7 +54,7 @@ OpenCode Go 要求每段对话在 `x-opencode-session` 中携带稳定的 sessio
 | Claude image | URL 直接拼接；base64 转为 data URL，缺省 MIME 为 application/octet-stream |
 | Claude tool_result | 递归提取其 content，保留历史哈希 |
 | Claude thinking/redacted_thinking/tool_use | 沿用历史规则，不参与哈希 |
-| Gemini part | 拼接文本；内联和文件图片使用其 data URL 或 URI；thought part 不参与哈希。这与插件原生接收 Gemini 请求之前 CPA 将其转成 Chat 后的结果一致。其他 part 使用下方的稳定 JSON 编码 |
+| GenerateContent part | 拼接文本；内联和文件图片使用其 data URL 或 URI；thought part 不参与哈希。这与插件原生接收 GenerateContent 请求之前 CPA 将其转成 Chat 后的结果一致。其他 part 使用下方的稳定 JSON 编码 |
 | 文件、仅含 file_id 的图片、未知内容 | 使用稳定 JSON 编码，前后加 NUL 分隔符后参与哈希；对象键顺序稳定，数值使用 json.Number 保留精度，移除该内容对象顶层 cache_control |
 
 session 提取不调用协议转换解码器，也不校验无关原生字段，避免文件或未来内容类型仅因会话提取而被拒绝。格式不支持或顶层 JSON 解析失败时返回错误；其他输入形状留给请求适配器或上游校验。显式 ID 命中时跳过内容哈希，但请求仍需通过后续处理。
@@ -67,7 +67,7 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 ## 发送范围与限制
 
-Chat Completions、Messages、Responses、Gemini GenerateContent 的流式与非流式推理请求都设置 `x-opencode-session`；模型目录 `/models` 请求不携带该 header。提取逻辑不记录用于哈希的内容，debug 日志会记录最终 session ID。
+Chat Completions、Messages、Responses、Google GenerateContent 的流式与非流式推理请求都设置 `x-opencode-session`；模型目录 `/models` 请求不携带该 header。提取逻辑不记录用于哈希的内容，debug 日志会记录最终 session ID。
 
 内容哈希是确定性兜底，不能完整区分真实会话：相同初始内容会产生相同 ID；历史裁剪、上下文压缩或拦截器修改初始内容可能改变 ID；没有可提取内容的请求共享空内容哈希。旧版文本拼接还会使不同分段产生相同结果，例如 `ab` + `c` 与 `a` + `bc`。
 
