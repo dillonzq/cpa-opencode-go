@@ -35,7 +35,7 @@ settings are now rejected. Users who raised
 
 ## Fixes
 
-- Messages, Responses, and Gemini clients routed to a Chat Completions upstream
+- Messages, Responses, and GenerateContent clients routed to a Chat Completions upstream
   now receive real token usage on streams, and CPA usage records count them,
   instead of reporting zero.
 

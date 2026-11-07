@@ -54,7 +54,7 @@ System instructions, message-level ID/status, later conversation turns, model, a
 | Claude image | Concatenate URLs; convert base64 sources to data URLs, defaulting missing MIME to application/octet-stream |
 | Claude tool_result | Recursively extract content, preserving historical hashes |
 | Claude thinking/redacted_thinking/tool_use | Omit from the hash, preserving historical behavior |
-| Gemini parts | Concatenate text; inline and file images contribute their data URL or URI; omit thought parts. This matches the Chat translation CPA applied to Gemini clients before the plugin accepted them natively. Other parts use the stable JSON encoding below |
+| GenerateContent parts | Concatenate text; inline and file images contribute their data URL or URI; omit thought parts. This matches the Chat translation CPA applied to GenerateContent clients before the plugin accepted them natively. Other parts use the stable JSON encoding below |
 | Files, images with only file_id, and unknown content | Include stable JSON encoding with NUL delimiters on both sides; object keys have stable ordering, json.Number preserves numeric precision, and the content object's top-level cache_control is removed |
 
 Session extraction does not call protocol translation decoders or validate unrelated native fields, so files and future content types are not rejected solely by session extraction. Unsupported formats or top-level JSON decoding failures return errors; other input shapes are left to the request adapter or upstream to validate. An explicit ID bypasses content hashing, but the request still undergoes subsequent processing.
@@ -67,7 +67,7 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 ## Request coverage and limitations
 
-Streaming and non-streaming inference requests for Chat Completions, Messages, Responses, and Gemini GenerateContent all set `x-opencode-session`. Model catalog `/models` requests do not include it. Extraction does not log the content used for hashing; debug logs include the final session ID.
+Streaming and non-streaming inference requests for Chat Completions, Messages, Responses, and Google GenerateContent all set `x-opencode-session`. Model catalog `/models` requests do not include it. Extraction does not log the content used for hashing; debug logs include the final session ID.
 
 Content hashing is a deterministic fallback that cannot fully distinguish real conversations. Identical initial content produces the same ID; history trimming, context compaction, or interceptor changes to initial content may change it; requests without extractable content share the empty-content hash. Historical text concatenation also allows different splits to produce the same result, such as `ab` + `c` and `a` + `bc`.
 

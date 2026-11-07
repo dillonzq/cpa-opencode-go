@@ -39,7 +39,7 @@ The OpenCode mark in `assets/logo.svg` is the plugin icon. Register it in the CL
 
 ## The Problem
 
-OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/openai/v1/chat/completions`, Anthropic Messages `/anthropic/v1/messages`, OpenAI Responses `/openai/v1/responses`, and Gemini GenerateContent `/google/v1beta/models/{model}`), and some models serve more than one.
+OpenCode Go exposes models across multiple API protocols (OpenAI Chat Completions `/openai/v1/chat/completions`, Anthropic Messages `/anthropic/v1/messages`, OpenAI Responses `/openai/v1/responses`, and Google GenerateContent `/google/v1beta/models/{model}`), and some models serve more than one.
 
 Without this plugin, using OpenCode Go in CLIProxyAPI requires configuring separate provider blocks for each protocol family. This leads to:
 - **Duplicated configuration & keys**: The same API keys must be configured across multiple provider blocks.
@@ -61,7 +61,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
   - OpenAI Chat Completions (`/openai/v1/chat/completions`)
   - Anthropic Messages (`/anthropic/v1/messages`)
   - OpenAI Responses (`/openai/v1/responses`)
-  - Gemini GenerateContent (`/google/v1beta/models/{model}:generateContent`), also accepted natively from Gemini clients
+  - Google GenerateContent (`/google/v1beta/models/{model}:generateContent`), also accepted natively from GenerateContent clients
 - **Per-request protocol selection**: Each model has a switch per protocol. A request uses the client's own protocol when the model serves it, otherwise the protocol with the least semantic loss; see [Protocol selection](#protocol-selection).
 - **Thinking & Reasoning Support**: Preserves native reasoning controls and uses fixed effort/budget conversion across formats. Capability metadata does not filter or clamp requests; upstream validates controls. Preserves explicit off and Claude adaptive effort; cross-format auto uses target defaults where no wire equivalent exists. Controls that cannot be converted fail explicitly.
 - **Dynamic Catalog Discovery**: Fetches remote model catalogs, optionally retains the last successful catalog during outages, and supports explicit model declarations with their own protocols and endpoints.
@@ -78,7 +78,7 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 
 Each model has a switch per upstream protocol. The default switches follow the [OpenCode Go endpoint table](https://opencode.ai/docs/go/#endpoints), matched by model family prefix:
 
-| Model family | Chat Completions | Messages | Responses | Gemini GenerateContent |
+| Model family | Chat Completions | Messages | Responses | Google GenerateContent |
 |---|:-:|:-:|:-:|:-:|
 | `gpt-*`, `grok-*`, `muse-spark-*` | – | – | ✓ | – |
 | `claude-*`, `minimax-*` (except `minimax-m3.1-flash*`), `qwen*` | – | ✓ | – | – |
@@ -93,17 +93,17 @@ For each request, the plugin selects the first protocol the model serves in the 
 
 | Client format | Order |
 |---|---|
-| Chat Completions | Chat Completions → Responses → Messages → Gemini |
-| Responses | Responses → Chat Completions → Messages → Gemini |
-| Messages | Messages → Responses → Chat Completions → Gemini |
-| Gemini | Gemini → Responses → Chat Completions → Messages |
+| Chat Completions | Chat Completions → Responses → Messages → GenerateContent |
+| Responses | Responses → Chat Completions → Messages → GenerateContent |
+| Messages | Messages → Responses → Chat Completions → GenerateContent |
+| GenerateContent | GenerateContent → Responses → Chat Completions → Messages |
 
 The client's own protocol comes first and needs no conversion. The rest are ordered by the semantic loss of converting to them:
 
 - Responses keeps reasoning text, OpenAI file IDs, and hosted search shared with Messages.
 - Messages cannot carry audio, video, or file IDs.
 - Chat Completions cannot carry URI-only documents.
-- Gemini differs most in signatures and thinking, so it comes last for every other client.
+- GenerateContent differs most in signatures and thinking, so it comes last for every other client.
 
 For example, `opencode-go/deepseek-v4-pro` reaches `/anthropic/v1/messages` from Claude Code and `/openai/v1/responses` from Codex without conversion.
 
@@ -134,7 +134,7 @@ models:
 | `protocols.<protocol>` | An object with only `endpoint`. Switches are rejected here; set them per model. |
 | `endpoint` | Optional path joined to `base-url`. It must start with `/`. A `gemini` endpoint must contain `{model}`, which is replaced with the upstream model ID; the plugin appends `:generateContent`, or `:streamGenerateContent?alt=sse` for streams. |
 
-A request uses the model's endpoint, then the top-level endpoint, then the default path: `/openai/v1/chat/completions`, `/anthropic/v1/messages`, `/openai/v1/responses`, or `/google/v1beta/models/{model}`. These upstream paths follow the [official harness configuration](https://opencode.ai/v2/docs/console/harnesses#base-urls) for Go and Go Plus. Explicit endpoint overrides are used verbatim; update any old paths in your configuration to use these prefixes. Catalog discovery remains at `{base-url}/v1/models`. Gemini requests authenticate with `x-goog-api-key`.
+A request uses the model's endpoint, then the top-level endpoint, then the default path: `/openai/v1/chat/completions`, `/anthropic/v1/messages`, `/openai/v1/responses`, or `/google/v1beta/models/{model}`. These upstream paths follow the [official harness configuration](https://opencode.ai/v2/docs/console/harnesses#base-urls) for Go and Go Plus. Explicit endpoint overrides are used verbatim; update any old paths in your configuration to use these prefixes. Catalog discovery remains at `{base-url}/v1/models`. GenerateContent requests authenticate with `x-goog-api-key`.
 
 ## Request behavior
 
