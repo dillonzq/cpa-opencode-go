@@ -254,7 +254,7 @@ plugins:
         enabled: true           # true："opencode-go/<model>"；false："<model>"（默认：true）
         value: "opencode-go"    # 前缀名称（默认："opencode-go"）
 
-      # OpenCode Go API 密钥，至少需要一个；支持 ${ENV_VAR} 环境变量展开
+      # OpenCode Go API 密钥；列表为空时插件空闲；支持 ${ENV_VAR} 环境变量展开
       api-keys:
         - value: "sk-opencode-key-1"
           name: "Personal"      # 可选账户名称
@@ -296,7 +296,7 @@ plugins:
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
-| `api-keys` | `[]object` | 必填 | API 密钥列表，格式为 `- value: "..."`，可选 `name: "Personal"`。支持 `${ENV_VAR}` 环境变量展开，不允许重复或空值。 |
+| `api-keys` | `[]object` | `[]` | API 密钥列表，格式为 `- value: "..."`，可选 `name: "Personal"`。支持 `${ENV_VAR}` 环境变量展开，不允许重复或空值。列表为空或省略时插件进入空闲状态（见[移除密钥](#移除密钥)）。 |
 | `base-url` | `string` | `https://opencode.ai/inference/go` | 上游基础 URL，不含版本段，`/v1` 或 `/v1beta` 由端点路径携带；末尾的 `/v1` 会被去掉。必须是有效的 HTTPS 地址；仅在 `allow-http: true` 时允许 HTTP。不得包含查询参数、片段或用户认证信息。 |
 | `catalog-url` | `string` | `{base-url}/v1/models` | 模型目录的完整 URL，默认使用 `{base-url}/v1/models`。 |
 | `model-prefix.enabled` | `bool` | `true` | 为 `true` 时，客户端模型名称使用 `<prefix>/<model>`；为 `false` 时，仅使用模型 ID。 |
@@ -404,3 +404,11 @@ go vet -tags debug ./... ./.github/scripts/...
 上游窗口标记为 `status: "rate-limited"` 时，即使用量未达 100%，也会返回 `remainingFraction: 0`，并保留重置时间。其他窗口继续按各自的用量百分比计算剩余额度。
 
 额度重置不受支持，旧版插件额度接口和独立页面已移除。管理界面需支持通用额度 API 才能显示插件刷新控件。
+
+### 移除密钥
+
+注册或重新配置成功后，插件会删除已不在 `api-keys` 中的密钥对应的、由插件创建的凭证文件。清空或省略 `api-keys` 会删除全部此类文件，插件进入空闲状态：不请求上游、不发布模型；之后添加密钥即可恢复，无需重启。
+
+仅删除能验证为插件创建的文件：`type` 为 `opencode-go`，且 `id` 等于 `opencode-go-key-` 加所存 `api_key` 的 SHA-256。手动创建、格式异常、其他 provider 或符号链接文件均不删除；仍在配置中的密钥及其代理、禁用等已存状态保持不变。被移除密钥的元数据会丢失，重新添加时按默认状态创建。
+
+清理会递归扫描 CPA 暴露的凭证目录，包括运行时列表遗漏的文件，JSON 扩展名不区分大小写；列表暂时为空时复用最近暴露的目录，冷启动时若 CPA 未暴露任何路径，当前 SDK 无法提供凭证目录。对已加载的凭证，插件先写入 `"disabled": true`，待 CPA 明确列出该文件为禁用状态后才删除；运行时记录缺失不视为确认。确认或文件操作失败时记录告警，下次重载会重试；若无法安全恢复原文件名，会保留 `*.opencode-go-cleanup-*` 文件以供手动恢复。关闭、升级或重启插件不会删除仍在配置中的凭证。

@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,22 @@ import (
 )
 
 type authProvider struct{ cfg config.Config }
+
+// authRecord is the physical credential file the plugin writes. Cleanup uses
+// it to prove that a file is plugin-created before removing it.
+type authRecord struct {
+	Type     string `json:"type"`
+	ID       string `json:"id"`
+	APIKey   string `json:"api_key"`
+	Disabled bool   `json:"disabled"`
+}
+
+// credentialID is the stable auth ID of a configured key. The full digest is
+// non-secret and independent of names and configuration order.
+func credentialID(key string) string {
+	digest := sha256.Sum256([]byte(key))
+	return "opencode-go-key-" + hex.EncodeToString(digest[:])
+}
 
 var _ pluginapi.AuthProvider = authProvider{}
 

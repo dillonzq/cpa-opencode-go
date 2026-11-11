@@ -240,6 +240,17 @@ func PublicID(c Config, upstreamID string) string {
 	return upstreamID
 }
 
+// HasAPIKey reports whether key is currently configured. Cleanup keeps the
+// plugin-created credential files of configured keys.
+func (c Config) HasAPIKey(key string) bool {
+	for _, entry := range c.APIKeys {
+		if entry.Value == key {
+			return true
+		}
+	}
+	return false
+}
+
 func (c Config) validate() error {
 	if err := validateURL("models-dev.url", c.ModelsDev.URL, c.AllowHTTP); err != nil {
 		return err
@@ -281,9 +292,6 @@ func (c Config) validate() error {
 	}
 	if err := validateURL("catalog-url", c.CatalogURL, c.AllowHTTP); err != nil {
 		return err
-	}
-	if len(c.APIKeys) == 0 {
-		return fmt.Errorf("api-keys: at least one key is required")
 	}
 	for i, k := range c.APIKeys {
 		if k.Value == "" {

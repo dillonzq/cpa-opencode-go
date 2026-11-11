@@ -250,7 +250,7 @@ plugins:
         enabled: true           # true -> "opencode-go/<model>", false -> bare "<model>" (default: true)
         value: "opencode-go"    # prefix name (default: "opencode-go")
 
-      # OpenCode Go API keys (at least one required). Supports ${ENV_VAR} expansion.
+      # OpenCode Go API keys; an empty list leaves the plugin idle. Supports ${ENV_VAR} expansion.
       api-keys:
         - value: "sk-opencode-key-1"
           name: "Personal"      # optional account label
@@ -292,7 +292,7 @@ plugins:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `api-keys` | `[]object` | *(Required)* | List of API keys (`- value: "..."`, optional `name: "Personal"`). Supports `${ENV_VAR}` expansion. Duplicates and empty values are rejected. |
+| `api-keys` | `[]object` | `[]` | List of API keys (`- value: "..."`, optional `name: "Personal"`). Supports `${ENV_VAR}` expansion. Duplicates and empty values are rejected. An empty or omitted list leaves the plugin idle (see [Removing keys](#removing-keys)). |
 | `base-url` | `string` | `https://opencode.ai/inference/go` | Upstream base URL without a version segment; endpoint paths carry `/v1` or `/v1beta`. A trailing `/v1` is dropped. Must be valid HTTPS (or HTTP if `allow-http: true`) without query parameters, fragments, or userinfo. |
 | `catalog-url` | `string` | `{base-url}/v1/models` | Full URL for catalog discovery. Defaults to `{base-url}/v1/models`. |
 | `model-prefix.enabled` | `bool` | `true` | When `true`, client-facing model names use `<prefix>/<model>`. When `false`, uses bare model IDs. |
@@ -420,3 +420,11 @@ An upstream window with `status: "rate-limited"` reports `remainingFraction: 0`
 even when its usage is below 100% or its percentage is missing or null, while
 preserving its reset time. Other windows continue to use their reported percentages.
 Quota reset is unsupported. The old plugin quota route and resource page are removed. The management dashboard must support the generic quota API to display plugin quota refresh controls.
+
+### Removing keys
+
+After a successful registration or reconfiguration, the plugin deletes the credential files it created for keys no longer in `api-keys`. An empty or omitted list removes all of them and leaves the plugin idle: no upstream requests and no published models. Adding keys later resumes normal operation without a restart.
+
+Only files the plugin can verify as its own are deleted: `type` must be `opencode-go` and `id` must equal `opencode-go-key-` plus the SHA-256 of the stored `api_key`. Manually created, malformed, other-provider and symlinked files stay untouched, and so do keys still configured, including their stored state such as proxy and disabled settings. A removed key's metadata is lost; if added again, it is created with defaults.
+
+Cleanup scans the auth directories CPA reports, recursively and including files missing from CPA's runtime list. JSON extensions match case-insensitively. When that list is temporarily empty, the last reported directories are reused; on a cold start with no reported paths the current SDK exposes no auth directory. For a loaded credential, the plugin first writes `"disabled": true` and deletes the file only after CPA lists that file as disabled; a missing runtime entry is not confirmation. If confirmation or a file operation fails, a warning is logged and the next reload retries. If the original filename cannot be safely restored, the record is kept in a `*.opencode-go-cleanup-*` file for manual recovery. Shutdown, upgrades and restarts never delete configured credentials.
