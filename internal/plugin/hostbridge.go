@@ -132,7 +132,12 @@ func (b *HostBridge) waitAuthWrite(ctx context.Context) error {
 func (b *HostBridge) AuthList(ctx context.Context) ([]pluginapi.HostAuthFileEntry, error) {
 	env, err := b.invoke(ctx, pluginabi.MethodHostAuthList, struct{}{}, "host auth list")
 	if err != nil {
-		return nil, err
+		// Host error text is not trusted and may echo credential JSON; callers
+		// log or return this error, so keep only the timeout category.
+		if strings.Contains(err.Error(), "timed out") {
+			return nil, fmt.Errorf("host auth list failed: timed out")
+		}
+		return nil, fmt.Errorf("host auth list failed")
 	}
 	var resp hostAuthListResponse
 	if len(env.Result) > 0 && json.Unmarshal(env.Result, &resp) != nil {

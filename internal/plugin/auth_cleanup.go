@@ -150,7 +150,8 @@ func (m *Manager) cleanupAuthFile(ctx context.Context, cfg config.Config, entry 
 	// then require known runtime credentials to be explicitly disabled before
 	// unlinking. Discovered disk-only files are also written disabled and
 	// checked for runtime attachment before deletion.
-	if err := disableCleanupFile(root, name, record.ID); err != nil {
+	disabled, err := disableCleanupFile(root, name, record.ID)
+	if err != nil {
 		return err
 	}
 	// A discovered file may have been loaded since the original listing.
@@ -171,8 +172,9 @@ func (m *Manager) cleanupAuthFile(ctx context.Context, cfg config.Config, entry 
 			return err
 		}
 	}
-	// Move to a unique non-JSON name, then verify the exact file being deleted.
-	// If another writer replaced it, preserve that file instead of unlinking it.
+	// Move to a unique non-JSON name, then verify that the staged file is the
+	// exact file disabled above. If another writer replaced it, even with an
+	// equivalent record, preserve that file instead of unlinking it.
 	staged := name + ".opencode-go-cleanup-" + rand.Text()
 	if err := root.Rename(name, staged); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -180,8 +182,9 @@ func (m *Manager) cleanupAuthFile(ctx context.Context, cfg config.Config, entry 
 		}
 		return fmt.Errorf("stage credential deletion failed")
 	}
+	stagedInfo, statErr := root.Lstat(staged)
 	current, readErr := readCleanupRecord(root, staged)
-	if readErr != nil || current == nil || current.ID != record.ID || !current.Disabled {
+	if statErr != nil || !os.SameFile(disabled, stagedInfo) || readErr != nil || current == nil || current.ID != record.ID || !current.Disabled {
 		if err := restoreCleanupFile(root, staged, name); err != nil {
 			return err
 		}
@@ -209,44 +212,46 @@ func restoreCleanupFile(root *os.Root, staged, name string) error {
 	return nil
 }
 
-func disableCleanupFile(root *os.Root, name, id string) error {
+// disableCleanupFile writes disabled: true into name and returns the identity
+// of the file it wrote, so deletion can refuse any replacement.
+func disableCleanupFile(root *os.Root, name, id string) (os.FileInfo, error) {
 	info, err := root.Lstat(name)
 	if err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("credential changed before disabling")
+		return nil, fmt.Errorf("credential changed before disabling")
 	}
 	file, err := openCleanupRecord(root, name, os.O_RDWR)
 	if err != nil {
-		return fmt.Errorf("open credential for disabling failed")
+		return nil, fmt.Errorf("open credential for disabling failed")
 	}
 	defer file.Close()
 	opened, err := file.Stat()
 	if err != nil || !os.SameFile(info, opened) {
-		return fmt.Errorf("credential changed before disabling")
+		return nil, fmt.Errorf("credential changed before disabling")
 	}
 	// Prove ownership again on the descriptor that will be written.
 	previous, err := io.ReadAll(io.LimitReader(file, maxCleanupRecordBytes+1))
 	if err != nil || len(previous) > maxCleanupRecordBytes {
-		return fmt.Errorf("credential changed before disabling")
+		return nil, fmt.Errorf("credential changed before disabling")
 	}
 	if record := ownedCleanupRecord(previous); record == nil || record.ID != id {
-		return fmt.Errorf("credential changed before disabling")
+		return nil, fmt.Errorf("credential changed before disabling")
 	}
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(previous, &fields) != nil {
-		return fmt.Errorf("invalid credential")
+		return nil, fmt.Errorf("invalid credential")
 	}
 	fields["disabled"] = json.RawMessage("true")
 	raw, err := json.Marshal(fields)
 	if err != nil {
-		return fmt.Errorf("encode disabled credential failed")
+		return nil, fmt.Errorf("encode disabled credential failed")
 	}
 	if _, err := file.WriteAt(raw, 0); err != nil {
-		return fmt.Errorf("write disabled credential failed")
+		return nil, fmt.Errorf("write disabled credential failed")
 	}
 	if err := file.Truncate(int64(len(raw))); err != nil {
-		return fmt.Errorf("truncate disabled credential failed")
+		return nil, fmt.Errorf("truncate disabled credential failed")
 	}
-	return nil
+	return opened, nil
 }
 
 // awaitDisabledAuth waits until CPA lists the physical file as disabled. An

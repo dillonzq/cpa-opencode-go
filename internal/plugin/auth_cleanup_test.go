@@ -276,6 +276,66 @@ func TestCleanupPreservesReplacementFile(t *testing.T) {
 	}
 }
 
+// An equivalent disabled record for the same key is still a different file:
+// a writer that replaced the disabled file must not lose its replacement.
+func TestCleanupPreservesEquivalentReplacementFile(t *testing.T) {
+	dir := t.TempDir()
+	writeCleanupAuth(t, dir, "same.json", "removed")
+	path := filepath.Join(dir, "same.json")
+	entry := pluginapi.HostAuthFileEntry{Name: "same.json", Path: path, AuthIndex: "same-index", Disabled: true}
+	replacement := mustJSON(map[string]any{"type": ProviderID, "id": credentialID("removed"), "api_key": "removed", "disabled": true, "custom": "replacement"})
+	replaced := false
+	bridge := NewHostBridge(func(string, []byte) ([]byte, error) {
+		if !replaced {
+			replaced = true
+			tmp := path + ".tmp"
+			if err := os.WriteFile(tmp, replacement, 0600); err != nil {
+				return nil, err
+			}
+			if err := os.Rename(tmp, path); err != nil {
+				return nil, err
+			}
+		}
+		return hostOK(hostAuthListResponse{Files: []pluginapi.HostAuthFileEntry{entry}}), nil
+	})
+	if err := NewManager(bridge).cleanupAuthFile(context.Background(), config.Config{}, entry); err == nil {
+		t.Fatal("replacement file reported as removed")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, replacement) {
+		t.Fatal("equivalent replacement file was deleted")
+	}
+	if files, _ := os.ReadDir(dir); len(files) != 1 {
+		t.Fatal("temporary credential file was not restored")
+	}
+}
+
+// Host error text can echo credential JSON and must not reach cleanup logs.
+func TestCleanupRedactsHostAuthListErrors(t *testing.T) {
+	const secret = "sk-leaked-secret"
+	f := &fakeCaller{responder: func(method string, _ []byte) ([]byte, error) {
+		if method == pluginabi.MethodHostAuthList {
+			return hostErr("auth_failure", `{"api_key":"`+secret+`"}`), nil
+		}
+		return hostOK(struct{}{}), nil
+	}}
+	m := NewManager(NewHostBridge(f.call))
+	t.Cleanup(func() { _, _ = m.HandleCall(pluginabi.MethodPluginShutdown, nil) })
+	raw, _ := m.HandleCall(pluginabi.MethodPluginRegister, lifecycleRequestBody("api-keys: []"))
+	if !decodeEnv(t, raw).OK {
+		t.Fatalf("keyless registration failed: %s", raw)
+	}
+	logs := f.callsOf(pluginabi.MethodHostLog)
+	if len(logs) == 0 {
+		t.Fatal("cleanup failure was not logged")
+	}
+	for _, call := range logs {
+		if strings.Contains(string(call.payload), secret) {
+			t.Fatal("cleanup log leaked host error text")
+		}
+	}
+}
+
 func TestKeylessStartupIgnoresUnmanagedInvalidFiles(t *testing.T) {
 	dir := t.TempDir()
 	foreign := filepath.Join(dir, "invalid.json")
