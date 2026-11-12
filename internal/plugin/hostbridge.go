@@ -6,6 +6,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -35,13 +36,16 @@ type HostBridge struct {
 	inFlight         sync.WaitGroup
 	streamMu         sync.Mutex
 	streamOperations map[string]*httpOperation
+	// authWrite holds one slot from the start of host.auth.save until the
+	// callback actually returns, including after the caller timed out.
+	authWrite chan struct{}
 }
 
 // NewHostBridge wraps the injected raw host caller so the bridge satisfies
 // catalog.HostClient. main.go wires it to the C host API after init;
 // tests inject fakes.
 func NewHostBridge(call RawCaller) *HostBridge {
-	return &HostBridge{call: call, streamOperations: make(map[string]*httpOperation)}
+	return &HostBridge{call: call, streamOperations: make(map[string]*httpOperation), authWrite: make(chan struct{}, 1)}
 }
 
 // hostHTTPReq is the wire shape accepted by host.http.do / do_stream.
@@ -73,7 +77,17 @@ func (b *HostBridge) AuthSave(ctx context.Context, req pluginapi.HostAuthSaveReq
 	if err != nil {
 		return fmt.Errorf("host auth save failed: invalid request")
 	}
-	raw, err := b.callWithTimeout(ctx, pluginabi.MethodHostAuthSave, payload)
+	if err := b.lockAuthWrite(ctx); err != nil {
+		return err
+	}
+	// A timed-out save keeps the slot until its orphaned callback returns, so
+	// credential cleanup never inspects a file the host may still write.
+	var once sync.Once
+	unlock := func() { once.Do(func() { <-b.authWrite }) }
+	raw, _, err := b.callWithTimeoutResult(ctx, pluginabi.MethodHostAuthSave, payload, 0, func([]byte) { unlock() })
+	if err == nil || !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		unlock()
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "timed out") {
 			return fmt.Errorf("host auth save failed: timed out")
@@ -91,13 +105,39 @@ func (b *HostBridge) AuthSave(ctx context.Context, req pluginapi.HostAuthSaveReq
 	return nil
 }
 
+func (b *HostBridge) lockAuthWrite(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("host auth write unavailable")
+	}
+	select {
+	case b.authWrite <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("host auth write still pending")
+	}
+}
+
+// waitAuthWrite returns once no host.auth.save callback is running.
+func (b *HostBridge) waitAuthWrite(ctx context.Context) error {
+	if err := b.lockAuthWrite(ctx); err != nil {
+		return err
+	}
+	<-b.authWrite
+	return nil
+}
+
 // AuthList returns the auth records currently known by CPA without modifying
 // their files. Callers use stable names/IDs to avoid overwriting CPA-managed
 // metadata during plugin registration.
 func (b *HostBridge) AuthList(ctx context.Context) ([]pluginapi.HostAuthFileEntry, error) {
 	env, err := b.invoke(ctx, pluginabi.MethodHostAuthList, struct{}{}, "host auth list")
 	if err != nil {
-		return nil, err
+		// Host error text is not trusted and may echo credential JSON; callers
+		// log or return this error, so keep only the timeout category.
+		if strings.Contains(err.Error(), "timed out") {
+			return nil, fmt.Errorf("host auth list failed: timed out")
+		}
+		return nil, fmt.Errorf("host auth list failed")
 	}
 	var resp hostAuthListResponse
 	if len(env.Result) > 0 && json.Unmarshal(env.Result, &resp) != nil {

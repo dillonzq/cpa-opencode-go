@@ -329,7 +329,6 @@ func TestLoadRejections(t *testing.T) {
 		{"invalid yaml syntax", "[unclosed", "decode config"},
 		{"unknown anchor has no line info", "request-timeout: *nope\n", "decode config: invalid YAML structure"},
 		{"bare-scalar api key never leaks", "api-keys:\n  - sk-live-secret-123\n", "decode config: invalid YAML structure"},
-		{"keyless config rejected", "", "api-keys: at least one key is required"},
 		{"request-timeout zero rejected", "request-timeout: 0s\n" + withKey, "request-timeout: must be positive"},
 		{
 			"duplicate protocol keys",
@@ -520,5 +519,19 @@ func TestLoadTrimsKeyAndRejectsNewlines(t *testing.T) {
 	t.Setenv("TEST_OG_SPLIT_KEY", "sk-a\nsk-b")
 	if _, err := Load([]byte("api-keys:\n  - value: ${TEST_OG_SPLIT_KEY}\n")); err == nil || !strings.Contains(err.Error(), "newlines") {
 		t.Fatalf("Load error = %v, want newline rejection", err)
+	}
+}
+
+// An empty or omitted key list is a valid idle configuration; each supplied
+// key must still be non-empty.
+func TestLoadAcceptsKeylessConfig(t *testing.T) {
+	for _, text := range []string{"", "api-keys: []\n", "api-keys: null\n"} {
+		c, err := Load([]byte(text))
+		if err != nil || len(c.APIKeys) != 0 || c.HasAPIKey("") {
+			t.Fatalf("Load(%q) = %d keys, %v", text, len(c.APIKeys), err)
+		}
+	}
+	if _, err := Load([]byte("api-keys:\n  - value: \"\"\n")); err == nil {
+		t.Fatal("empty key value accepted")
 	}
 }

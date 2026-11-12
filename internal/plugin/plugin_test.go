@@ -585,8 +585,8 @@ func TestLifecycleMaterializesDeterministicAuthRecords(t *testing.T) {
 	if _, err := m.HandleCall("plugin.reconfigure", lifecycleRequestBody("api-keys:\n  - value: "+first+"\n")); err != nil {
 		t.Fatalf("removed-key reconfigure: %v", err)
 	}
-	// No delete callback exists in the pinned ABI: the old record is stale and
-	// remains in CPA rather than being falsely reported as removed.
+	// Removing a key never writes a record; cleanup deletes physical files
+	// (covered by auth_cleanup_test.go).
 	if len(f.callsOf(pluginabi.MethodHostAuthSave)) != 2 {
 		t.Fatalf("removed-key reconfigure changed save count = %d, want 2", len(f.callsOf(pluginabi.MethodHostAuthSave)))
 	}

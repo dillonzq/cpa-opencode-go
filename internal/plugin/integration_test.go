@@ -1216,8 +1216,8 @@ func TestHTTPSDefaultEnforced(t *testing.T) {
 		t.Fatalf("allow-http register rejected: %s", resp)
 	}
 
-	// Config now mandates at least one key; supply a throwaway key so the
-	// unset-field defaults (https base-url) still apply.
+	// Supply a throwaway key so the unset-field defaults (https base-url)
+	// are checked on a configured, non-idle setup.
 	cfg, err := config.Load([]byte(dummyKeyYAML))
 	if err != nil {
 		t.Fatalf("default config load: %v", err)
