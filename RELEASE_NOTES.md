@@ -1,3 +1,50 @@
+# v0.4.3
+
+Patch release for **cpa-opencode-go**, based on v0.4.2 and requiring
+**CLIProxyAPI v8.0.0 or later**. Existing configuration and
+`opencode-go/<model>` IDs remain compatible. Removing a configured API key now
+also removes its plugin-created credential files; back up any credential
+metadata you want to keep before removing keys.
+
+## Behavior changes
+
+- An empty or omitted `api-keys` list now registers the plugin idle instead of
+  failing configuration validation. The plugin makes no upstream requests and
+  publishes no models until keys are added. Adding keys through reconfiguration
+  resumes normal operation without a restart; empty or duplicate key values
+  within a nonempty list are still rejected.
+- After successful registration or reconfiguration, credential cleanup removes
+  files created by the plugin for keys no longer in `api-keys`. Clearing the
+  list removes all such credentials. Configured keys retain their stored proxy,
+  disabled state, and other metadata; a removed key added again is created with
+  defaults. Shutdown, upgrades, and restarts do not delete configured credentials.
+- Cleanup verifies the physical record's `opencode-go` type and key-derived ID,
+  preserving malformed, foreign, manually created records without that identity,
+  and symlinked files. It scans host-reported credential directories recursively,
+  including files absent from CPA's runtime list, and waits for pending host
+  credential writes. Loaded credentials are disabled first and deleted only
+  after CPA confirms that physical file is disabled. Files replaced during
+  cleanup are preserved.
+- Incomplete cleanup logs a warning and retries on the next reload. If no auth
+  paths have been reported on a cold start, the current SDK cannot expose the
+  auth directory for cleanup. If the original filename cannot be safely
+  restored, a `*.opencode-go-cleanup-*` file is retained for manual recovery.
+
+## Fixes
+
+- Host credential-list errors no longer include untrusted host error text,
+  preventing credential contents echoed by the host from reaching lifecycle
+  errors or cleanup logs.
+
+## Installation and upgrade
+
+Download `cpa-opencode-go_0.4.3_<os>_<arch>.zip` for the **CPA host's operating
+system and architecture** and `checksums.txt` from this release. Verify the ZIP's
+SHA256, stop CPA, and back up its configuration, credential directory, and
+existing plugin library. Replace the library in
+`<cliproxyapi_root>/plugins/<os>/<arch>/`, retaining the included `LICENSE`.
+Restart CPA, verify `/v1/models` with a CPA client key, and make a request.
+
 # v0.4.2
 
 Patch release for **cpa-opencode-go**, based on v0.4.1 and requiring
