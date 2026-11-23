@@ -1,3 +1,25 @@
+# v0.5.0
+
+Minor release for **cpa-opencode-go**, based on v0.4.3 and requiring
+**CLIProxyAPI v8.0.0 or later**. The `opencode-go/<model>` ID format is
+unchanged.
+
+## Behavior changes
+
+- Each model's default protocols now come from its OpenCode Go catalog entry
+  (`api`, with `recommended_api` first) instead of a built-in table of model
+  family prefixes. New model families, such as `iceman-contributor-free`, are
+  published without a plugin update, and a family that moves to another
+  protocol follows the catalog.
+- DeepSeek models default to Chat Completions only, the protocol the catalog
+  lists. To keep reaching them natively through Messages and Responses, switch
+  those protocols on under `models[].protocols`.
+- A model declared in `models` that the catalog does not list must declare its
+  `protocols`; it no longer inherits defaults from its name.
+- A custom `catalog-url` must list each model's protocols under `api`, as the
+  OpenCode Go catalog does. Entries without them are published only when
+  `models[].protocols` switches a protocol on.
+
 # v0.4.3
 
 Patch release for **cpa-opencode-go**, based on v0.4.2 and requiring

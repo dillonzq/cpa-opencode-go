@@ -47,7 +47,7 @@ func TestOpenCodeNativeDeepSeekThinking(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/models":
-			io.WriteString(w, `{"data":[{"id":"deepseek-v4.1-flash"},{"id":"deepseek-v4-pro"}]}`)
+			io.WriteString(w, `{"data":[{"id":"deepseek-v4.1-flash","recommended_api":"chat-completions","api":{"chat-completions":{},"responses":{},"messages":{}}},{"id":"deepseek-v4-pro","recommended_api":"chat-completions","api":{"chat-completions":{},"responses":{},"messages":{}}}]}`)
 		case "/metadata":
 			io.WriteString(w, `{"opencode-go":{"models":{"deepseek-v4.1-flash":{"reasoning":true,"reasoning_options":[{"type":"effort","values":["low","high","max"]}]},"deepseek-v4-pro":{"reasoning":true,"reasoning_options":[{"type":"effort","values":["high","max"]}]}}}}`)
 		default:
@@ -141,7 +141,7 @@ func TestOpenCodeNativeMetadata(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/v1/models":
-			io.WriteString(w, `{"data":[{"id":"glm-metadata-test","context_window":200000,"max_tokens":64000}]}`)
+			io.WriteString(w, `{"data":[{"id":"glm-metadata-test","recommended_api":"chat-completions","api":{"chat-completions":{}},"context_window":200000,"max_tokens":64000}]}`)
 		case "/metadata":
 			fallbackCalls.Add(1)
 			if r.Header.Get("Authorization") != "" {
@@ -303,7 +303,7 @@ func TestOpenCodeNativeABI(t *testing.T) {
 				canceled <- "catalog"
 				return
 			}
-			io.WriteString(w, `{"data":[{"id":"glm-5.3"},{"id":"gpt-5.6-luna"},{"id":"minimax-m3"}]}`)
+			io.WriteString(w, `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}},{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}}]}`)
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -646,7 +646,7 @@ func TestOpenCodeNativeUnload(t *testing.T) {
 	started, canceled := make(chan bool, 2), make(chan bool, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
-			io.WriteString(w, `{"data":[{"id":"glm-5.3"}]}`)
+			io.WriteString(w, `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)
 			return
 		}
 		var req struct {
@@ -741,7 +741,7 @@ func TestOpenCodeNativeAuthNames(t *testing.T) {
 			http.Error(w, "unexpected offline request", 400)
 			return
 		}
-		io.WriteString(w, `{"data":[{"id":"glm-5.3"}]}`)
+		io.WriteString(w, `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)
 	}))
 	defer server.Close()
 	dir := t.TempDir()
@@ -803,7 +803,7 @@ func TestOpenCodeNativeCredentialCleanup(t *testing.T) {
 		if r.URL.Path != "/v1/models" {
 			t.Error("unexpected upstream request")
 		}
-		io.WriteString(w, `{"data":[{"id":"glm-5.3"}]}`)
+		io.WriteString(w, `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)
 	}))
 	defer upstream.Close()
 	dir, authDir := t.TempDir(), t.TempDir()
@@ -954,7 +954,7 @@ func TestOpenCodeNativeCredentialCleanup(t *testing.T) {
 func TestOpenCodeNativeTerminalShapes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
-			io.WriteString(w, `{"data":[{"id":"minimax-m3"},{"id":"gpt-5.6-luna"}]}`)
+			io.WriteString(w, `{"data":[{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}},{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}]}`)
 			return
 		}
 		var req struct {
@@ -1103,7 +1103,7 @@ func TestOpenCodeNativeHTTPStreams(t *testing.T) {
 	var upstreamRequests atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
-			io.WriteString(w, `{"data":[{"id":"glm-5.3"},{"id":"minimax-m3"},{"id":"gpt-5.6-luna"}]}`)
+			io.WriteString(w, `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}},{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}]}`)
 			return
 		}
 

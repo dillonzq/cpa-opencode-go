@@ -45,7 +45,7 @@ func TestDeepSeekThinkingCapabilities(t *testing.T) {
 				cfg.Models = []config.ModelOverride{{Name: tc.model, Metadata: modelmeta.Metadata{Thinking: tc.override}}}
 			}
 			client := metadataClient(func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
-				body := `{"data":[{"id":"` + tc.model + `"` + tc.catalog + `}]}`
+				body := `{"data":[{"id":"` + tc.model + `","api":{"chat-completions":{}}` + tc.catalog + `}]}`
 				if req.URL == cfg.ModelsDev.URL {
 					body = `{"opencode-go":{"models":{"` + tc.model + `":` + tc.fallback + `}}}`
 				}
@@ -64,7 +64,7 @@ func TestDeepSeekThinkingCapabilities(t *testing.T) {
 
 func TestDeepSeekThinkingReconfigurePreservesSources(t *testing.T) {
 	cfg := metadataConfig()
-	cfg.Models = []config.ModelOverride{{Name: "deepseek-test"}}
+	cfg.Models = []config.ModelOverride{{Name: "deepseek-test", Protocols: map[string]config.ProtocolOverride{"chat-completions": {}}}}
 	m := New(cfg, nil)
 	m.fallback = map[string]modelmeta.Metadata{"deepseek-test": {Thinking: &modelmeta.Thinking{Levels: []string{"high"}}}}
 	m.swap(nil)
@@ -73,7 +73,7 @@ func TestDeepSeekThinkingReconfigurePreservesSources(t *testing.T) {
 	}
 	// Reconfiguration reuses the cached fallback. The compatibility default must
 	// not mutate it, or a later explicit opt-out would retain the added none.
-	cfg.Models = []config.ModelOverride{{Name: "deepseek-test", Metadata: modelmeta.Metadata{Thinking: &modelmeta.Thinking{ZeroAllowed: modelmeta.Ptr(false)}}}}
+	cfg.Models = []config.ModelOverride{{Name: "deepseek-test", Protocols: map[string]config.ProtocolOverride{"chat-completions": {}}, Metadata: modelmeta.Metadata{Thinking: &modelmeta.Thinking{ZeroAllowed: modelmeta.Ptr(false)}}}}
 	reconfigured := New(cfg, nil)
 	reconfigured.SeedFallbackFrom(m)
 	reconfigured.SeedFrom(m)

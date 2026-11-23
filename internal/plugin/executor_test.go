@@ -21,9 +21,9 @@ import (
 
 const (
 	multiRouteCatalog = `{"data":[
-		{"id":"glm-5.3"},
-		{"id":"minimax-m3"},
-		{"id":"gpt-5.6-luna"}
+		{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}},
+		{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}
 	]}`
 	ccRequestBody        = `{"model":"whatever","messages":[{"role":"user","content":"hi"}]}`
 	ccResponseBody       = `{"id":"r1","model":"glm-5.3","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`
@@ -1008,7 +1008,7 @@ func TestExecuteStreamExceedsMaxResponseBytes(t *testing.T) {
 	f := &fakeCaller{}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
-	tinyCatalog := `{"data":[{"id":"glm-5.4"}]}`
+	tinyCatalog := `{"data":[{"id":"glm-5.4","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	frame := `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"` +
 		strings.Repeat("x", 60) + `"}]}` + "\n\n"
 	script := streamScript{upstreamID: "up-cap", frames: []string{frame, frame}}
@@ -1043,7 +1043,7 @@ func TestExecuteStreamWatchdogClosesIdleUpstream(t *testing.T) {
 	f := &fakeCaller{}
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
-	tinyCatalog := `{"data":[{"id":"glm-5.4"}]}`
+	tinyCatalog := `{"data":[{"id":"glm-5.4","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	var once sync.Once
 	idle := make(chan struct{})
 	f.responder = wrapWithCatalog(tinyCatalog, func(method string, payload []byte) ([]byte, error) {
@@ -1336,7 +1336,7 @@ func TestExecuteMaxResponseBytesGuard(t *testing.T) {
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 	// The cap also applies to catalog fetches, so keep the catalog tiny and
 	// make only the upstream completion body exceed it.
-	tinyCatalog := `{"data":[{"id":"glm-5.4"}]}`
+	tinyCatalog := `{"data":[{"id":"glm-5.4","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	bigBody := `{"id":"r2","choices":[{"index":0,"message":{"role":"assistant","content":"` +
 		strings.Repeat("x", 150) + `"},"finish_reason":"stop"}]}`
 	f.responder = wrapWithCatalog(tinyCatalog, upstreamRouter(t, map[string]string{

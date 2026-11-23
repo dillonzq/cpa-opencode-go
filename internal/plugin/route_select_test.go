@@ -68,23 +68,26 @@ func TestSelectRoutePrefersNativeThenLeastLoss(t *testing.T) {
 	}
 }
 
-// DeepSeek serves Chat, Responses, and Messages, so every client format
-// reaches its own upstream protocol without conversion.
-func TestExecuteDeepSeekServesEachSourceNatively(t *testing.T) {
+// The catalog lists only Chat for DeepSeek. Without configuration every client
+// is converted to Chat; switching Messages and Responses on as the README
+// shows lets each client format reach its own upstream protocol.
+func TestExecuteDeepSeekProtocolOptIn(t *testing.T) {
+	const optIn = "\nmodels:\n  - name: deepseek-v4-pro\n    protocols:\n      messages: {enabled: true}\n      responses: {enabled: true}\n"
 	cases := []struct {
-		format, body, path, response, marker string
+		name, yaml, format, body, path, response, marker string
 	}{
-		{"openai", ccRequestBody, "/openai/v1/chat/completions", ccResponseBody, `"finish_reason":"stop"`},
-		{"claude", claudeRequestBody, "/anthropic/v1/messages", claudeResponseBody, `"stop_reason":"end_turn"`},
-		{"openai-response", `{"model":"x","input":"hi"}`, "/openai/v1/responses", responsesPassthrough, `"object":"response"`},
+		{"default/claude", "", "claude", claudeRequestBody, "/openai/v1/chat/completions", ccResponseBody, `"stop_reason":"end_turn"`},
+		{"default/openai-response", "", "openai-response", `{"model":"x","input":"hi"}`, "/openai/v1/chat/completions", ccResponseBody, `"object":"response"`},
+		{"opt-in/claude", optIn, "claude", claudeRequestBody, "/anthropic/v1/messages", claudeResponseBody, `"stop_reason":"end_turn"`},
+		{"opt-in/openai-response", optIn, "openai-response", `{"model":"x","input":"hi"}`, "/openai/v1/responses", responsesPassthrough, `"object":"response"`},
 	}
 	for _, c := range cases {
-		t.Run(c.format, func(t *testing.T) {
+		t.Run(c.name, func(t *testing.T) {
 			f := &fakeCaller{}
 			m := NewManager(NewHostBridge(f.call))
 			t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
-			f.responder = wrapWithCatalog(`{"data":[{"id":"deepseek-v4-pro"}]}`, upstreamRouter(t, map[string]string{c.path: c.response}))
-			if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
+			f.responder = wrapWithCatalog(`{"data":[{"id":"deepseek-v4-pro","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`, upstreamRouter(t, map[string]string{c.path: c.response}))
+			if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML+c.yaml)); err != nil {
 				t.Fatalf("register: %v", err)
 			}
 			env := mustExecute(t, m, "opencode-go/deepseek-v4-pro", c.format, []byte(c.body))
@@ -93,11 +96,11 @@ func TestExecuteDeepSeekServesEachSourceNatively(t *testing.T) {
 			}
 			var out pluginapi.ExecutorResponse
 			if err := json.Unmarshal(env.Result, &out); err != nil || !strings.Contains(string(out.Payload), c.marker) {
-				t.Fatalf("payload = %s (%v), want native %s", out.Payload, err, c.marker)
+				t.Fatalf("payload = %s (%v), want %s", out.Payload, err, c.marker)
 			}
 			wire := lastWire(t, f, pluginabi.MethodHostHTTPDo)
 			if wire["url"] != "https://opencode.ai/inference/go"+c.path {
-				t.Fatalf("url = %v, want native %s", wire["url"], c.path)
+				t.Fatalf("url = %v, want %s", wire["url"], c.path)
 			}
 			assertField(t, upstreamRequestBody(t, f, pluginabi.MethodHostHTTPDo), "model", "deepseek-v4-pro")
 		})
@@ -133,7 +136,7 @@ func assertGeminiHeaders(t *testing.T, wire map[string]any) {
 }
 
 func TestExecuteChatClientOnGeminiModel(t *testing.T) {
-	const catalogBody = `{"data":[{"id":"gemini-4-argon-contributor"}]}`
+	const catalogBody = `{"data":[{"id":"gemini-4-argon-contributor","recommended_api":"generate-content","api":{"generate-content":{}}}]}`
 	t.Run("non-stream", func(t *testing.T) {
 		m, f := newGeminiManager(t, catalogBody, upstreamRouter(t, map[string]string{":generateContent": geminiResponseBody}))
 		env := mustExecute(t, m, "opencode-go/gemini-4-argon-contributor", "openai", []byte(ccRequestBody))
@@ -193,7 +196,7 @@ func TestExecuteChatClientOnGeminiModel(t *testing.T) {
 
 func TestExecuteGeminiClient(t *testing.T) {
 	t.Run("native passthrough", func(t *testing.T) {
-		m, f := newGeminiManager(t, `{"data":[{"id":"gemini-4-argon-contributor"}]}`, upstreamRouter(t, map[string]string{":generateContent": geminiResponseBody}))
+		m, f := newGeminiManager(t, `{"data":[{"id":"gemini-4-argon-contributor","recommended_api":"generate-content","api":{"generate-content":{}}}]}`, upstreamRouter(t, map[string]string{":generateContent": geminiResponseBody}))
 		env := mustExecute(t, m, "opencode-go/gemini-4-argon-contributor", "gemini", []byte(geminiRequestBody))
 		if !env.OK {
 			t.Fatalf("execute: %+v", env.Error)
@@ -213,7 +216,7 @@ func TestExecuteGeminiClient(t *testing.T) {
 		}
 	})
 	t.Run("stream to a Chat model", func(t *testing.T) {
-		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3"}]}`, streamResponder(streamScript{upstreamID: "up-chat", frames: chatSSEFrames}))
+		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`, streamResponder(streamScript{upstreamID: "up-chat", frames: chatSSEFrames}))
 		raw, err := m.HandleCall(pluginabi.MethodExecutorExecuteStream, execStreamReqBody("opencode-go/glm-5.3", "gemini", []byte(geminiRequestBody), "down-chat"))
 		if err != nil || !decodeEnv(t, raw).OK {
 			t.Fatalf("execute_stream: %v %s", err, raw)
@@ -245,7 +248,7 @@ func TestExecuteGeminiClient(t *testing.T) {
 		}
 	})
 	t.Run("execute_stream without the Stream flag", func(t *testing.T) {
-		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3"}]}`, streamResponder(streamScript{upstreamID: "up-chat", frames: chatSSEFrames}))
+		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`, streamResponder(streamScript{upstreamID: "up-chat", frames: chatSSEFrames}))
 		var req executorRequest
 		if err := json.Unmarshal(execStreamReqBody("opencode-go/glm-5.3", "gemini", []byte(geminiRequestBody), "down-chat"), &req); err != nil {
 			t.Fatal(err)
@@ -263,7 +266,7 @@ func TestExecuteGeminiClient(t *testing.T) {
 		assertField(t, upstreamRequestBody(t, f, pluginabi.MethodHostHTTPDoStream), "stream", true)
 	})
 	t.Run("non-stream to a Chat model", func(t *testing.T) {
-		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3"}]}`, upstreamRouter(t, map[string]string{"/openai/v1/chat/completions": ccResponseBody}))
+		m, f := newGeminiManager(t, `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`, upstreamRouter(t, map[string]string{"/openai/v1/chat/completions": ccResponseBody}))
 		env := mustExecute(t, m, "opencode-go/glm-5.3", "gemini", []byte(geminiRequestBody))
 		if !env.OK {
 			t.Fatalf("execute: %+v", env.Error)

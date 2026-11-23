@@ -16,25 +16,20 @@ func TestConfiguredModelsAddAndOverride(t *testing.T) {
 	cfg := testCfg()
 	cfg.Models = []config.ModelOverride{
 		{Name: "glm-existing", Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Override")}},
-		{Name: "glm-custom", Metadata: modelmeta.Metadata{Context: modelmeta.Ptr(int64(200000))}},
 		{Name: "custom-model", Protocols: map[string]config.ProtocolOverride{"responses": {}}, Metadata: modelmeta.Metadata{Output: modelmeta.Ptr(int64(64000))}},
 		{Name: "unknown-model"},
 	}
-	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-existing","display_name":"Catalog"}]}`)}}
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-existing","recommended_api":"chat-completions","api":{"chat-completions":{}},"display_name":"Catalog"}]}`)}}
 	m := New(cfg, fc)
 	mustRefresh(t, m)
-	if len(m.Models()) != 3 {
+	if len(m.Models()) != 2 {
 		t.Fatalf("models=%+v", m.Models())
 	}
 	existing := findModel(t, m.Models(), "glm-existing")
 	if existing.DisplayName != "Override" || existing.UserDefined {
 		t.Fatalf("existing model duplicated or misclassified: %+v", existing)
 	}
-	custom := findModel(t, m.Models(), "glm-custom")
-	if !custom.UserDefined || custom.PublicID != "opencode-go/glm-custom" || primary(custom) != RouteChatCompletions || custom.ContextLimit != 200000 {
-		t.Fatalf("family-routed declaration: %+v", custom)
-	}
-	custom = findModel(t, m.Models(), "custom-model")
+	custom := findModel(t, m.Models(), "custom-model")
 	if !custom.UserDefined || len(custom.Routes) != 1 || custom.Routes[0] != (Target{RouteResponses, "/openai/v1/responses"}) || custom.OutputLimit != 64000 {
 		t.Fatalf("explicit route: %+v", custom)
 	}
@@ -53,8 +48,8 @@ func TestConfiguredModelsSurviveCatalogEmptyAndFailure(t *testing.T) {
 		t.Run(map[bool]string{false: "fail-closed", true: "stale"}[stale], func(t *testing.T) {
 			cfg := testCfg()
 			cfg.Catalog.StaleWhileUnavailable = stale
-			cfg.Models = []config.ModelOverride{{Name: "glm-custom"}}
-			fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-discovered"}]}`)}}
+			cfg.Models = []config.ModelOverride{{Name: "glm-custom", Protocols: map[string]config.ProtocolOverride{"chat-completions": {}}}}
+			fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-discovered","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)}}
 			m := New(cfg, fc)
 			if len(m.Models()) != 1 || !m.Models()[0].UserDefined {
 				t.Fatal("configured model unavailable before first refresh")
@@ -81,8 +76,8 @@ func TestConfiguredModelsSurviveCatalogEmptyAndFailure(t *testing.T) {
 
 func TestConfiguredModelRemovalAndProtocolSwitches(t *testing.T) {
 	cfg := testCfg()
-	cfg.Models = []config.ModelOverride{{Name: "glm-custom"}}
-	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-discovered"}]}`)}}
+	cfg.Models = []config.ModelOverride{{Name: "glm-custom", Protocols: map[string]config.ProtocolOverride{"chat-completions": {}}}}
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-discovered","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)}}
 	old := New(cfg, fc)
 	mustRefresh(t, old)
 	cfg.Models = nil
@@ -94,17 +89,11 @@ func TestConfiguredModelRemovalAndProtocolSwitches(t *testing.T) {
 	if _, ok := m.Lookup("glm-discovered"); !ok {
 		t.Fatal("genuine discovered snapshot lost")
 	}
-	cfg.Models = nil
-	declare(&cfg, "glm-custom", off("chat-completions"))
-	m = New(cfg, fc)
-	if len(m.Models()) != 0 || len(m.Unsupported()) != 1 {
-		t.Fatal("custom model bypassed protocol disable")
-	}
 }
 
 func TestConfiguredModelFallbackWithFailedCatalog(t *testing.T) {
 	cfg := metadataConfig()
-	cfg.Models = []config.ModelOverride{{Name: "glm-extra", Metadata: modelmeta.Metadata{Output: modelmeta.Ptr(int64(64000))}}}
+	cfg.Models = []config.ModelOverride{{Name: "glm-extra", Protocols: map[string]config.ProtocolOverride{"chat-completions": {}}, Metadata: modelmeta.Metadata{Output: modelmeta.Ptr(int64(64000))}}}
 	m := New(cfg, metadataClient(func(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
 		if req.URL == cfg.CatalogURL {
 			return pluginapi.HTTPResponse{}, errors.New("offline")
@@ -128,7 +117,7 @@ func TestModelAliasPublishesAliasAndSendsUpstreamName(t *testing.T) {
 		cfg := testCfg()
 		cfg.ModelPrefix.Enabled = c.prefix
 		cfg.Models = []config.ModelOverride{{Name: "minimax-m3", Alias: "MiniMax-M3"}}
-		fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"minimax-m3"}]}`)}}
+		fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}}]}`)}}
 		m := New(cfg, fc)
 		mustRefresh(t, m)
 		rec := findModel(t, m.Models(), "minimax-m3")
@@ -149,7 +138,7 @@ func TestModelAliasPublishesAliasAndSendsUpstreamName(t *testing.T) {
 func TestModelAliasCollidingWithAnotherModelIsExcluded(t *testing.T) {
 	cfg := testCfg()
 	cfg.Models = []config.ModelOverride{{Name: "glm-5.2", Alias: "glm-5.3"}}
-	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-5.3"},{"id":"glm-5.2"}]}`)}}
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)}}
 	m := New(cfg, fc)
 	mustRefresh(t, m)
 	var got []string

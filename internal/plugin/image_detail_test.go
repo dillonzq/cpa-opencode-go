@@ -87,7 +87,7 @@ func TestExecuteDeepSeekOriginalImageDetail(t *testing.T) {
 					if stream {
 						responder = streamResponder(streamScript{upstreamID: "up-image", frames: frames})
 					}
-					f := &fakeCaller{responder: wrapWithCatalog(`{"data":[{"id":"deepseek-v4.1-flash"}]}`, responder)}
+					f := &fakeCaller{responder: wrapWithCatalog(`{"data":[{"id":"deepseek-v4.1-flash","recommended_api":"chat-completions","api":{"chat-completions":{},"responses":{},"messages":{}}}]}`, responder)}
 					m := NewManager(NewHostBridge(f.call))
 					t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 					registered, err := m.HandleCall("plugin.register", lifecycleRequestBody(yaml))

@@ -2,8 +2,8 @@
 // normalizes metadata, assigns routes, and serves the last good snapshot
 // (FR-002, FR-003, FR-004, FR-010).
 //
-// Protocol resolution: the built-in compatibility table patched by the
-// user's models[].protocols switches; a model left without protocols is
+// Protocol resolution: the protocols the catalog entry advertises, patched
+// by the user's models[].protocols switches; a model left without protocols is
 // unsupported (excluded from the routable set, kept in diagnostics).
 //
 // No scheduling lives here; M3 wires the refresh cadence.
@@ -43,8 +43,8 @@ const (
 	RouteGemini          Route = "gemini"
 )
 
-// protocolOrder lists every route; protocols a model declaration adds beyond
-// its built-in set follow in this order.
+// protocolOrder lists every route. Catalog routes other than the recommended
+// one, then routes a model declaration switches on, follow in this order.
 var protocolOrder = []Route{RouteChatCompletions, RouteMessages, RouteResponses, RouteGemini}
 
 // routeEndpoints maps each route to its default endpoint path below base-url.
@@ -90,8 +90,9 @@ type ModelRecord struct {
 	UpstreamID  string
 	DisplayName string
 	Description string
-	// Routes lists the supported protocols in declaration order; the first
-	// is the documented primary endpoint.
+	// Routes lists the supported protocols: the catalog's recommended API,
+	// its other APIs, then routes switched on in config, each group in
+	// protocolOrder. Requests pick a route by client format, not this order.
 	Routes       []Target
 	ContextLimit int64
 	OutputLimit  int64
@@ -143,7 +144,10 @@ type rawModel struct {
 	InputModalities  []string            `json:"input_modalities"`
 	OutputModalities []string            `json:"output_modalities"`
 	ReasoningLevels  []rawReasoningLevel `json:"supported_reasoning_levels"`
-	userDefined      bool
+	// RecommendedAPI and API name the upstream protocols serving the model.
+	RecommendedAPI string                     `json:"recommended_api"`
+	API            map[string]json.RawMessage `json:"api"`
+	userDefined    bool
 }
 
 // rawReasoningLevel matches a Codex supported_reasoning_levels entry.
@@ -151,31 +155,35 @@ type rawReasoningLevel struct {
 	Effort string `json:"effort"`
 }
 
-// prefixRoutes follows the OpenCode Go endpoint table
-// (https://opencode.ai/docs/go/#endpoints) and covers unknown variants of
-// known families. The first protocol is the documented endpoint; DeepSeek
-// also serves Responses and Messages. Longest prefix wins (list is ordered
-// longest-first).
-var prefixRoutes = []struct {
-	prefix string
-	routes []Route
-}{
-	{"minimax-m3.1-flash", []Route{RouteChatCompletions}},
-	{"muse-spark", []Route{RouteResponses}},
-	{"deepseek", []Route{RouteChatCompletions, RouteResponses, RouteMessages}},
-	{"longcat", []Route{RouteChatCompletions}},
-	{"minimax", []Route{RouteMessages}},
-	{"claude", []Route{RouteMessages}},
-	{"gemini", []Route{RouteGemini}},
-	{"beam", []Route{RouteChatCompletions}},
-	{"grok", []Route{RouteResponses}},
-	{"kimi", []Route{RouteChatCompletions}},
-	{"mimo", []Route{RouteChatCompletions}},
-	{"qwen", []Route{RouteMessages}},
-	{"step", []Route{RouteChatCompletions}},
-	{"glm", []Route{RouteChatCompletions}},
-	{"gpt", []Route{RouteResponses}},
-	{"hy", []Route{RouteChatCompletions}},
+// catalogAPIRoutes maps the API names of a catalog entry's api map and
+// recommended_api to routes. APIs without a route, such as
+// "interactions", are ignored.
+var catalogAPIRoutes = map[string]Route{
+	"chat-completions": RouteChatCompletions,
+	"messages":         RouteMessages,
+	"responses":        RouteResponses,
+	"generate-content": RouteGemini,
+}
+
+// routes returns the protocols the catalog advertises in the entry's api map:
+// the recommended API first when the map lists it, then the rest in
+// protocolOrder.
+func (e rawModel) routes() []Route {
+	var routes []Route
+	for _, r := range protocolOrder {
+		for name := range e.API {
+			if catalogAPIRoutes[name] == r {
+				routes = append(routes, r)
+				break
+			}
+		}
+	}
+	if i := slices.Index(routes, catalogAPIRoutes[e.RecommendedAPI]); i > 0 {
+		r := routes[i]
+		copy(routes[1:i+1], routes[:i])
+		routes[0] = r
+	}
+	return routes
 }
 
 // Manager owns the catalog snapshot. All accessors are safe for
@@ -364,7 +372,7 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 			continue
 		}
 		seen[e.ID] = true
-		targets, disabled, warn := m.resolve(e.ID, overrides[e.ID].Protocols)
+		targets, disabled, warn := m.resolve(e.ID, e.routes(), overrides[e.ID].Protocols)
 		if warn != "" {
 			warns = append(warns, warn)
 		}
@@ -434,19 +442,11 @@ func (m *Manager) swap(entries []rawModel, extraWarns ...string) {
 	m.raw, m.models, m.index, m.unsup, m.warns = entries, models, index, unsup, warns
 }
 
-// resolve builds a model's targets: the compatibility table (family prefix)
+// resolve builds a model's targets: the catalog's advertised protocols
 // patched by the model's declaration, whose entries switch protocols on or
 // off. Endpoints take the model's path, then the global protocols path, then
-// the protocol default. disabled lists the built-in protocols switched off.
-func (m *Manager) resolve(id string, declared map[string]config.ProtocolOverride) (targets []Target, disabled []string, warn string) {
-	var routes []Route
-	lower := strings.ToLower(id)
-	for _, p := range prefixRoutes {
-		if strings.HasPrefix(lower, p.prefix) {
-			routes = append(routes, p.routes...)
-			break
-		}
-	}
+// the protocol default. disabled lists the advertised protocols switched off.
+func (m *Manager) resolve(id string, routes []Route, declared map[string]config.ProtocolOverride) (targets []Target, disabled []string, warn string) {
 	for _, r := range protocolOrder {
 		if p, ok := declared[string(r)]; ok && p.IsEnabled() && !slices.Contains(routes, r) {
 			routes = append(routes, r)

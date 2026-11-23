@@ -78,18 +78,18 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 
 ## 协议选择
 
-每个模型对每种上游协议各有一个开关。默认开关依据 [OpenCode Go 端点表](https://opencode.ai/docs/go/#endpoints)，按模型家族前缀匹配：
+每个模型对每种上游协议各有一个开关。默认开启的协议是该模型在 OpenCode Go 目录（`/v1/models`）条目的 `api` 中列出的协议：
 
-| 模型家族 | Chat Completions | Messages | Responses | Google GenerateContent |
-|---|:-:|:-:|:-:|:-:|
-| `gpt-*`、`grok-*`、`muse-spark-*` | – | – | ✓ | – |
-| `claude-*`、`minimax-*`（`minimax-m3.1-flash*` 除外）、`qwen*` | – | ✓ | – | – |
-| `glm-*`、`kimi-*`、`longcat-*`、`mimo-*`、`minimax-m3.1-flash*`、`hy*`、`step-*`、`beam-*` | ✓ | – | – | – |
-| `gemini-*` | – | – | – | ✓ |
-| `deepseek-*` | ✓ | ✓ | ✓ | – |
-| 其他 ID | – | – | – | – |
+| 目录 API | 协议 |
+|---|---|
+| `chat-completions` | Chat Completions |
+| `messages` | Messages |
+| `responses` | Responses |
+| `generate-content` | Google GenerateContent |
 
-✓ 表示开启，– 表示关闭。文档中 DeepSeek 只列出了 Chat Completions，但网关同样通过 Responses 和 Messages 提供服务。所有协议都关闭的模型不会发布；其他 ID 需在 [`models[].protocols`](#协议配置) 中开启协议。
+目录中的 `recommended_api` 在 `api` 也列出时是模型的首选协议；请求仍按下文所述，根据客户端格式在已开启的协议中选择。其他目录 API（例如 `interactions`）没有对应路由，会被忽略。所有协议都关闭的模型不会发布。[`models[].protocols`](#协议配置) 可以为任何模型开启或关闭协议；在其中声明但目录未列出的模型，也需要声明其协议。
+
+网关同样通过 Responses 和 Messages 提供 DeepSeek，但目录没有列出这两种协议。开启它们即可无需转换地访问 DeepSeek，示例见[协议配置](#协议配置)。
 
 每个请求按客户端格式对应的顺序，选择模型支持的第一个协议：
 
@@ -107,7 +107,7 @@ OpenCode Go 通过多种 API 协议提供模型，包括 OpenAI Chat Completions
 - Chat Completions 无法表示只有 URI 的文档；
 - GenerateContent 的签名和 thinking 语义与其他协议差异最大，因此对其他客户端都排在最后。
 
-例如，`opencode-go/deepseek-v4-pro` 收到 Claude Code 的请求时直接走 `/anthropic/v1/messages`，收到 Codex 的请求时直接走 `/openai/v1/responses`，都无需转换。
+例如，按下方配置开启 Messages 和 Responses 后，`opencode-go/deepseek-v4-pro` 收到 Claude Code 的请求时直接走 `/anthropic/v1/messages`，收到 Codex 的请求时直接走 `/openai/v1/responses`，都无需转换。
 
 ### 协议配置
 
@@ -119,10 +119,12 @@ protocols:                       # 作用于所有模型，只能设置端点
     endpoint: /openai/v1/responses
 models:
   - name: deepseek-v4-pro
-    protocols:                   # 只使用 Chat Completions 和 Messages
+    protocols:                   # 网关原生支持，但目录未列出
+      messages:
+        enabled: true
       responses:
-        enabled: false
-  - name: custom-model           # 未知家族的新 ID
+        enabled: true
+  - name: custom-model           # 目录未列出的 ID
     protocols:
       messages:
         enabled: true
@@ -281,8 +283,8 @@ plugins:
               endpoint: "/anthropic/v1/messages"   # 可选，必须以 / 开头
         - name: "deepseek-v4-pro"
           protocols:
-            responses:
-              enabled: false             # 关闭一个默认开启的协议
+            messages:
+              enabled: true              # 开启目录未列出的协议
 
       # 请求执行设置
       request-timeout: "5m"              # 非流式请求或流建立的超时（默认："5m"）
@@ -330,9 +332,9 @@ models:
 
 ### 模型目录能力扩展
 
-`catalog-url` 接受 OpenAI 风格的 `{"data":[{"id":"..."}]}` 列表。可选元数据字段包括 `display_name`、`description`、`context_window`、`max_tokens`、`input_modalities`、`output_modalities` 和 `supported_reasoning_levels`（包含 `effort` 和可选 `description` 的对象数组）。推理档位映射为宿主的 `Thinking.Levels`，`none` 同时启用 `ZeroAllowed`。缺失推理字段表示未知，空数组明确表示没有推理档位。旧扩展 `context_length`、`max_output_tokens`、`input_modes`、`output_modes` 和 `thinking` 不再解析。目录仍采用 `data`/`id`，不接受完整 Codex `models`/`slug` 响应。
+`catalog-url` 接受 OpenAI 风格的 `{"data":[{"id":"...","api":{"chat-completions":{}}}]}` 列表。每个条目的 `api` 映射和可选的 `recommended_api` 决定其协议（见[协议选择](#协议选择)）；既没有受支持的 `api` 键、也没有 `models[].protocols` 的条目不会发布。可选元数据字段包括 `display_name`、`description`、`context_window`、`max_tokens`、`input_modalities`、`output_modalities` 和 `supported_reasoning_levels`（包含 `effort` 和可选 `description` 的对象数组）。推理档位映射为宿主的 `Thinking.Levels`，`none` 同时启用 `ZeroAllowed`。缺失推理字段表示未知，空数组明确表示没有推理档位。旧扩展 `context_length`、`max_output_tokens`、`input_modes`、`output_modes` 和 `thinking` 不再解析。目录仍采用 `data`/`id`，不接受完整 Codex `models`/`slug` 响应。
 
-元数据按字段合并，优先级为 **用户 `models` 配置 > catalog 接口 > models.dev**。显式 `0`、`false` 和空数组都会覆盖低优先级数据，`thinking` 的各字段也独立合并。`models[].name` 使用上游原始 ID：目录中已有的模型覆盖元数据，目录中不存在的模型作为新增声明。新增模型沿用家族的默认开关，再叠加自身的 `protocols`；协议开关、端点检查和 ID 冲突检查均适用。显式声明的模型在目录为空或不可用时仍保留，包括 `stale-while-unavailable: false`；删除声明后模型移除，除非上游目录仍列出该 ID。models.dev 本身不会新增模型。覆盖字段沿用 CPA 供应商配置名称：`display-name`、`max-context-length`、`input-modalities`、`output-modalities` 和 `thinking`（`min`、`max`、`zero-allowed`、`dynamic-allowed`、`levels`）；`description` 和 `max-tokens` 是本插件新增的扩展。
+元数据按字段合并，优先级为 **用户 `models` 配置 > catalog 接口 > models.dev**。显式 `0`、`false` 和空数组都会覆盖低优先级数据，`thinking` 的各字段也独立合并。`models[].name` 使用上游原始 ID：目录中已有的模型覆盖元数据，目录中不存在的模型作为新增声明。新增模型只通过自身声明的 `protocols` 路由；协议开关、端点检查和 ID 冲突检查均适用。声明了 `protocols` 的模型在目录为空或不可用时仍保留，包括 `stale-while-unavailable: false`；删除声明后模型移除，除非上游目录仍列出该 ID。models.dev 本身不会新增模型。覆盖字段沿用 CPA 供应商配置名称：`display-name`、`max-context-length`、`input-modalities`、`output-modalities` 和 `thinking`（`min`、`max`、`zero-allowed`、`dynamic-allowed`、`levels`）；`description` 和 `max-tokens` 是本插件新增的扩展。
 
 DeepSeek 模型还会在用户覆盖前补充 `thinking.zero-allowed: true`，并向非空推理档位列表添加 `none`。这表示 DeepSeek 独立的思考开关，避免元数据源只列出开启时的档位，导致 CPA 在插件执行前把 `none` 改成最低档。未知或空档位列表保持不变。用户显式设置 `zero-allowed: false` 时不应用这项兼容默认值；用户配置的 `levels` 仍优先。
 
@@ -355,7 +357,7 @@ models-dev:
   refresh-interval: 24h              # 默认 24 小时，最短 1 分钟
 ```
 
-未知家族的新模型需要同时声明模型及协议：
+目录未列出的模型需要同时声明模型及协议：
 
 ```yaml
 models:
