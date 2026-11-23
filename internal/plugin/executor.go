@@ -143,7 +143,7 @@ func (m *Manager) handleExecute(request []byte) ([]byte, error) {
 	}
 	debugTrace("executor received non-stream status=%d body_len=%d", resp.StatusCode, len(resp.Body))
 	if resp.StatusCode >= 400 {
-		return classEnvelope(errclass.UpstreamStatusError(resp.StatusCode, resp.Body)), nil
+		return classEnvelope(errclass.UpstreamResponseError(resp.StatusCode, resp.Headers, resp.Body)), nil
 	}
 	// Parse/envelope guard only; true OOM prevention belongs to the host transport's byte cap.
 	if int64(len(resp.Body)) > res.cfg.MaxResponseBytes {
@@ -265,7 +265,7 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 			cancel(nil)
 		}
 	}()
-	st, _, id, err := m.bridge.DoStream(ctx, pluginapi.HTTPRequest{
+	st, headers, id, err := m.bridge.DoStream(ctx, pluginapi.HTTPRequest{
 		Method:  http.MethodPost,
 		URL:     url,
 		Headers: upstreamAuthHeaders(res.route.Protocol, res.key, sessionID),
@@ -298,12 +298,20 @@ func (m *Manager) executeStream(req executorRequest) ([]byte, error) {
 				case <-watchDone:
 				}
 			}()
-			body, _, _, _ = m.bridge.StreamRead(id)
+			// The host relays the body in arbitrary chunks; classification
+			// needs it whole, up to the bound it inspects.
+			for len(body) < errclass.ErrorBodyLimit {
+				chunk, errMsg, done, err := m.bridge.StreamRead(id)
+				body = append(body, chunk...)
+				if done || errMsg != "" || err != nil {
+					break
+				}
+			}
 			closeUpstream()
 			close(watchDone)
 			<-watchExited
 		}
-		return classEnvelope(errclass.UpstreamStatusError(st, body)), nil
+		return classEnvelope(errclass.UpstreamResponseError(st, headers, body)), nil
 	}
 
 	downID := req.StreamID
