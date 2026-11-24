@@ -437,8 +437,9 @@ func TestRegisterSuccessPublishesModels(t *testing.T) {
 	}
 	var reg registrationResult
 	decodeResult(t, resp, &reg)
-	if reg.SchemaVersion != pluginabi.SchemaVersion {
-		t.Fatalf("schema_version = %d, want %d", reg.SchemaVersion, pluginabi.SchemaVersion)
+	// CLIProxyAPI v8.0.0 rejects registrations above its schema 6.
+	if reg.SchemaVersion != 6 {
+		t.Fatalf("schema_version = %d, want 6", reg.SchemaVersion)
 	}
 	if reg.Metadata.Name != "OpenCode Go" || reg.Metadata.Version != pluginVersion ||
 		reg.Metadata.Author != "dillonzq" || reg.Metadata.GitHubRepository != "https://github.com/dillonzq/cpa-opencode-go" ||
@@ -933,7 +934,7 @@ func TestRegisterSurvivesNilHostBridge(t *testing.T) {
 		t.Fatalf("registration must survive unavailable host client: %s", resp)
 	}
 	var reg registrationResult
-	if err := json.Unmarshal(env.Result, &reg); err != nil || reg.SchemaVersion != pluginabi.SchemaVersion {
+	if err := json.Unmarshal(env.Result, &reg); err != nil || reg.SchemaVersion != pluginSchemaVersion {
 		t.Fatalf("degraded registration malformed: %s", resp)
 	}
 }

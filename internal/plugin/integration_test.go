@@ -452,8 +452,8 @@ func TestRegisterAndDiscover(t *testing.T) {
 
 	var reg registrationResult
 	decodeResult(t, mustHandle(t, m, "plugin.register", lifecycleRequestBody(integrationYAML("http://unused.invalid"))), &reg)
-	if reg.SchemaVersion != pluginabi.SchemaVersion {
-		t.Fatalf("schema_version = %d, want %d", reg.SchemaVersion, pluginabi.SchemaVersion)
+	if reg.SchemaVersion != pluginSchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", reg.SchemaVersion, pluginSchemaVersion)
 	}
 	if !reg.Capabilities.ModelProvider || !reg.Capabilities.AuthProvider || !reg.Capabilities.Executor {
 		t.Fatalf("capabilities = %+v", reg.Capabilities)
