@@ -187,9 +187,15 @@ func (m *Manager) HandleCall(method string, request []byte) (resp []byte, err er
 	}
 }
 
+// pluginSchemaVersion is the plugin ABI schema registration advertises. Hosts
+// reject plugins with a newer schema than their own, so it stays at the
+// CLIProxyAPI v8.0.0 schema rather than following pluginabi.SchemaVersion;
+// the plugin uses no feature added since.
+const pluginSchemaVersion uint32 = 6
+
 // lifecycleRequest mirrors rpcLifecycleRequest: config_yaml is base64.
-// The request's schema_version is decoded-and-ignored; registration echoes
-// pluginabi.SchemaVersion.
+// The request's schema_version is decoded-and-ignored; registration advertises
+// pluginSchemaVersion.
 type lifecycleRequest struct {
 	ConfigYAML []byte `json:"config_yaml"`
 }
@@ -278,7 +284,7 @@ func pluginConfigFields() []pluginapi.ConfigField {
 func registrationEnvelope() []byte {
 	formats := []string{"openai", "claude", "openai-response", "gemini"}
 	return okEnvelope(registrationResult{
-		SchemaVersion: pluginabi.SchemaVersion,
+		SchemaVersion: pluginSchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginDisplayName,
 			Version:          pluginVersion,

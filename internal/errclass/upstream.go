@@ -2,7 +2,10 @@ package errclass
 
 import (
 	"encoding/json"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // RedactedSnippet bearer-redacts and truncates a payload snippet for error
@@ -15,10 +18,10 @@ func RedactedSnippet(s string) string {
 	return s
 }
 
-// snippetBound bounds redaction work: only the head of an oversized error
+// ErrorBodyLimit bounds redaction work: only the head of an oversized error
 // body can reach the 256-char snippet, so every upstream >=400 site
 // truncates to this size before scanning (FR-011).
-const snippetBound = 4096
+const ErrorBodyLimit = 4096
 
 // extractErrorMessage attempts to extract a clean, human-readable error
 // message from upstream JSON error bodies (e.g. OpenAI or Anthropic format).
@@ -59,12 +62,72 @@ func extractErrorMessage(body []byte) string {
 // back to a redacted snippet, then classified per §7 via FromStatus.
 // One kernel keeps bounding and redaction from diverging across call sites.
 func UpstreamStatusError(status int, body []byte) *Error {
-	if len(body) > snippetBound {
-		body = body[:snippetBound]
+	if len(body) > ErrorBodyLimit {
+		body = body[:ErrorBodyLimit]
 	}
 	msg := extractErrorMessage(body)
 	if msg == "" {
 		msg = string(body)
 	}
 	return FromStatus(status, RedactedSnippet(msg))
+}
+
+// goUsageLimitType is the error type OpenCode Go returns when one of the
+// key's 5 hour, weekly, or monthly usage windows is exhausted.
+const goUsageLimitType = "GoUsageLimitError"
+
+// UpstreamResponseError classifies an upstream >=400 response like
+// UpstreamStatusError and also reads the response headers. A 429 Go usage
+// limit refusal applies to every model on the key until the window
+// resets, so it is marked credential-scoped and carries the upstream
+// retry-after hint; the host then cools the whole key instead of one
+// model.
+func UpstreamResponseError(status int, headers http.Header, body []byte) *Error {
+	e := UpstreamStatusError(status, body)
+	if status != http.StatusTooManyRequests {
+		return e
+	}
+	if len(body) > ErrorBodyLimit {
+		body = body[:ErrorBodyLimit]
+	}
+	var probe struct {
+		Error struct {
+			Type string `json:"type"`
+		} `json:"error"`
+		Metadata struct {
+			LimitName string `json:"limitName"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(body, &probe) != nil || probe.Error.Type != goUsageLimitType {
+		return e
+	}
+	e.Class = ClassQuota
+	e.CredentialScoped = true
+	e.RetryAfterSeconds = retryAfterSeconds(headers.Get("Retry-After"), time.Now())
+	if name := strings.TrimSpace(probe.Metadata.LimitName); name != "" {
+		e.Message = RedactedSnippet(e.Message + " (" + name + " window)")
+	}
+	return e
+}
+
+// retryAfterSeconds parses a Retry-After value given as delay seconds or
+// an HTTP date, rounding up so the key is never retried before the reset.
+// Missing, invalid, or past values yield 0 (no hint).
+func retryAfterSeconds(value string, now time.Time) int {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(value); err == nil {
+		return max(secs, 0)
+	}
+	at, err := http.ParseTime(value)
+	if err != nil {
+		return 0
+	}
+	d := at.Sub(now)
+	if d <= 0 {
+		return 0
+	}
+	return int((d + time.Second - 1) / time.Second)
 }

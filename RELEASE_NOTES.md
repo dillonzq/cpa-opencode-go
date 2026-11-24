@@ -1,3 +1,19 @@
+# v0.4.4
+
+Patch release for **cpa-opencode-go**, based on v0.4.3 and requiring
+**CLIProxyAPI v8.0.0 or later**. Existing configuration and
+`opencode-go/<model>` IDs remain compatible.
+
+## Fixes
+
+- Reaching a Go usage limit (5 hour, weekly, or monthly) now cools down the
+  whole API key until the window resets, as reported by `retry-after`;
+  without that header, CLIProxyAPI's usual backoff applies to the key.
+  Previously only the requested model cooled down, for about a second, so
+  other models kept sending requests on the exhausted key. The key-wide
+  cooldown needs CLIProxyAPI v8.1.1 or later; older hosts keep the per-model
+  cooldown.
+
 # v0.4.3
 
 Patch release for **cpa-opencode-go**, based on v0.4.2 and requiring

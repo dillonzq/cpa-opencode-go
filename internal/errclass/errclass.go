@@ -31,6 +31,12 @@ type Error struct {
 	Message    string
 	StatusCode int
 	Retryable  bool
+	// RetryAfterSeconds is the upstream retry hint; 0 means none.
+	RetryAfterSeconds int
+	// CredentialScoped marks failures that apply to the whole API key
+	// rather than only the requested model, such as an exhausted Go
+	// usage window.
+	CredentialScoped bool
 }
 
 func (e *Error) Error() string {
@@ -115,10 +121,12 @@ func ToEnvelopeError(e *Error) pluginabi.Error {
 		}
 	}
 	return pluginabi.Error{
-		Code:       string(e.Class),
-		Message:    Redact(e.Message),
-		Retryable:  e.Retryable,
-		HTTPStatus: status,
+		Code:              string(e.Class),
+		Message:           Redact(e.Message),
+		Retryable:         e.Retryable,
+		HTTPStatus:        status,
+		RetryAfterSeconds: e.RetryAfterSeconds,
+		CredentialScoped:  e.CredentialScoped,
 	}
 }
 

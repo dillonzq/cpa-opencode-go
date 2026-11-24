@@ -808,8 +808,9 @@ func TestExecuteStream4xxExtractsUpstreamMessage(t *testing.T) {
 	if !strings.Contains(env.Error.Message, "Invalid temperature: 999.0") {
 		t.Fatalf("error message = %q, want upstream explanation", env.Error.Message)
 	}
-	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamRead)); got != 1 {
-		t.Fatalf("stream reads = %d, want 1", got)
+	// One read for the body, one for its end.
+	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamRead)); got != 2 {
+		t.Fatalf("stream reads = %d, want 2", got)
 	}
 	if got := len(f.callsOf(pluginabi.MethodHostHTTPStreamClose)); got != 1 {
 		t.Fatalf("stream closes = %d, want 1", got)
@@ -1805,5 +1806,52 @@ func TestExecutorResponsesToolsRoundTripStream(t *testing.T) {
 	}
 	if strings.Contains(s, "subagents__spawn_agent") {
 		t.Fatalf("stream wire name leaked downstream:\n%s", s)
+	}
+}
+
+// TestGoUsageLimitCoolsCredential checks that both execution paths pass the
+// upstream headers through, so a Go usage limit cools the whole key.
+func TestGoUsageLimitCoolsCredential(t *testing.T) {
+	const body = `{"type":"error","error":{"type":"GoUsageLimitError","message":"Go usage limit exceeded"},"metadata":{"limitName":"weekly"}}`
+	headers := http.Header{"Retry-After": []string{"3600"}}
+	var reads atomic.Int32
+	responder := func(method string, _ []byte) ([]byte, error) {
+		switch method {
+		case pluginabi.MethodHostHTTPDo:
+			return hostOK(pluginapi.HTTPResponse{StatusCode: http.StatusTooManyRequests, Headers: headers, Body: []byte(body)}), nil
+		case pluginabi.MethodHostHTTPDoStream:
+			return hostOK(hostStreamStartResp{StatusCode: http.StatusTooManyRequests, Headers: headers, StreamID: "up-limit"}), nil
+		case pluginabi.MethodHostHTTPStreamRead:
+			// The host may relay the error body in several chunks.
+			if reads.Add(1) == 1 {
+				return hostOK(hostStreamReadResp{Payload: []byte(body[:20])}), nil
+			}
+			return hostOK(hostStreamReadResp{Payload: []byte(body[20:]), Done: true}), nil
+		}
+		return hostOK(map[string]any{}), nil
+	}
+	for name, call := range map[string]struct {
+		method string
+		body   []byte
+	}{
+		"execute":        {"executor.execute", execReqBody("opencode-go/glm-5.3", "openai", []byte(ccRequestBody), false)},
+		"execute_stream": {"executor.execute_stream", execStreamReqBody("opencode-go/glm-5.3", "openai", []byte(ccRequestBody), "down-limit")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeCaller{responder: wrapWithCatalog(testCatalogJSON, responder)}
+			m := NewManager(NewHostBridge(f.call))
+			t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
+			if _, err := m.HandleCall("plugin.register", lifecycleRequestBody(testValidYAML)); err != nil {
+				t.Fatalf("register: %v", err)
+			}
+			resp, err := m.HandleCall(call.method, call.body)
+			if err != nil {
+				t.Fatalf("%s: %v", call.method, err)
+			}
+			env := decodeEnv(t, resp)
+			if env.Error == nil || env.Error.HTTPStatus != http.StatusTooManyRequests || !env.Error.CredentialScoped || env.Error.RetryAfterSeconds != 3600 {
+				t.Fatalf("error = %+v, want credential-scoped 429 with retry-after 3600", env.Error)
+			}
+		})
 	}
 }
