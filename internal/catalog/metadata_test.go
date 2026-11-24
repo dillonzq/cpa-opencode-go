@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,8 +20,8 @@ func (f metadataClient) Do(ctx context.Context, req pluginapi.HTTPRequest) (plug
 	return f(ctx, req)
 }
 
-const metadataCatalog = `{"data":[{"id":"glm-test","display_name":"Catalog","context_window":200,
-"supported_reasoning_levels":[{"effort":"none"},{"effort":"high"}]},{"id":"glm-catalog"},{"id":"glm-unknown"}]}`
+const metadataCatalog = `{"data":[{"id":"glm-test","recommended_api":"chat-completions","api":{"chat-completions":{}},"display_name":"Catalog","context_window":200,
+"supported_reasoning_levels":[{"effort":"none"},{"effort":"high"}]},{"id":"glm-catalog","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"glm-unknown","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 const metadataFallback = `{"opencode-go":{"models":{
 "glm-test":{"name":"Fallback","description":"Fallback description","limit":{"context":100,"output":64},
 "modalities":{"input":["text","image"],"output":["text"]},"reasoning":true,
@@ -163,7 +164,7 @@ func TestFallbackCacheReconfigureDuringOutage(t *testing.T) {
 	old.mu.Unlock()
 	fallbackFailed = true
 	cfg.Catalog.StaleWhileUnavailable = false
-	cfg.Models = []config.ModelOverride{{Name: "glm-test", Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Reconfigured")}}}
+	cfg.Models = []config.ModelOverride{{Name: "glm-test", Protocols: map[string]config.ProtocolOverride{"chat-completions": {}}, Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Reconfigured")}}}
 	reconfigured := New(cfg, client)
 	reconfigured.SeedFallbackFrom(old)
 	if len(reconfigured.Models()) != 1 || !reconfigured.Models()[0].UserDefined {
@@ -174,8 +175,8 @@ func TestFallbackCacheReconfigureDuringOutage(t *testing.T) {
 	if model.DisplayName != "Reconfigured" || model.OutputLimit != 64 || model.Description != "Fallback description" {
 		t.Fatalf("reconfigure lost fallback or retained old overrides: %+v", model)
 	}
-	if len(reconfigured.Warnings()) != 1 {
-		t.Fatal("fallback outage diagnostic missing")
+	if !slices.Contains(reconfigured.Warnings(), "models.dev fallback unavailable; retaining previous metadata") {
+		t.Fatalf("fallback outage diagnostic missing: %v", reconfigured.Warnings())
 	}
 	changed := cfg
 	changed.ModelsDev.URL = "https://different.test/api.json"
@@ -228,7 +229,7 @@ func TestSeedCatalogPreservesFallbackRefreshedDuringOutage(t *testing.T) {
 	old.mu.Unlock()
 	catalogFailed = true
 	fallbackBody = strings.ReplaceAll(metadataFallback, `"output":64`, `"output":128`)
-	cfg.Models = []config.ModelOverride{{Name: "glm-test", Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Reconfigured")}}}
+	cfg.Models = []config.ModelOverride{{Name: "glm-test", Protocols: map[string]config.ProtocolOverride{"chat-completions": {}}, Metadata: modelmeta.Metadata{DisplayName: modelmeta.Ptr("Reconfigured")}}}
 	m := New(cfg, client)
 	// Match lifecycle ordering: inherit fallback, attempt refresh, then recover
 	// the previous upstream catalog if discovery failed with stale serving on.

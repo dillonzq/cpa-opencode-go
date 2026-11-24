@@ -76,18 +76,18 @@ This plugin exposes OpenCode Go as a single provider (`opencode-go`) backed by a
 
 ## Protocol selection
 
-Each model has a switch per upstream protocol. The default switches follow the [OpenCode Go endpoint table](https://opencode.ai/docs/go/#endpoints), matched by model family prefix:
+Each model has a switch per upstream protocol. By default, the switches are on for the protocols the model's entry in the OpenCode Go catalog (`/v1/models`) lists under `api`:
 
-| Model family | Chat Completions | Messages | Responses | Google GenerateContent |
-|---|:-:|:-:|:-:|:-:|
-| `gpt-*`, `grok-*`, `muse-spark-*` | – | – | ✓ | – |
-| `claude-*`, `minimax-*` (except `minimax-m3.1-flash*`), `qwen*` | – | ✓ | – | – |
-| `glm-*`, `kimi-*`, `longcat-*`, `mimo-*`, `minimax-m3.1-flash*`, `hy*`, `step-*`, `beam-*` | ✓ | – | – | – |
-| `gemini-*` | – | – | – | ✓ |
-| `deepseek-*` | ✓ | ✓ | ✓ | – |
-| Any other ID | – | – | – | – |
+| Catalog API | Protocol |
+|---|---|
+| `chat-completions` | Chat Completions |
+| `messages` | Messages |
+| `responses` | Responses |
+| `generate-content` | Google GenerateContent |
 
-✓ is on and – is off. DeepSeek is documented on Chat Completions only, but the gateway also serves it through Responses and Messages. A model with every protocol off is not published; switch protocols on for other IDs under [`models[].protocols`](#protocol-configuration).
+The catalog's `recommended_api` is the model's primary protocol when `api` lists it; requests still choose among the switched-on protocols by client format, as described below. Other catalog APIs, such as `interactions`, have no route and are ignored. A model with every protocol off is not published. [`models[].protocols`](#protocol-configuration) switches protocols on or off for any model; a model declared there that the catalog does not list needs its protocols declared too.
+
+The gateway also serves DeepSeek through Responses and Messages, which the catalog does not list. Switch them on to reach DeepSeek without conversion; see the example under [Protocol configuration](#protocol-configuration).
 
 For each request, the plugin selects the first protocol the model serves in the client format's order:
 
@@ -105,7 +105,7 @@ The client's own protocol comes first and needs no conversion. The rest are orde
 - Chat Completions cannot carry URI-only documents.
 - GenerateContent differs most in signatures and thinking, so it comes last for every other client.
 
-For example, `opencode-go/deepseek-v4-pro` reaches `/anthropic/v1/messages` from Claude Code and `/openai/v1/responses` from Codex without conversion.
+For example, with Messages and Responses switched on as in the configuration below, `opencode-go/deepseek-v4-pro` reaches `/anthropic/v1/messages` from Claude Code and `/openai/v1/responses` from Codex without conversion.
 
 ### Protocol configuration
 
@@ -117,10 +117,12 @@ protocols:                       # every model; endpoints only
     endpoint: /openai/v1/responses
 models:
   - name: deepseek-v4-pro
-    protocols:                   # Chat Completions and Messages only
+    protocols:                   # also served natively, not in the catalog
+      messages:
+        enabled: true
       responses:
-        enabled: false
-  - name: custom-model           # a new ID outside the known families
+        enabled: true
+  - name: custom-model           # an ID the catalog does not list
     protocols:
       messages:
         enabled: true
@@ -277,8 +279,8 @@ plugins:
               endpoint: "/anthropic/v1/messages"   # optional; must start with /
         - name: "deepseek-v4-pro"
           protocols:
-            responses:
-              enabled: false             # switches off a default protocol
+            messages:
+              enabled: true              # switches on a protocol the catalog does not list
 
       # Execution settings
       request-timeout: "5m"              # non-streaming request, or stream opening (default: "5m")
@@ -326,9 +328,9 @@ models:
 
 ### Catalog capability extensions
 
-`catalog-url` accepts an OpenAI-style `{"data":[{"id":"..."}]}` list. Optional metadata fields are `display_name`, `description`, `context_window`, `max_tokens`, `input_modalities`, `output_modalities`, and `supported_reasoning_levels` (objects with `effort` and optional `description`). Reasoning efforts are published as host `Thinking.Levels`; `none` also enables `ZeroAllowed`. Missing reasoning metadata stays unknown; an empty array explicitly publishes no reasoning levels. Legacy `context_length`, `max_output_tokens`, `input_modes`, `output_modes`, and `thinking` catalog extensions are ignored. This remains a `data`/`id` catalog, not a full Codex `models`/`slug` response.
+`catalog-url` accepts an OpenAI-style `{"data":[{"id":"...","api":{"chat-completions":{}}}]}` list. Each entry's `api` map and optional `recommended_api` set its protocols (see [Protocol selection](#protocol-selection)); an entry with neither a supported `api` key nor `models[].protocols` is not published. Optional metadata fields are `display_name`, `description`, `context_window`, `max_tokens`, `input_modalities`, `output_modalities`, and `supported_reasoning_levels` (objects with `effort` and optional `description`). Reasoning efforts are published as host `Thinking.Levels`; `none` also enables `ZeroAllowed`. Missing reasoning metadata stays unknown; an empty array explicitly publishes no reasoning levels. Legacy `context_length`, `max_output_tokens`, `input_modes`, `output_modes`, and `thinking` catalog extensions are ignored. This remains a `data`/`id` catalog, not a full Codex `models`/`slug` response.
 
-Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. `models[].name` is the exact upstream ID: entries already in the catalog override metadata; entries missing from the catalog declare additional models. New models use their family's default switches plus their own `protocols`. Protocol switches, endpoint checks, and ID collision checks apply to both sources. Explicit declarations remain available when the catalog is empty or unavailable, including under `stale-while-unavailable: false`; removing a declaration removes it unless the upstream catalog still lists it. Models.dev alone never adds models. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
+Metadata is merged field by field with priority **user `models` configuration > catalog > models.dev**. Explicit zero, false, and empty arrays override lower-priority data, including individual `thinking` fields. `models[].name` is the exact upstream ID: entries already in the catalog override metadata; entries missing from the catalog declare additional models. New models are routed only through their own `protocols`. Protocol switches, endpoint checks, and ID collision checks apply to both sources. Explicit declarations with `protocols` remain available when the catalog is empty or unavailable, including under `stale-while-unavailable: false`; removing a declaration removes it unless the upstream catalog still lists it. Models.dev alone never adds models. Provider configuration fields match CPA: `display-name`, `max-context-length`, `input-modalities`, `output-modalities`, and `thinking` (`min`, `max`, `zero-allowed`, `dynamic-allowed`, `levels`). `description` and `max-tokens` are plugin extensions.
 
 DeepSeek models additionally advertise `thinking.zero-allowed: true` and add `none` to non-empty effort lists before user overrides are applied. This describes DeepSeek's separate thinking toggle, which metadata sources can omit when listing enabled efforts, and prevents CPA from changing `none` to the lowest enabled effort before plugin execution. Unknown or empty effort lists stay unchanged. An explicit user `zero-allowed: false` suppresses this compatibility default; user `levels` overrides remain authoritative.
 
@@ -351,7 +353,7 @@ models-dev:
   refresh-interval: 24h              # default; minimum 1m
 ```
 
-For a new ID outside known model families, add its declaration and protocols:
+For an ID the catalog does not list, add its declaration and protocols:
 
 ```yaml
 models:

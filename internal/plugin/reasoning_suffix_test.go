@@ -330,7 +330,7 @@ func TestExecuteThinkingSuffixLiteralIDCollidesWithBaseModel(t *testing.T) {
 	// A real collision: both the base model and a literal parenthesized ID are
 	// routable. CPA matches the base model first, so the stripped name wins and
 	// the recognized suffix is applied instead of reaching the literal ID.
-	const catalogBody = `{"data":[{"id":"glm-5.3"},{"id":"glm-5.3(low)"},{"id":"glm-5.3(kid)"}]}`
+	const catalogBody = `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"glm-5.3(low)","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"glm-5.3(kid)","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	f := &fakeCaller{responder: wrapWithCatalog(catalogBody, upstreamRouter(t, map[string]string{
 		"/openai/v1/chat/completions": ccResponseBody,
 	}))}
@@ -366,7 +366,7 @@ func TestExecuteThinkingSuffixKeepsLiteralCatalogID(t *testing.T) {
 	// catalog ID stays reachable: it keeps its identity and no override. This
 	// is a plugin lookup-layer fallback only; CPA resolves the requested model
 	// against its auth registry before the plugin sees it.
-	const catalogBody = `{"data":[{"id":"glm-weird(kid)"}]}`
+	const catalogBody = `{"data":[{"id":"glm-weird(kid)","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	f := &fakeCaller{responder: wrapWithCatalog(catalogBody, upstreamRouter(t, map[string]string{
 		"/openai/v1/chat/completions": ccResponseBody,
 	}))}

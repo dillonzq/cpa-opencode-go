@@ -169,12 +169,12 @@ func (b *forwardingBridge) call(method string, payload []byte) ([]byte, error) {
 	}
 }
 
-// integrationCatalog is the documented tolerant catalog JSON: no protocol
-// hints, so the built-in compatibility table routes every entry.
+// integrationCatalog is a catalog JSON whose entries advertise their
+// protocols through recommended_api and api.
 const integrationCatalog = `{"data":[` +
-	`{"id":"glm-5.2"},` +
-	`{"id":"gpt-5.6-luna"},` +
-	`{"id":"qwen3.7-max"}` +
+	`{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},` +
+	`{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}},` +
+	`{"id":"qwen3.7-max","recommended_api":"messages","api":{"messages":{}}}` +
 	`]}`
 
 const integrationCompletion = `{"id":"chatcmpl-1","object":"chat.completion","model":"glm-5.2",` +
@@ -445,7 +445,7 @@ func integrationStaticIDs(t *testing.T, m *Manager) map[string]pluginapi.ModelIn
 }
 
 // TestRegisterAndDiscover covers AC §A: one provider, /v1/models discovery
-// through the compatibility table, stable prefixed public IDs with intact
+// through catalog-advertised protocols, stable prefixed public IDs with intact
 // upstream mapping, schema_version 3, model_provider+executor capabilities.
 func TestRegisterAndDiscover(t *testing.T) {
 	m, f, _, _ := newIntegrationManager(t)
@@ -934,8 +934,8 @@ func TestPrefixDisabledE2E(t *testing.T) {
 func TestUnroutableModelExcludedWithDiagnostic(t *testing.T) {
 	m, f, st, yamlText := newIntegrationManager(t)
 	st.setCatalogBody(`{"data":[
-		{"id":"glm-5.2"},
-		{"id":"glm-5.2"},
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},
 		{"id":"weird-unknown-9x"}
 	]}`)
 	resp := mustHandle(t, m, "plugin.reconfigure", lifecycleRequestBody(yamlText))
@@ -974,8 +974,8 @@ func TestExecuteNativePassthroughMalformedUpstream(t *testing.T) {
 func TestDuplicateCatalogEntriesDeduped(t *testing.T) {
 	m, _, st, yamlText := newIntegrationManager(t)
 	st.setCatalogBody(`{"data":[
-		{"id":"glm-5.2"},
-		{"id":"glm-5.2"}
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}
 	]}`)
 	resp := mustHandle(t, m, "plugin.reconfigure", lifecycleRequestBody(yamlText))
 	if env := decodeEnv(t, resp); !env.OK {

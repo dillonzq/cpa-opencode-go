@@ -150,11 +150,11 @@ func TestRefreshRequestShape(t *testing.T) {
 
 func TestCodexCatalogExtensions(t *testing.T) {
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[
-		{"id":"glm-capable","context_window":200000,"max_tokens":64000,
+		{"id":"glm-capable","recommended_api":"chat-completions","api":{"chat-completions":{}},"context_window":200000,"max_tokens":64000,
 		 "input_modalities":["text","image"],"output_modalities":["text"],
 		 "supported_reasoning_levels":[{"effort":"none"},{"effort":"high","description":"More reasoning"}]},
-		{"id":"glm-empty","supported_reasoning_levels":[]},
-		{"id":"glm-legacy","context_length":123,"max_output_tokens":456,
+		{"id":"glm-empty","recommended_api":"chat-completions","api":{"chat-completions":{}},"supported_reasoning_levels":[]},
+		{"id":"glm-legacy","recommended_api":"chat-completions","api":{"chat-completions":{}},"context_length":123,"max_output_tokens":456,
 		 "input_modes":["image"],"output_modes":["audio"],"thinking":{"levels":["high"]}}
 	]}`)}}
 	m := newManager(testCfg(), fc)
@@ -180,9 +180,9 @@ func TestCodexCatalogExtensions(t *testing.T) {
 
 func TestRefreshSuccess(t *testing.T) {
 	body := `{"data":[
-		{"id":"gpt-5.6-luna"},
-		{"id":"glm-5.2"},
-		{"id":"minimax-m3"}
+		{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}},
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}}
 	]}`
 	cfg := testCfg()
 	declare(&cfg, "gpt-5.6-luna", proto("responses", "/v1/responses"))
@@ -225,12 +225,12 @@ func TestRoutePriorityMatrix(t *testing.T) {
 	// Switching off a protocol the model never had adds nothing.
 	declare(&cfg, "mystery-model", off("responses"))
 	body := `{"data":[
-		{"id":"glm-5.2"},
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},
 		{"id":"totally-new-x"},
 		{"id":"mystery-model"},
-		{"id":"glm-5.1"},
-		{"id":"qwen3.8-max"},
-		{"id":"grok-4.5"}
+		{"id":"glm-5.1","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"qwen3.8-max","recommended_api":"messages","api":{"messages":{}}},
+		{"id":"grok-4.5","recommended_api":"responses","api":{"responses":{}}}
 	]}`
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
 	m := newManager(cfg, fc)
@@ -238,17 +238,17 @@ func TestRoutePriorityMatrix(t *testing.T) {
 
 	models := m.Models()
 	if got := primary(findModel(t, models, "glm-5.2")); got != RouteChatCompletions {
-		t.Errorf("compat route wrong: got %q", got)
+		t.Errorf("catalog route wrong: got %q", got)
 	}
 	ovr := findModel(t, models, "totally-new-x")
 	if !reflect.DeepEqual(ovr.Routes, []Target{{RouteMessages, "/v1/messages-override"}, {RouteGemini, "/google/v1beta/models/{model}"}}) {
 		t.Errorf("declaration not applied: %+v", ovr)
 	}
 	if got := routesOf(findModel(t, models, "glm-5.1")); !reflect.DeepEqual(got, []Route{RouteChatCompletions, RouteMessages}) {
-		t.Errorf("declaration should add to compat after its protocols: got %q", got)
+		t.Errorf("declaration should add after the catalog protocols: got %q", got)
 	}
 	if got := primary(findModel(t, models, "qwen3.8-max")); got != RouteMessages {
-		t.Errorf("compat route wrong: got %q", got)
+		t.Errorf("catalog route wrong: got %q", got)
 	}
 	if got := findModel(t, models, "grok-4.5").Routes; !reflect.DeepEqual(got, []Target{{RouteChatCompletions, "/openai/v1/chat/completions"}}) {
 		t.Errorf("declaration should switch compat protocols: got %+v", got)
@@ -264,159 +264,55 @@ func TestRoutePriorityMatrix(t *testing.T) {
 	}
 }
 
-// TestCompatExactIDs pins every model ID in the Oct 2026 OpenCode Go
-// endpoint table (https://opencode.ai/docs/go/#endpoints), plus earlier
-// documented IDs, to its protocol set. DeepSeek also serves Responses and
-// Messages beyond its documented Chat endpoint.
-func TestCompatExactIDs(t *testing.T) {
-	chat := []Route{RouteChatCompletions}
-	messages := []Route{RouteMessages}
-	responses := []Route{RouteResponses}
-	deepseek := []Route{RouteChatCompletions, RouteResponses, RouteMessages}
-	cases := map[string][]Route{
-		// Responses.
-		"grok-4.7":                   responses,
-		"grok-4.5":                   responses,
-		"gpt-6-luna":                 responses,
-		"gpt-5.6-luna":               responses,
-		"muse-spark-1.3-contributor": responses,
-		"muse-spark-1.2-contributor": responses,
-		// Messages.
-		"claude-haiku-5-5": messages,
-		"minimax-m3":       messages,
-		"minimax-m2.7":     messages,
-		"minimax-m2.5":     messages,
-		"qwen3.8-max":      messages,
-		"qwen3.8-flash":    messages,
-		"qwen3.7-max":      messages,
-		"qwen3.7-plus":     messages,
-		"qwen3.6-plus":     messages,
-		// Gemini.
-		"gemini-4-argon-contributor": {RouteGemini},
-		// Chat Completions.
-		"glm-5.3-flash":            chat,
-		"glm-5.3":                  chat,
-		"glm-5.2":                  chat,
-		"glm-5.1":                  chat,
-		"kimi-k3.1-pro":            chat,
-		"kimi-k3":                  chat,
-		"kimi-k2.7-code":           chat,
-		"kimi-k2.6":                chat,
-		"longcat-2.0":              chat,
-		"longcat-2.5-preview-free": chat,
-		"mimo-v2.6-flash":          chat,
-		"mimo-v2.6-pro":            chat,
-		"mimo-v2.5":                chat,
-		"mimo-v2.5-pro":            chat,
-		"minimax-m3.1-flash":       chat,
-		"minimax-m3.1-flash-free":  chat,
-		"hy4-preview":              chat,
-		"hy3":                      chat,
-		"step-5-preview":           chat,
-		"beam-free":                chat,
-		// Chat Completions documented; Responses and Messages also served.
-		"deepseek-v4.1-flash": deepseek,
-		"deepseek-v4-pro":     deepseek,
-		"deepseek-v4-flash":   deepseek,
-	}
-	var sb strings.Builder
-	sb.WriteString(`{"data":[`)
-	i := 0
-	for id := range cases {
-		if i > 0 {
-			sb.WriteString(",")
-		}
-		fmt.Fprintf(&sb, `{"id":%q}`, id)
-		i++
-	}
-	sb.WriteString(`]}`)
-	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(sb.String())}}
+// TestCatalogAdvertisedRoutes pins how a catalog entry's recommended_api
+// and api map become routes: recommended first, the rest in protocolOrder,
+// generate-content as Gemini, and APIs without a route ignored.
+func TestCatalogAdvertisedRoutes(t *testing.T) {
+	body := `{"data":[
+		{"id":"chat-only","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"multi","recommended_api":"responses","api":{"messages":{},"responses":{},"chat-completions":{}}},
+		{"id":"gemini","recommended_api":"interactions","api":{"generate-content":{},"interactions":{}}},
+		{"id":"unlisted-recommendation","recommended_api":"responses","api":{"chat-completions":{}}},
+		{"id":"interactions-only","recommended_api":"interactions","api":{"interactions":{}}},
+		{"id":"recommendation-only","recommended_api":"chat-completions"}
+	]}`
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
 	m := newManager(testCfg(), fc)
 	mustRefresh(t, m)
-	for _, mo := range m.Models() {
-		if want := cases[mo.UpstreamID]; !reflect.DeepEqual(routesOf(mo), want) {
-			t.Errorf("%s: protocols = %q, want %q", mo.UpstreamID, routesOf(mo), want)
+
+	models := m.Models()
+	for id, want := range map[string][]Route{
+		"chat-only": {RouteChatCompletions},
+		"multi":     {RouteResponses, RouteChatCompletions, RouteMessages},
+		"gemini":    {RouteGemini},
+		// A recommendation the api map does not list is not a route.
+		"unlisted-recommendation": {RouteChatCompletions},
+	} {
+		rec := findModel(t, models, id)
+		if got := routesOf(rec); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: protocols = %q, want %q", id, got, want)
 		}
-		for _, target := range mo.Routes {
+		for _, target := range rec.Routes {
 			if target.EndpointPath != target.Protocol.EndpointPath() {
-				t.Errorf("%s: %s EndpointPath = %q", mo.UpstreamID, target.Protocol, target.EndpointPath)
+				t.Errorf("%s: %s EndpointPath = %q", id, target.Protocol, target.EndpointPath)
 			}
 		}
 	}
-	if len(m.Models()) != len(cases) {
-		t.Errorf("got %d models, want %d", len(m.Models()), len(cases))
-	}
-}
-
-func TestCompatPrefixFallback(t *testing.T) {
-	cases := map[string]Route{
-		"glm-9.9":              RouteChatCompletions,
-		"qwen99-max":           RouteMessages,
-		"gpt-9":                RouteResponses,
-		"muse-spark-9":         RouteResponses,
-		"kimi-k99":             RouteChatCompletions,
-		"deepseek-v99":         RouteChatCompletions,
-		"minimax-m99":          RouteMessages,
-		"minimax-m3.1-flash-x": RouteChatCompletions,
-		"claude-sonnet-9":      RouteMessages,
-		"gemini-9-pro":         RouteGemini,
-		"step-9":               RouteChatCompletions,
-		"beam-pro":             RouteChatCompletions,
-		"mimo-x":               RouteChatCompletions,
-		"hy3-extreme":          RouteChatCompletions,
-		"hy4-turbo":            RouteChatCompletions,
-		"longcat-max":          RouteChatCompletions,
-		"GLM-5.2":              RouteChatCompletions,
-		"DeepSeek-V4-X":        RouteChatCompletions,
-		"HY3":                  RouteChatCompletions,
-		"HY4":                  RouteChatCompletions,
-		"GPT-5.6-LUNA-X":       RouteResponses,
-		"QWEN4-MAX":            RouteMessages,
-		"Gemini-X":             RouteGemini,
-	}
-	var sb strings.Builder
-	sb.WriteString(`{"data":[`)
-	i := 0
-	for id := range cases {
-		if i > 0 {
-			sb.WriteString(",")
-		}
-		fmt.Fprintf(&sb, `{"id":%q}`, id)
-		i++
-	}
-	sb.WriteString(`]}`)
-	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(sb.String())}}
-	m := newManager(testCfg(), fc)
-	mustRefresh(t, m)
-	if got := len(m.Models()); got != len(cases) {
-		t.Fatalf("got %d routable, want %d", got, len(cases))
-	}
-	for _, mo := range m.Models() {
-		if want := cases[mo.UpstreamID]; primary(mo) != want {
-			t.Errorf("%s: primary protocol = %q, want %q", mo.UpstreamID, primary(mo), want)
+	var unsupported []string
+	for _, u := range m.Unsupported() {
+		if u.Reason == "no route determined" {
+			unsupported = append(unsupported, u.UpstreamID)
 		}
 	}
-}
-
-// TestPrefixRoutesLongestFirst keeps longest-prefix-wins true: a prefix may
-// only follow the prefixes it does not extend.
-func TestPrefixRoutesLongestFirst(t *testing.T) {
-	for i, later := range prefixRoutes {
-		for _, earlier := range prefixRoutes[:i] {
-			if strings.HasPrefix(later.prefix, earlier.prefix) {
-				t.Errorf("prefix %q is shadowed by earlier %q", later.prefix, earlier.prefix)
-			}
-		}
-		if len(later.routes) == 0 {
-			t.Errorf("prefix %q has no protocols", later.prefix)
-		}
+	if want := []string{"interactions-only", "recommendation-only"}; !reflect.DeepEqual(unsupported, want) || len(m.Unsupported()) != len(want) {
+		t.Errorf("unsupported = %+v, want %q without a route", m.Unsupported(), want)
 	}
 }
 
 func TestDedupFirstWins(t *testing.T) {
 	body := `{"data":[
-		{"id":"glm-5.2"},
-		{"id":"glm-5.2"}
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}
 	]}`
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
 	m := newManager(testCfg(), fc)
@@ -433,7 +329,7 @@ func TestDedupFirstWins(t *testing.T) {
 }
 
 func TestMissingIDSkippedAndDiagnosed(t *testing.T) {
-	body := `{"data":[{}, {"id":"glm-5.2"}]}`
+	body := `{"data":[{}, {"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
 	m := newManager(testCfg(), fc)
 	mustRefresh(t, m)
@@ -470,7 +366,7 @@ func TestRefreshErrorsKeepStaleSnapshot(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := testCfg()
 			cfg.MaxResponseBytes = c.maxBytes
-			fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"gpt-5.6-luna"}]}`)}}
+			fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}]}`)}}
 			m := newManager(cfg, fc)
 			seedGoodSnapshot(t, m)
 
@@ -503,7 +399,7 @@ func TestRefreshErrorsKeepStaleSnapshot(t *testing.T) {
 // still rejected.
 func TestFetchBudgetFloor(t *testing.T) {
 	// Valid ~2KB catalog body, larger than the undersized 1024-byte knob.
-	body := `{"data":[` + strings.Repeat(`{"id":"glm-5.2"},`, 2048) + `{"id":"glm-5.1"}]}`
+	body := `{"data":[` + strings.Repeat(`{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},`, 2048) + `{"id":"glm-5.1","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	if int64(len(body)) <= 1024 {
 		t.Fatalf("precondition: catalog body %d bytes should exceed the knob", len(body))
 	}
@@ -542,7 +438,7 @@ func TestRefreshNilClientClassifiedError(t *testing.T) {
 func TestRefreshErrorClearsWhenNoStale(t *testing.T) {
 	cfg := testCfg()
 	cfg.Catalog.StaleWhileUnavailable = false
-	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"gpt-5.6-luna"}]}`)}}
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}]}`)}}
 	m := newManager(cfg, fc)
 	seedGoodSnapshot(t, m)
 
@@ -563,7 +459,7 @@ func TestRefreshErrorClearsWhenNoStale(t *testing.T) {
 
 	// Next success restores the routable set.
 	fc.err = nil
-	fc.resp = pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-5.2"}]}`)}
+	fc.resp = pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)}
 	mustRefresh(t, m)
 	if got := m.Models(); len(got) != 1 || got[0].UpstreamID != "glm-5.2" {
 		t.Errorf("recovery failed: %+v", got)
@@ -573,7 +469,7 @@ func TestRefreshErrorClearsWhenNoStale(t *testing.T) {
 func TestPublicIDWithoutPrefix(t *testing.T) {
 	cfg := testCfg()
 	cfg.ModelPrefix.Enabled = false
-	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-5.2"}]}`)}}
+	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)}}
 	m := newManager(cfg, fc)
 	mustRefresh(t, m)
 	if got := m.Models()[0].PublicID; got != "glm-5.2" {
@@ -584,7 +480,7 @@ func TestPublicIDWithoutPrefix(t *testing.T) {
 // TestLookupByPrefixedBareAndMiss pins O(1) ID resolution over the swap
 // index: public (prefixed) and bare upstream IDs resolve; misses do not.
 func TestLookupByPrefixedBareAndMiss(t *testing.T) {
-	body := `{"data":[{"id":"glm-5.2"},{"id":"gpt-5.6-luna"}]}`
+	body := `{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}]}`
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
 	m := newManager(testCfg(), fc)
 	mustRefresh(t, m)
@@ -621,7 +517,7 @@ func TestLookupByPrefixedBareAndMiss(t *testing.T) {
 // seeded PublicIDs are bare where prev's were prefixed — and subsequent
 // refreshes use m's catalog-url while prev stays untouched.
 func TestSeedFromServesOldRecordsWithNewCfg(t *testing.T) {
-	body := `{"data":[{"id":"glm-5.2"},{"id":"glm-5.2"},{"id":"mystery-model"}]}`
+	body := `{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"mystery-model"}]}`
 	prev := newManager(testCfg(), &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
 		Body:       []byte(body),
@@ -654,7 +550,7 @@ func TestSeedFromServesOldRecordsWithNewCfg(t *testing.T) {
 
 	// The next refresh uses m's own cfg: its catalog-url and prefix-off
 	// PublicIDs; prev keeps serving its own snapshot untouched.
-	fc.resp = pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"kimi-k3"}]}`)}
+	fc.resp = pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[{"id":"kimi-k3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`)}
 	mustRefresh(t, m)
 	if fc.gotReq.URL != "https://mirror.test/api/models" {
 		t.Errorf("refresh URL = %q, want the seeded manager's own catalog-url", fc.gotReq.URL)
@@ -669,9 +565,9 @@ func TestSeedFromServesOldRecordsWithNewCfg(t *testing.T) {
 
 func TestRouteCountsViaModels(t *testing.T) {
 	body := `{"data":[
-		{"id":"glm-5.2"},{"id":"glm-5.1"},
-		{"id":"minimax-m3"},{"id":"qwen3.8-max"},{"id":"qwen3.7-plus"},
-		{"id":"gpt-5.6-luna"}
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"glm-5.1","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}},{"id":"qwen3.8-max","recommended_api":"messages","api":{"messages":{}}},{"id":"qwen3.7-plus","recommended_api":"messages","api":{"messages":{}}},
+		{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}
 	]}`
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}}
 	m := newManager(testCfg(), fc)
@@ -688,7 +584,7 @@ func TestRouteCountsViaModels(t *testing.T) {
 func TestModelsReturnCopies(t *testing.T) {
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
-		Body:       []byte(`{"data":[{"id":"gpt-5.6-luna"}]}`),
+		Body:       []byte(`{"data":[{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}]}`),
 	}}
 	m := newManager(testCfg(), fc)
 	mustRefresh(t, m)
@@ -731,7 +627,7 @@ func TestConcurrentRefreshAndReads(t *testing.T) {
 					fc.set(pluginapi.HTTPResponse{StatusCode: 500}, nil)
 				} else {
 					fc.set(pluginapi.HTTPResponse{StatusCode: 200,
-						Body: []byte(fmt.Sprintf(`{"data":[{"id":"glm-%d"}]}`, r))}, nil)
+						Body: []byte(fmt.Sprintf(`{"data":[{"id":"glm-%d","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`, r))}, nil)
 				}
 				_ = m.Refresh(context.Background(), testKey)
 			}
@@ -760,9 +656,9 @@ func TestConcurrentRefreshAndReads(t *testing.T) {
 
 func TestProtocolSwitchesExcludeRoutes(t *testing.T) {
 	catalogBody := `{"data":[
-		{"id":"glm-5.2"},
-		{"id":"qwen3.7-max"},
-		{"id":"gpt-5.6-luna"}
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},
+		{"id":"qwen3.7-max","recommended_api":"messages","api":{"messages":{}}},
+		{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}
 	]}`
 	routes := []struct {
 		protocol  string
@@ -803,14 +699,14 @@ func TestProtocolSwitchesExcludeRoutes(t *testing.T) {
 // A switch removes only its own protocol from a multi-protocol model; the
 // model stays routable until every protocol it serves is disabled.
 func TestProtocolSwitchesFilterMultiProtocolModels(t *testing.T) {
-	body := `{"data":[{"id":"deepseek-v4-pro"},{"id":"gemini-4-argon-contributor"}]}`
+	body := `{"data":[{"id":"deepseek-v4-pro","recommended_api":"chat-completions","api":{"chat-completions":{},"responses":{},"messages":{}}},{"id":"gemini-4-argon-contributor","recommended_api":"generate-content","api":{"generate-content":{}}}]}`
 	cfg := testCfg()
 	declare(&cfg, "deepseek-v4-pro", off("chat-completions"))
 	declare(&cfg, "gemini-4-argon-contributor", off("gemini"))
 	m := newManager(cfg, &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(body)}})
 	mustRefresh(t, m)
 	deepseek := findModel(t, m.Models(), "deepseek-v4-pro")
-	if got := routesOf(deepseek); !reflect.DeepEqual(got, []Route{RouteResponses, RouteMessages}) {
+	if got := routesOf(deepseek); !reflect.DeepEqual(got, []Route{RouteMessages, RouteResponses}) {
 		t.Fatalf("deepseek protocols = %q, want chat filtered out", got)
 	}
 	unsup := m.Unsupported()
@@ -826,7 +722,7 @@ func TestProtocolSwitchesFilterMultiProtocolModels(t *testing.T) {
 	if len(m.Models()) != 0 {
 		t.Fatalf("models = %+v, want none routable", m.Models())
 	}
-	if unsup := m.Unsupported(); len(unsup) != 2 || unsup[0].Reason != "protocols chat-completions, responses, messages disabled by config" {
+	if unsup := m.Unsupported(); len(unsup) != 2 || unsup[0].Reason != "protocols chat-completions, messages, responses disabled by config" {
 		t.Fatalf("unsupported = %+v", unsup)
 	}
 }
@@ -834,7 +730,7 @@ func TestProtocolSwitchesFilterMultiProtocolModels(t *testing.T) {
 // Global protocols set the path for every model serving the protocol; a
 // model's own endpoint takes precedence.
 func TestGlobalProtocolEndpoints(t *testing.T) {
-	body := `{"data":[{"id":"glm-5.2"},{"id":"glm-5.1"},{"id":"deepseek-v4-pro"},{"id":"gemini-4-argon-contributor"}]}`
+	body := `{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"glm-5.1","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"deepseek-v4-pro","recommended_api":"chat-completions","api":{"chat-completions":{},"responses":{},"messages":{}}},{"id":"gemini-4-argon-contributor","recommended_api":"generate-content","api":{"generate-content":{}}}]}`
 	cfg := testCfg()
 	cfg.Protocols = map[string]config.ProtocolOverride{
 		"chat-completions": {Endpoint: "/v1/global-chat"},
@@ -849,8 +745,8 @@ func TestGlobalProtocolEndpoints(t *testing.T) {
 		"glm-5.1": {{RouteChatCompletions, "/v1/own-chat"}},
 		"deepseek-v4-pro": {
 			{RouteChatCompletions, "/v1/global-chat"},
-			{RouteResponses, "/openai/v1/responses"},
 			{RouteMessages, "/anthropic/v1/messages"},
+			{RouteResponses, "/openai/v1/responses"},
 		},
 		"gemini-4-argon-contributor": {{RouteGemini, "/gemini/models/{model}"}},
 	}
@@ -863,7 +759,7 @@ func TestGlobalProtocolEndpoints(t *testing.T) {
 
 func TestDefaultProtocolsKeepEverything(t *testing.T) {
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{StatusCode: 200, Body: []byte(`{"data":[
-		{"id":"glm-5.2"},{"id":"qwen3.7-max"},{"id":"gpt-5.6-luna"}
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},{"id":"qwen3.7-max","recommended_api":"messages","api":{"messages":{}}},{"id":"gpt-5.6-luna","recommended_api":"responses","api":{"responses":{}}}
 	]}`)}}
 	m := newManager(testCfg(), fc)
 	mustRefresh(t, m)
@@ -1026,7 +922,7 @@ func TestEndpointEscapeExcludedFromRoutableSet(t *testing.T) {
 		declare(&cfg, "glm-5.2", proto("chat-completions", "/v1@evil.com/x"))
 		fc := &fakeClient{resp: pluginapi.HTTPResponse{
 			StatusCode: 200,
-			Body:       []byte(`{"data":[{"id":"glm-5.2"}]}`),
+			Body:       []byte(`{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`),
 		}}
 		m := newManager(cfg, fc)
 		mustRefresh(t, m)
@@ -1069,7 +965,7 @@ func TestFailClearsLookupIndex(t *testing.T) {
 	cfg.Catalog.StaleWhileUnavailable = false
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
-		Body:       []byte(`{"data":[{"id":"glm-5.2"}]}`),
+		Body:       []byte(`{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`),
 	}}
 	m := newManager(cfg, fc)
 	mustRefresh(t, m)
@@ -1097,7 +993,7 @@ func TestFailClearsLookupIndex(t *testing.T) {
 // host into userinfo and the endpoint escapes to an attacker authority.
 func TestSeedFromRevalidatesEndpointsAgainstNewBase(t *testing.T) {
 	body := `{"data":[
-		{"id":"glm-5.2"},
+		{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}},
 		{"id":"totally-new-x"}
 	]}`
 	oldCfg := testCfg()
@@ -1147,7 +1043,7 @@ func TestSeedFromRevalidatesEndpointsAgainstNewBase(t *testing.T) {
 // during a catalog outage keeps serving it off the stale snapshot until a
 // refresh succeeds — the switch is inert exactly when it needs to bite.
 func TestSeedFromAppliesProtocolSwitch(t *testing.T) {
-	body := `{"data":[{"id":"minimax-m3"},{"id":"glm-5.2"}]}`
+	body := `{"data":[{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}},{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	prev := newManager(testCfg(), &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
 		Body:       []byte(body),
@@ -1187,7 +1083,7 @@ func TestSeedFromAppliesProtocolSwitch(t *testing.T) {
 func TestSeedFromRecomputesPublicIDsUnderNewPrefix(t *testing.T) {
 	prev := newManager(testCfg(), &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
-		Body:       []byte(`{"data":[{"id":"glm-5.2"}]}`),
+		Body:       []byte(`{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`),
 	}})
 	mustRefresh(t, prev)
 	if got := findModel(t, prev.Models(), "glm-5.2").PublicID; got != "opencode-go/glm-5.2" {
@@ -1263,7 +1159,7 @@ func TestSwapPublicUpstreamCrossKeyCollision(t *testing.T) {
 func TestRefreshDataKeyAbsentVsEmpty(t *testing.T) {
 	fc := &fakeClient{resp: pluginapi.HTTPResponse{
 		StatusCode: 200,
-		Body:       []byte(`{"data":[{"id":"glm-5.2"}]}`),
+		Body:       []byte(`{"data":[{"id":"glm-5.2","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`),
 	}}
 	m := newManager(testCfg(), fc)
 	mustRefresh(t, m)

@@ -22,7 +22,7 @@ const limitChunk = `data: {"id":"c1","object":"chat.completion.chunk","model":"g
 func tickingUpstream(interval time.Duration, chunks int) func(string, []byte) ([]byte, error) {
 	var reads atomic.Int64
 	var closed atomic.Bool
-	return wrapWithCatalog(`{"data":[{"id":"glm-5.4"}]}`, func(method string, _ []byte) ([]byte, error) {
+	return wrapWithCatalog(`{"data":[{"id":"glm-5.4","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`, func(method string, _ []byte) ([]byte, error) {
 		switch method {
 		case pluginabi.MethodHostHTTPDoStream:
 			return hostOK(hostStreamStartResp{StatusCode: http.StatusOK, StreamID: "up-tick"}), nil
@@ -114,7 +114,7 @@ func TestExecuteStreamMaxDurationEndsActiveStream(t *testing.T) {
 }
 
 func TestExecuteStreamOpenTimeout(t *testing.T) {
-	responder := wrapWithCatalog(`{"data":[{"id":"glm-5.4"}]}`, func(method string, _ []byte) ([]byte, error) {
+	responder := wrapWithCatalog(`{"data":[{"id":"glm-5.4","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`, func(method string, _ []byte) ([]byte, error) {
 		switch method {
 		case pluginabi.MethodHostHTTPDoStream:
 			time.Sleep(150 * time.Millisecond)

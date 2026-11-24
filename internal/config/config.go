@@ -69,7 +69,7 @@ type ModelOverride struct {
 	// Alias replaces the upstream name in the published model ID; the
 	// model prefix still applies. Requests still send Name upstream.
 	Alias string `yaml:"alias"`
-	// Protocols patches the built-in protocol set, keyed by protocol: an
+	// Protocols patches the catalog's advertised protocols, keyed by protocol: an
 	// entry switches its protocol on unless Enabled is false, and a
 	// non-empty Endpoint overrides the global path.
 	Protocols          map[string]ProtocolOverride `yaml:"protocols"`

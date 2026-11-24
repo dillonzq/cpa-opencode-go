@@ -27,7 +27,7 @@ import (
 
 const (
 	testKey         = "sk-test-secret-1"
-	testCatalogJSON = `{"data":[{"id":"glm-5.3"}]}`
+	testCatalogJSON = `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
 	testValidYAML   = "api-keys:\n  - value: " + testKey + "\nmodels-dev:\n  enabled: false\n"
 	dummyKey        = "sk-test"
 	dummyKeyYAML    = "api-keys:\n  - value: " + dummyKey + "\nmodels-dev:\n  enabled: false\n"
@@ -1024,8 +1024,8 @@ func TestReconfigureFailedRefreshServesViaTicks(t *testing.T) {
 	m := NewManager(NewHostBridge(f.call))
 	t.Cleanup(func() { _, _ = m.HandleCall("plugin.shutdown", nil) })
 
-	catalogV1 := `{"data":[{"id":"glm-5.3"}]}`
-	catalogV2 := `{"data":[{"id":"minimax-m3"}]}`
+	catalogV1 := `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
+	catalogV2 := `{"data":[{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}}]}`
 	var fetches atomic.Int64
 	f.responder = func(method string, payload []byte) ([]byte, error) {
 		if method != pluginabi.MethodHostHTTPDo {
@@ -1125,8 +1125,8 @@ func TestShutdownAbortsInFlightTickRefresh(t *testing.T) {
 func TestReconfigureFailedRefreshSeedsCarryoverThenFetchesNewURL(t *testing.T) {
 	oldURL := "https://opencode.ai/inference/go/v1/models"
 	newURL := "https://mirror.test/api/v1/models"
-	catalogV1 := `{"data":[{"id":"glm-5.3"}]}`
-	catalogV2 := `{"data":[{"id":"minimax-m3"}]}`
+	catalogV1 := `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
+	catalogV2 := `{"data":[{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}}]}`
 	var allowOldURL atomic.Bool
 	allowOldURL.Store(true)
 	var failNewSync atomic.Bool
@@ -1189,8 +1189,8 @@ func TestReconfigureFailedRefreshSeedsCarryoverThenFetchesNewURL(t *testing.T) {
 // stale-while-unavailable — fail-closed serves nothing immediately (matching
 // Manager.fail's ticker behavior), stale-enabled keeps carrying over.
 func TestReconfigureFailedRefreshHonorsStalePolicy(t *testing.T) {
-	catalogV1 := `{"data":[{"id":"glm-5.3"}]}`
-	catalogV2 := `{"data":[{"id":"minimax-m3"}]}`
+	catalogV1 := `{"data":[{"id":"glm-5.3","recommended_api":"chat-completions","api":{"chat-completions":{}}}]}`
+	catalogV2 := `{"data":[{"id":"minimax-m3","recommended_api":"messages","api":{"messages":{}}}]}`
 	for _, tc := range []struct {
 		name          string
 		policyYAML    string
